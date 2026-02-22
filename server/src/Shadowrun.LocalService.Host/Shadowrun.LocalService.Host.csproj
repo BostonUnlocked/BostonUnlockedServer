@@ -1,0 +1,137 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="3.5" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{06F0F63C-35B1-4B77-BC90-EC08682E26D7}</ProjectGuid>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Shadowrun.LocalService.Host</RootNamespace>
+    <AssemblyName>Shadowrun.LocalService.Host</AssemblyName>
+    <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <RunPostBuildEvent>Always</RunPostBuildEvent>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <ResourcesOutDir>$(MSBuildProjectDirectory)\$(OutputPath)Resources\</ResourcesOutDir>
+    <ShadowrunGameRoot Condition=" '$(ShadowrunGameRoot)' == '' ">d:\SteamLibrary\steamapps\common\ShadowrunChronicles</ShadowrunGameRoot>
+    <ShadowrunStreamingAssetsLevelsDir>$(ShadowrunGameRoot)\Shadowrun_Data\StreamingAssets\levels</ShadowrunStreamingAssetsLevelsDir>
+    <LocalStreamingAssetsLevelsDir>$(MSBuildProjectDirectory)\..\..\StreamingAssets\levels</LocalStreamingAssetsLevelsDir>
+    <LocalStreamingAssetsDir>$(MSBuildProjectDirectory)\..\..\StreamingAssets</LocalStreamingAssetsDir>
+    <PostBuildEvent>echo [localservice] Copying portable Resources...
+if not exist "$(ResourcesOutDir)" mkdir "$(ResourcesOutDir)"
+if not exist "$(ResourcesOutDir)config" mkdir "$(ResourcesOutDir)config"
+if not exist "$(ResourcesOutDir)static-data" mkdir "$(ResourcesOutDir)static-data"
+if not exist "$(ResourcesOutDir)Dependencies" mkdir "$(ResourcesOutDir)Dependencies"
+
+xcopy /E /Y /I "$(MSBuildProjectDirectory)\..\..\config\*" "$(ResourcesOutDir)config\" &gt;nul 2&gt;nul
+xcopy /E /Y /I "$(MSBuildProjectDirectory)\..\..\static-data\*" "$(ResourcesOutDir)static-data\" &gt;nul 2&gt;nul
+xcopy /E /Y /I "$(MSBuildProjectDirectory)\..\Dependencies\*" "$(ResourcesOutDir)Dependencies\" &gt;nul 2&gt;nul
+
+echo [localservice] ShadowrunGameRoot=$(ShadowrunGameRoot)
+echo [localservice] LocalStreamingAssetsLevelsDir=$(LocalStreamingAssetsLevelsDir)
+echo [localservice] StreamingAssetsLevelsDir=$(ShadowrunStreamingAssetsLevelsDir)
+
+if exist "$(LocalStreamingAssetsDir)" (
+  echo [localservice] Copying StreamingAssets ^(full folder, from extracted localservice/StreamingAssets^)...
+  if not exist "$(ResourcesOutDir)StreamingAssets" mkdir "$(ResourcesOutDir)StreamingAssets"
+  xcopy /E /Y /I "$(LocalStreamingAssetsDir)\*" "$(ResourcesOutDir)StreamingAssets\" &gt;nul 2&gt;nul
+) else (
+  echo [localservice] NOTE: Extracted localservice/StreamingAssets not found; only copying mapdata.json.
+)
+
+if not exist "$(ResourcesOutDir)StreamingAssets\levels" mkdir "$(ResourcesOutDir)StreamingAssets\levels"
+
+if exist "$(LocalStreamingAssetsLevelsDir)" (
+  echo [localservice] Copying StreamingAssets level mapdata.json ^(from extracted localservice/StreamingAssets^)...
+  for /D %%D in ("$(LocalStreamingAssetsLevelsDir)\*") do (
+    if exist "%%D\mapdata.json" (
+      if not exist "$(ResourcesOutDir)StreamingAssets\levels\%%~nxD" mkdir "$(ResourcesOutDir)StreamingAssets\levels\%%~nxD"
+      copy /Y "%%D\mapdata.json" "$(ResourcesOutDir)StreamingAssets\levels\%%~nxD\mapdata.json" &gt;nul
+    )
+  )
+) else if exist "$(ShadowrunStreamingAssetsLevelsDir)" (
+  echo [localservice] Copying StreamingAssets level mapdata.json...
+  for /D %%D in ("$(ShadowrunStreamingAssetsLevelsDir)\*") do (
+    if exist "%%D\mapdata.json" (
+      if not exist "$(ResourcesOutDir)StreamingAssets\levels\%%~nxD" mkdir "$(ResourcesOutDir)StreamingAssets\levels\%%~nxD"
+      copy /Y "%%D\mapdata.json" "$(ResourcesOutDir)StreamingAssets\levels\%%~nxD\mapdata.json" &gt;nul
+    )
+  )
+) else (
+  echo [localservice] NOTE: Levels dir not found; skipping mapdata.json copy. Run extractresourcesfrominstallation.ps1 or set /p:ShadowrunGameRoot=... if needed.
+)
+
+exit /b 0</PostBuildEvent>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="APlayCommon">
+      <HintPath>..\Dependencies\APlayCommon.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Cliffhanger.Core.Compatibility">
+      <HintPath>..\Dependencies\Cliffhanger.Core.Compatibility.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Cliffhanger.GameLogic">
+      <HintPath>..\Dependencies\Cliffhanger.GameLogic.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Cliffhanger.SRO.ServerClientCommons">
+      <HintPath>..\Dependencies\Cliffhanger.SRO.ServerClientCommons.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Ionic.Zip">
+      <HintPath>..\Dependencies\Ionic.Zip.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="JsonFx.Json">
+      <HintPath>..\Dependencies\JsonFx.Json.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="SRO.Core.Compatibility">
+      <HintPath>..\Dependencies\SRO.Core.Compatibility.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Shadowrun.LocalService.Core\Shadowrun.LocalService.Core.csproj">
+      <Project>{C3C7C63E-0A8B-4D6B-A1D8-3F9AF0D9E2D2}</Project>
+      <Name>Shadowrun.LocalService.Core</Name>
+    </ProjectReference>
+  </ItemGroup>
+
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

@@ -1,0 +1,124 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="3.5" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{C3C7C63E-0A8B-4D6B-A1D8-3F9AF0D9E2D2}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>Shadowrun.LocalService.Core</RootNamespace>
+    <AssemblyName>Shadowrun.LocalService.Core</AssemblyName>
+    <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Web" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="APlayCommon">
+      <HintPath>..\Dependencies\APlayCommon.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Cliffhanger.Core.Compatibility">
+      <HintPath>..\Dependencies\Cliffhanger.Core.Compatibility.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Cliffhanger.GameLogic">
+      <HintPath>..\Dependencies\Cliffhanger.GameLogic.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Cliffhanger.SRO.ServerClientCommons">
+      <HintPath>..\Dependencies\Cliffhanger.SRO.ServerClientCommons.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="Ionic.Zip">
+      <HintPath>..\Dependencies\Ionic.Zip.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="JsonFx.Json">
+      <HintPath>..\Dependencies\JsonFx.Json.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="SRO.Core.Compatibility">
+      <HintPath>..\Dependencies\SRO.Core.Compatibility.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="protobuf-net">
+      <HintPath>..\Dependencies\protobuf-net.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="PhotonProxy.Common">
+      <HintPath>..\Dependencies\PhotonProxy.Common.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="PhotonProxy.ChatAndFriends.Client.DTO">
+      <HintPath>..\Dependencies\PhotonProxy.ChatAndFriends.Client.DTO.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="PhotonProxy.AccountSystem.Client.DTO">
+      <HintPath>..\Dependencies\PhotonProxy.AccountSystem.Client.DTO.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="PhotonProxy.Serializer.Client">
+      <HintPath>..\Dependencies\PhotonProxy.Serializer.Client.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Career\CareerInfoGenerator.cs" />
+    <Compile Include="Career\MatchConfigurationGenerator.cs" />
+    <Compile Include="Persistence\LocalUserStore.cs" />
+    <Compile Include="Persistence\LocalUserStore.IO.cs" />
+    <Compile Include="Persistence\ISessionIdentityMap.cs" />
+    <Compile Include="Persistence\ExpiringSessionIdentityMap.cs" />
+    <Compile Include="Http\HttpStubServer.cs" />
+    <Compile Include="Http\HttpStubServer.Transport.cs" />
+    <Compile Include="LocalServiceOptions.cs" />
+    <Compile Include="Protocols\APlayTcpStub.cs" />
+    <Compile Include="Protocols\APlayTcpStub.StaticData.cs" />
+    <Compile Include="Protocols\PhotonProxyTcpStub.cs" />
+    <Compile Include="Protocols\PhotonProxyTcpStub.Operations.cs" />
+    <Compile Include="RequestLogger.cs" />
+    <Compile Include="Simulation\LocalMissionLootController.cs" />
+    <Compile Include="Simulation\NullMetagameplayrelevantChangeObserver.cs" />
+    <Compile Include="Simulation\ServerSimulationSession.cs" />
+    <Compile Include="Simulation\ServerSimulationSession.AiTurns.cs" />
+    <Compile Include="Simulation\TurnObserver.cs" />
+  </ItemGroup>
+
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

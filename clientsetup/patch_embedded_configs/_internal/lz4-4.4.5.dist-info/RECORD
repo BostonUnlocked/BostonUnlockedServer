@@ -1,0 +1,17 @@
+lz4-4.4.5.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
+lz4-4.4.5.dist-info/METADATA,sha256=DG1th12mtsUUEYC36_r6tuDvdr71OgBrdTAmD0QU9Xk,3946
+lz4-4.4.5.dist-info/RECORD,,
+lz4-4.4.5.dist-info/WHEEL,sha256=KUuBC6lxAbHCKilKua8R9W_TM71_-9Sg5uEP3uDWcoU,101
+lz4-4.4.5.dist-info/licenses/LICENSE,sha256=p9ZdHdTcyG3KXRfUaqShx3ZpybcvVfKY6eIhLykFwM8,1523
+lz4-4.4.5.dist-info/top_level.txt,sha256=cX6_gxFUdNSo40TfxrGpTCgu7epGm3yW3m2k7irTDzI,4
+lz4/__init__.py,sha256=e_8j-K4TJx38qcPNjoZP_pNDo8IpE4D2ZWl4p50iV_8,646
+lz4/__pycache__/__init__.cpython-310.pyc,,
+lz4/__pycache__/version.cpython-310.pyc,,
+lz4/_version.cp310-win_amd64.pyd,sha256=R8JLYF2oMU0Q58m2zgfrx5fkmoCS4kWHidAlC7sJPrE,11264
+lz4/block/__init__.py,sha256=DSUbS7zMlKKeLs8JO9riOBO5Q_lVoSB-nwgjfhBeXt0,71
+lz4/block/__pycache__/__init__.cpython-310.pyc,,
+lz4/block/_block.cp310-win_amd64.pyd,sha256=cC9mpbVfwBPP1mzEsSbNFQE3rg8bb_zbc1oXg96hAxo,76288
+lz4/frame/__init__.py,sha256=ZL_fEfs44MnjXFrZ7PEXOT9qaPq4nSX0lGhcfWnC08s,32059
+lz4/frame/__pycache__/__init__.cpython-310.pyc,,
+lz4/frame/_frame.cp310-win_amd64.pyd,sha256=LVVJhx8JOlbwfQ5oPnubbGiaQ5GYai5Hu0pfM_95CAY,115712
+lz4/version.py,sha256=N5HZbWPZciksrVd1mzxu_ZGn6ws3eZ-7-szB1b39Udc,746

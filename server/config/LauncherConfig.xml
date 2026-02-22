@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LauncherConfig>
+  <SkipVerification>false</SkipVerification>
+  <PatchesUrl>http://127.0.0.1/Patches/SRO/StandaloneWindows/live</PatchesUrl>
+  <DisablePatching>true</DisablePatching>
+  <NewsAssetBundlePath></NewsAssetBundlePath>
+  <AuthenticationProvider>Steam</AuthenticationProvider>
+  <SteamAppId>267750</SteamAppId>
+  <DisplayNamePlayerInfoKey>LauncherDisplayName</DisplayNamePlayerInfoKey>
+  <RemoteConfigUrl>http://127.0.0.1/SRO/configs/SRO_23.3/SteamWindows/LauncherConfig.xml</RemoteConfigUrl>
+  <Services>
+    <AccountSystemUrl>http://127.0.0.1/AccountSystem/</AccountSystemUrl>
+    <CouponSystemUrl>http://127.0.0.1/CouponSystem/</CouponSystemUrl>
+    <AccountSystemAppKey>E4F9BE8D-E9BA-48EE-A89C-C0030417DCCF</AccountSystemAppKey>
+    <GamePackageTechnicalName>SRO-GAME-KEY</GamePackageTechnicalName>
+    <GameName>SRO</GameName>
+  </Services>
+</LauncherConfig>

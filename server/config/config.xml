@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<BaseConfiguration xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <MaintenanceText></MaintenanceText>
+  <BuildNumber>0</BuildNumber>
+  <BuildName>SRO-local-offline</BuildName>
+  <ServerAddress>127.0.0.1:5055</ServerAddress>
+  <RemoteClientBaseConfigPath>http://127.0.0.1/SRO/configs/SRO_23.3/SteamWindows/config.xml</RemoteClientBaseConfigPath>
+  <FallbackPorts>
+    <Port>65432</Port>
+  </FallbackPorts>
+  <AccountServiceAddress>http://127.0.0.1/AccountSystem/</AccountServiceAddress>
+  <AccountServiceAppKey>E4F9BE8D-E9BA-48EE-A89C-C0030417DCCF</AccountServiceAppKey>
+  <MatchmakingServiceAddress>http://127.0.0.1/Matchmaking/</MatchmakingServiceAddress>
+  <ChatAndFriendServiceAddress>http://127.0.0.1/ChatAndFriends/</ChatAndFriendServiceAddress>
+  <PhotonProxyEndPoint>127.0.0.1:4530</PhotonProxyEndPoint>
+  <PhotonProxyApplicationName>SRO-LOCAL</PhotonProxyApplicationName>
+  <PhotonProxyUpdateInterval>0.1</PhotonProxyUpdateInterval>
+  <PollingInterval>2</PollingInterval>
+  <HttpTimeout>30</HttpTimeout>
+  <BasePath>levels/</BasePath>
+  <GamingPlatform>SteamWindows</GamingPlatform>
+  <DebugMode>false</DebugMode>
+</BaseConfiguration>
