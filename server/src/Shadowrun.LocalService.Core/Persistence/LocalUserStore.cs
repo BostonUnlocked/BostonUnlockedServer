@@ -13,6 +13,17 @@ namespace Shadowrun.LocalService.Core.Persistence
     {
         private static readonly JavaScriptSerializer Json = CreateSerializer();
 
+        private static readonly object ItemPackSeedLock = new object();
+        private static List<string> CachedItemPackIds;
+        private static string CachedItemPackIdsSourceDir;
+
+        private static readonly object HairBeardSeedLock = new object();
+        private static List<string> CachedHairBeardIds;
+        private static string CachedHairBeardIdsSourceDir;
+        private static int LoggedCosmeticSeed;
+
+        private static int LoggedStaticDataDir;
+
         private readonly LocalServiceOptions _options;
         private readonly RequestLogger _logger;
         private readonly object _lock = new object();
@@ -25,6 +36,29 @@ namespace Shadowrun.LocalService.Core.Persistence
         {
             _options = options;
             _logger = logger;
+
+            try
+            {
+                if (System.Threading.Interlocked.Exchange(ref LoggedStaticDataDir, 1) == 0)
+                {
+                    var dir = _options != null ? _options.StaticDataDir : null;
+                    var idsPath = !IsNullOrWhiteSpace(dir) ? Path.Combine(dir, "ids.json") : null;
+                    if (_logger != null)
+                    {
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "static-data-dir",
+                            staticDataDir = dir,
+                            staticDataDirExists = !IsNullOrWhiteSpace(dir) && Directory.Exists(dir),
+                            idsJsonExists = !IsNullOrWhiteSpace(idsPath) && File.Exists(idsPath),
+                        });
+                    }
+                }
+            }
+            catch
+            {
+            }
 
             var dataDir = options != null ? options.DataDir : null;
             if (string.IsNullOrEmpty(dataDir))
@@ -507,9 +541,17 @@ namespace Shadowrun.LocalService.Core.Persistence
 
                         SeedStarterCosmetics(slotObj);
 
-                        // Starting cash for newly created characters.
-                        // (Retail starts with non-zero nuyen; we choose 20,000 for offline.)
-                        slotObj.Nuyen = 20000;
+                        SeedStarterFreeSkills(slotObj);
+                        SeedStarterStartingInventory(slotObj);
+                        SeedExtraStarterCosmetics(slotObj);
+                        SeedStarterItemPackCosmetics(slotObj);
+                        SeedAllHairAndBeardOptions(slotObj);
+
+                        // Starting cash/karma for newly created characters.
+                        slotObj.Nuyen = 0;
+
+                        // Starting karma for newly created characters.
+                        slotObj.Karma = 0;
                     }
 
                     // Ensure the character creator has enough cosmetic options (hair/beard) even if the career
@@ -517,7 +559,18 @@ namespace Shadowrun.LocalService.Core.Persistence
                     if (slotObj.IsOccupied)
                     {
                         SeedStarterHairAndBeardOptions(slotObj);
+                        SeedAllHairAndBeardOptions(slotObj);
                     }
+                }
+
+                // Character creator flows do not always call GetOrCreateCareer with markOccupied=true.
+                // Always backfill cosmetic ownership for occupied slots so selectors (hair/beard/horns) can populate.
+                if (slotObj.IsOccupied)
+                {
+                    SeedExtraStarterCosmetics(slotObj);
+                    SeedStarterItemPackCosmetics(slotObj);
+                    SeedStarterHairAndBeardOptions(slotObj);
+                    SeedAllHairAndBeardOptions(slotObj);
                 }
 
                 // Ensure identifier is always correct/stable.
@@ -533,6 +586,512 @@ namespace Shadowrun.LocalService.Core.Persistence
 
                 return slotObj;
             }
+        }
+
+        private void SeedStarterItemPackCosmetics(CareerSlot slot)
+        {
+            if (slot == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var packIds = GetOrLoadItemPackIds();
+                if (packIds == null || packIds.Count == 0)
+                {
+                    return;
+                }
+
+                for (var i = 0; i < packIds.Count; i++)
+                {
+                    var itemId = packIds[i];
+                    if (!IsNullOrWhiteSpace(itemId))
+                    {
+                        OwnItem(slot, itemId);
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private void SeedExtraStarterCosmetics(CareerSlot slot)
+        {
+            if (slot == null)
+            {
+                return;
+            }
+
+            // Explicit starter cosmetics requested (resolved via StreamingAssets/localization/English.csv
+            // -> Cloth.Item_*.Name keys -> Item_* ids in static-data/metagameplay.json).
+            // Safe to call repeatedly: OwnItem is idempotent for an existing possession key.
+            try
+            {
+                // Tattoos
+                OwnItem(slot, "Item_Tribal1Black");
+                OwnItem(slot, "Item_MaoriTribal1Black");
+                OwnItem(slot, "Item_MaoriForearmTribal1Black");
+                OwnItem(slot, "Item_DoubleDragon1Black");
+                OwnItem(slot, "Item_DragonHead1Black");
+                OwnItem(slot, "Item_Hex1Black");
+                OwnItem(slot, "Item_LadyLuckTribal1Black");
+                OwnItem(slot, "Item_MayanStyle1");
+                OwnItem(slot, "Item_MayanStyle2");
+
+                // Face paint
+                OwnItem(slot, "Item_HalloweenerFacepaint1");
+                OwnItem(slot, "Item_NativeIndianFacepaint1");
+                OwnItem(slot, "Item_JapaneseFacepaint");
+                OwnItem(slot, "Item_NeonFaceTribal1");
+                OwnItem(slot, "Item_NeonFaceTribal2");
+
+                // Headwear
+                OwnItem(slot, "Item_RiotHelmet");
+                OwnItem(slot, "Item_BasicCap1");
+                OwnItem(slot, "Item_BasicCap2");
+                OwnItem(slot, "Item_Pack4Fedora");
+                OwnItem(slot, "Item_AstralHelmet");
+                OwnItem(slot, "Item_CowboyHat");
+
+                // Facewear
+                OwnItem(slot, "Item_UrbanVisor");
+                OwnItem(slot, "Item_NeoGoggles");
+                OwnItem(slot, "Item_Pack2Goggles");
+                OwnItem(slot, "Item_Pack3GlassesNeo");
+                OwnItem(slot, "Item_Pack3GlassesRaybanDark");
+                OwnItem(slot, "Item_Pack3GlassesRound");
+                OwnItem(slot, "Item_Pack3GlassesRoundDark");
+                OwnItem(slot, "Item_DocMask");
+                OwnItem(slot, "Item_Pack4GasMask");
+                OwnItem(slot, "Item_Pack3Cigar");
+                OwnItem(slot, "Item_ShamanMask1");
+
+                // Upper body
+                OwnItem(slot, "Item_UrbanVest");
+                OwnItem(slot, "Item_NeoHarness");
+                OwnItem(slot, "Item_BikerJacket");
+                OwnItem(slot, "Item_RoadRageHarness");
+                OwnItem(slot, "Item_ShamanTop");
+                OwnItem(slot, "Item_RiotVest");
+                OwnItem(slot, "Item_RiotVestKE");
+                OwnItem(slot, "Item_BasicHoboJacket");
+                OwnItem(slot, "Item_HoboJacket2");
+                OwnItem(slot, "Item_GothJacket");
+                OwnItem(slot, "Item_Pack1CroppedJacket");
+                OwnItem(slot, "Item_LeatherVest");
+
+                // Undershirt
+                OwnItem(slot, "Item_UrbanUndershirt");
+                OwnItem(slot, "Item_NeoUndershirt");
+                OwnItem(slot, "Item_Pack2BasicShirt");
+                OwnItem(slot, "Item_CeramicPlating");
+                OwnItem(slot, "Item_BasicWifebeater");
+                OwnItem(slot, "Item_TopBlue");
+                OwnItem(slot, "Item_TopPurple");
+                OwnItem(slot, "Item_BasicTubeTop");
+                OwnItem(slot, "Item_ShamanChestpiece");
+                OwnItem(slot, "Item_Pack1TopRaider");
+
+                // Handwear
+                OwnItem(slot, "Item_UrbanGloves");
+                OwnItem(slot, "Item_NeoGlovesHigh");
+                OwnItem(slot, "Item_BikerGloves");
+                OwnItem(slot, "Item_HideBracers");
+                OwnItem(slot, "Item_RiotGloves");
+                OwnItem(slot, "Item_BagGloves");
+
+                // Footwear
+                OwnItem(slot, "Item_UrbanBoots");
+                OwnItem(slot, "Item_NeoBootsHigh");
+                OwnItem(slot, "Item_BikerBoots");
+                OwnItem(slot, "Item_BasicCombatBoots");
+                OwnItem(slot, "Item_StreetBoots");
+                OwnItem(slot, "Item_RoadRageBoots");
+                OwnItem(slot, "Item_RiotBoots");
+                OwnItem(slot, "Item_ShamanSandals");
+                OwnItem(slot, "Item_Pack4Sandals");
+                OwnItem(slot, "Item_Pack1Sneakers");
+                OwnItem(slot, "Item_Pack4TwoToneShoes");
+                OwnItem(slot, "Item_Pack2HighHeelsBoots");
+
+                // Lower body
+                OwnItem(slot, "Item_UrbanPants");
+                OwnItem(slot, "Item_NeoBelt");
+                OwnItem(slot, "Item_RoadRagePants");
+                OwnItem(slot, "Item_ShamanKilt");
+                OwnItem(slot, "Item_BasicSkirt");
+                OwnItem(slot, "Item_Pack1Skirt1");
+                OwnItem(slot, "Item_Pack1Skirt2");
+                OwnItem(slot, "Item_Pack1Skirt5");
+                OwnItem(slot, "Item_RiggerPants");
+                OwnItem(slot, "Item_StreetPants");
+                OwnItem(slot, "Item_Pack2SuitPants");
+                OwnItem(slot, "Item_Pack1JeansModern");
+                OwnItem(slot, "Item_Pack1JeansBlack");
+                OwnItem(slot, "Item_Pack1JeansBlue02");
+                OwnItem(slot, "Item_Jeans01");
+                OwnItem(slot, "Item_Jeans02");
+                OwnItem(slot, "Item_Jeans03");
+                OwnItem(slot, "Item_Jeans04");
+                OwnItem(slot, "Item_Jeans05");
+                OwnItem(slot, "Item_Jeans06");
+                OwnItem(slot, "Item_Jeans07");
+                OwnItem(slot, "Item_HotPants");
+
+                // Underwear
+                OwnItem(slot, "Item_UrbanUnderpants");
+                OwnItem(slot, "Item_NeoUnderpants");
+                OwnItem(slot, "Item_Pack1PantsKneepads");
+                OwnItem(slot, "Item_Pack1StockingsCyber");
+                OwnItem(slot, "Item_Pack1StockingsKneehigh");
+                OwnItem(slot, "Item_Pack1StockingsStripes");
+            }
+            catch
+            {
+            }
+        }
+
+        private void SeedAllHairAndBeardOptions(CareerSlot slot)
+        {
+            if (slot == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var ids = GetOrLoadHairAndBeardIds();
+                if (ids == null || ids.Count == 0)
+                {
+                    return;
+                }
+
+                for (var i = 0; i < ids.Count; i++)
+                {
+                    var itemId = ids[i];
+                    if (!IsNullOrWhiteSpace(itemId))
+                    {
+                        // Exclude specific horn items that show up in ids.json but are not desired in the creator UI.
+                        if (string.Equals(itemId, "Item_Horns1", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(itemId, "Item_HornyHorns", StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+                        OwnItem(slot, itemId);
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private List<string> GetOrLoadHairAndBeardIds()
+        {
+            try
+            {
+                var staticDataDir = _options != null ? _options.StaticDataDir : null;
+                if (IsNullOrWhiteSpace(staticDataDir) || !Directory.Exists(staticDataDir))
+                {
+                    return new List<string>();
+                }
+
+                lock (HairBeardSeedLock)
+                {
+                    if (CachedHairBeardIds != null && string.Equals(CachedHairBeardIdsSourceDir, staticDataDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return CachedHairBeardIds;
+                    }
+
+                    // Include troll horns so metatype-specific options show up in the character creator.
+                    // (ids.json includes entries like Item_HornsBasic and Item_HornyHorns)
+                    CachedHairBeardIds = LoadIdsByPrefixes(staticDataDir, new string[] { "Item_Hair", "Item_Beard", "Item_Horn" });
+                    CachedHairBeardIdsSourceDir = staticDataDir;
+
+                    try
+                    {
+                        if (_logger != null && System.Threading.Interlocked.Exchange(ref LoggedCosmeticSeed, 1) == 0)
+                        {
+                            var total = CachedHairBeardIds != null ? CachedHairBeardIds.Count : 0;
+                            var hair = 0;
+                            var beard = 0;
+                            var horn = 0;
+                            if (CachedHairBeardIds != null)
+                            {
+                                for (var i = 0; i < CachedHairBeardIds.Count; i++)
+                                {
+                                    var k = CachedHairBeardIds[i];
+                                    if (IsNullOrWhiteSpace(k)) continue;
+                                    if (k.StartsWith("Item_Hair", StringComparison.OrdinalIgnoreCase)) hair++;
+                                    else if (k.StartsWith("Item_Beard", StringComparison.OrdinalIgnoreCase)) beard++;
+                                    else if (k.StartsWith("Item_Horn", StringComparison.OrdinalIgnoreCase)) horn++;
+                                }
+                            }
+
+                            _logger.Log(new
+                            {
+                                ts = RequestLogger.UtcNowIso(),
+                                type = "cosmetic-seed-ids",
+                                staticDataDir = staticDataDir,
+                                total = total,
+                                hair = hair,
+                                beard = beard,
+                                horn = horn,
+                                sample0 = (CachedHairBeardIds != null && CachedHairBeardIds.Count > 0) ? CachedHairBeardIds[0] : null,
+                                sampleLast = (CachedHairBeardIds != null && CachedHairBeardIds.Count > 0) ? CachedHairBeardIds[CachedHairBeardIds.Count - 1] : null,
+                            });
+                        }
+                    }
+                    catch
+                    {
+                    }
+
+                    return CachedHairBeardIds;
+                }
+            }
+            catch
+            {
+                return new List<string>();
+            }
+        }
+
+        private List<string> GetOrLoadItemPackIds()
+        {
+            try
+            {
+                var staticDataDir = _options != null ? _options.StaticDataDir : null;
+                if (IsNullOrWhiteSpace(staticDataDir) || !Directory.Exists(staticDataDir))
+                {
+                    return new List<string>();
+                }
+
+                lock (ItemPackSeedLock)
+                {
+                    if (CachedItemPackIds != null && string.Equals(CachedItemPackIdsSourceDir, staticDataDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return CachedItemPackIds;
+                    }
+
+                    CachedItemPackIds = LoadItemPackIds(staticDataDir);
+                    CachedItemPackIdsSourceDir = staticDataDir;
+                    return CachedItemPackIds;
+                }
+            }
+            catch
+            {
+                return new List<string>();
+            }
+        }
+
+        private static List<string> LoadItemPackIds(string staticDataDir)
+        {
+            // Use the general prefix loader so we benefit from the raw-string fallback when JSON parsing fails.
+            return LoadIdsByPrefixes(staticDataDir, new string[] { "Item_Pack" });
+        }
+
+        private static List<string> LoadIdsByPrefixes(string staticDataDir, string[] prefixes)
+        {
+            var result = new List<string>();
+            try
+            {
+                if (IsNullOrWhiteSpace(staticDataDir) || !Directory.Exists(staticDataDir))
+                {
+                    return result;
+                }
+
+                if (prefixes == null || prefixes.Length == 0)
+                {
+                    return result;
+                }
+
+                var path = Path.Combine(staticDataDir, "ids.json");
+                if (!File.Exists(path))
+                {
+                    return result;
+                }
+
+                var json = File.ReadAllText(path, Encoding.UTF8);
+                if (IsNullOrWhiteSpace(json))
+                {
+                    return result;
+                }
+
+                // Prefer parsing the JSON into a dictionary, but fall back to a string scan if anything goes wrong.
+                // (Some .NET 3.5 JavaScriptSerializer edge-cases can return null/empty for very large objects.)
+                IDictionary root = null;
+                try
+                {
+                    root = Json.DeserializeObject(json) as IDictionary;
+                }
+                catch
+                {
+                    root = null;
+                }
+
+                if (root != null && root.Count > 0)
+                {
+                    foreach (DictionaryEntry entry in root)
+                    {
+                        var key = entry.Key as string;
+                        if (IsNullOrWhiteSpace(key))
+                        {
+                            continue;
+                        }
+
+                        for (var i = 0; i < prefixes.Length; i++)
+                        {
+                            var prefix = prefixes[i];
+                            if (IsNullOrWhiteSpace(prefix))
+                            {
+                                continue;
+                            }
+
+                            if (key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                            {
+                                result.Add(key);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (result.Count == 0)
+                {
+                    // Fallback: scan the raw JSON for quoted keys that start with our prefixes.
+                    // ids.json is a flat object, so this is safe enough for our seeding use-case.
+                    var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    for (var p = 0; p < prefixes.Length; p++)
+                    {
+                        var prefix = prefixes[p];
+                        if (IsNullOrWhiteSpace(prefix))
+                        {
+                            continue;
+                        }
+
+                        var needle = "\"" + prefix;
+                        var index = 0;
+                        while (index >= 0 && index < json.Length)
+                        {
+                            index = json.IndexOf(needle, index, StringComparison.OrdinalIgnoreCase);
+                            if (index < 0)
+                            {
+                                break;
+                            }
+
+                            // index points at opening quote.
+                            var keyStart = index + 1;
+                            var keyEnd = json.IndexOf('"', keyStart);
+                            if (keyEnd > keyStart)
+                            {
+                                var key = json.Substring(keyStart, keyEnd - keyStart);
+                                if (!IsNullOrWhiteSpace(key))
+                                {
+                                    found.Add(key);
+                                }
+                            }
+
+                            index = keyEnd > 0 ? keyEnd + 1 : (index + needle.Length);
+                        }
+                    }
+
+                    if (found.Count > 0)
+                    {
+                        foreach (var k in found)
+                        {
+                            result.Add(k);
+                        }
+                    }
+                }
+
+                result.Sort(StringComparer.OrdinalIgnoreCase);
+                return result;
+            }
+            catch
+            {
+                return result;
+            }
+        }
+
+        private static void SeedStarterFreeSkills(CareerSlot slot)
+        {
+            if (slot == null)
+            {
+                return;
+            }
+
+            if (slot.SkillTreeDefinitions == null)
+            {
+                slot.SkillTreeDefinitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
+            }
+
+            // Acquire the zero-karma "level 0" skill for each requested tree.
+            // These technical names come from static-data/metagameplay.json SkillTreeDefinitions.
+            EnsureSkill(slot, "ShamanSkillTree", "ShamanLevelSkill_0");     // summoning/conjuring
+            EnsureSkill(slot, "MageSkillTree", "MageLevelSkill_0");         // spellcasting
+            EnsureSkill(slot, "BladeSkillTree", "BladeLevelSkill_0");       // blades
+            EnsureSkill(slot, "BruteSkillTree", "BruteLevelSkill_0");       // blunt/clubs
+            EnsureSkill(slot, "PistolSkillTree", "PistolLevelSkill_0");     // pistols
+            EnsureSkill(slot, "ShotgunSkillTree", "ShotgunLevelSkill_0");   // shotguns
+            EnsureSkill(slot, "AssaultSkillTree", "AssaultLevelSkill_0");   // automatics
+            EnsureSkill(slot, "HackingSkillTree", "HackingLevelSkill_0");   // hacking
+            EnsureSkill(slot, "RiggingSkillTree", "RiggingLevelSkill_0");   // rigging
+        }
+
+        private static void EnsureSkill(CareerSlot slot, string treeTechnicalName, string skillTechnicalName)
+        {
+            if (slot == null || IsNullOrWhiteSpace(treeTechnicalName) || IsNullOrWhiteSpace(skillTechnicalName))
+            {
+                return;
+            }
+
+            if (slot.SkillTreeDefinitions == null)
+            {
+                slot.SkillTreeDefinitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
+            }
+
+            string[] existing;
+            if (!slot.SkillTreeDefinitions.TryGetValue(treeTechnicalName, out existing) || existing == null || existing.Length == 0)
+            {
+                slot.SkillTreeDefinitions[treeTechnicalName] = new string[] { skillTechnicalName };
+                return;
+            }
+
+            for (var i = 0; i < existing.Length; i++)
+            {
+                if (string.Equals(existing[i], skillTechnicalName, StringComparison.Ordinal))
+                {
+                    return;
+                }
+            }
+
+            var updated = new string[existing.Length + 1];
+            for (var i = 0; i < existing.Length; i++)
+            {
+                updated[i] = existing[i];
+            }
+            updated[existing.Length] = skillTechnicalName;
+            slot.SkillTreeDefinitions[treeTechnicalName] = updated;
+        }
+
+        private static void SeedStarterStartingInventory(CareerSlot slot)
+        {
+            if (slot == null)
+            {
+                return;
+            }
+
+            // Starting inventory request: one "worst" item of each type.
+            // These are item-definition IDs (LogicWeaponItemDefinition.Id) in static-data/metagameplay.json.
+            OwnItem(slot, "Automatics_IngramSmartgun_Tier_01");      // Used Ingram Smartgun
+            OwnItem(slot, "Spellcasting_PowerFocus_Tier_01");        // Lesser Topaz Focus (closest match)
+            OwnItem(slot, "Shotgun_RemingtonSportsman_Tier_01");     // Used Remington Sportsman
+            OwnItem(slot, "Club_NailBoard_Tier_00");                 // Old Nailboard
+            OwnItem(slot, "Pistol_AresLightfire_Tier_01");           // Ares Lightfire 60
+            OwnItem(slot, "Hacking_Mcd1Deck_Tier_01");               // Used Erika MCD-1
+            OwnItem(slot, "Conjuring_Summoning_Focus_Tier_07");       // Lesser Summoning Focus
+            OwnItem(slot, "Rigging_ControlRigInterface_Tier_01");    // Used Radio Shack Remote (closest match)
         }
 
         private static void SeedStarterCosmetics(CareerSlot slot)
@@ -593,6 +1152,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         private static void OwnItem(CareerSlot slot, string itemId)
         {
+            OwnItem(slot, itemId, 0, -1);
+        }
+
+        private static void OwnItem(CareerSlot slot, string itemId, int quality, int flavour)
+        {
             if (slot == null)
             {
                 return;
@@ -601,13 +1165,32 @@ namespace Shadowrun.LocalService.Core.Persistence
             {
                 return;
             }
+
+            // ItemSerializer writes Quality as uint8 and FlavourIndex as int16.
+            if (quality < 0)
+            {
+                quality = 0;
+            }
+            if (quality > byte.MaxValue)
+            {
+                quality = byte.MaxValue;
+            }
+            if (flavour < short.MinValue)
+            {
+                flavour = short.MinValue;
+            }
+            if (flavour > short.MaxValue)
+            {
+                flavour = short.MaxValue;
+            }
+
             if (slot.ItemPossessions == null)
             {
                 slot.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             }
 
             // Key format matches CareerInfoGenerator.BuildInventoryFromSlot(): "{ItemId}|{Quality}|{Flavour}".
-            var possessionKey = itemId + "|0|-1";
+            var possessionKey = itemId + "|" + quality.ToString(CultureInfo.InvariantCulture) + "|" + flavour.ToString(CultureInfo.InvariantCulture);
             int amount;
             if (!slot.ItemPossessions.TryGetValue(possessionKey, out amount) || amount <= 0)
             {
@@ -655,9 +1238,86 @@ namespace Shadowrun.LocalService.Core.Persistence
                 return;
             }
 
+            if (!IsGuidish(identityHash))
+            {
+                try
+                {
+                    if (_logger != null)
+                    {
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "persistence",
+                            op = "upsert-career-rejected",
+                            reason = "invalid-identity-hash",
+                            identityHash = identityHash,
+                            careerIndex = slot.Index,
+                            characterIdentifier = slot.CharacterIdentifier,
+                            characterName = slot.CharacterName,
+                        });
+                    }
+                }
+                catch
+                {
+                }
+                return;
+            }
+
             lock (_lock)
             {
-                var identity = IsGuidish(identityHash) ? NormalizeGuidish(identityHash) : GetOrCreateIdentityHash();
+                var identity = NormalizeGuidish(identityHash);
+
+                // Safety: never allow one player's career data to be persisted under another player's identity.
+                // We validate ownership using the GUID prefix of CharacterIdentifier ("{identityGuid}:{slotIndex}").
+                if (!IsNullOrWhiteSpace(slot.CharacterIdentifier))
+                {
+                    try
+                    {
+                        var raw = slot.CharacterIdentifier.Trim();
+                        var colon = raw.IndexOf(':');
+                        if (colon > 0)
+                        {
+                            var guidPart = raw.Substring(0, colon);
+                            if (IsGuidish(guidPart))
+                            {
+                                var normalizedGuidPart = NormalizeGuidish(guidPart);
+                                if (!string.Equals(normalizedGuidPart, identity, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    try
+                                    {
+                                        if (_logger != null)
+                                        {
+                                            _logger.Log(new
+                                            {
+                                                ts = RequestLogger.UtcNowIso(),
+                                                type = "persistence",
+                                                op = "upsert-career-rejected",
+                                                reason = "identity-mismatch",
+                                                identityHash = identity,
+                                                slotIdentity = normalizedGuidPart,
+                                                careerIndex = slot.Index,
+                                                characterIdentifier = slot.CharacterIdentifier,
+                                                characterName = slot.CharacterName,
+                                            });
+                                        }
+                                    }
+                                    catch
+                                    {
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // If parsing fails, fall through to normalizing the identifier.
+                    }
+                }
+
+                // Ensure identifier is always correct/stable. If the client omitted it or sent a legacy format,
+                // we normalize it. If it contained a different GUID prefix, we already rejected above.
+                slot.CharacterIdentifier = NormalizeGuidish(identity) + ":" + slot.Index.ToString(CultureInfo.InvariantCulture);
                 var account = LoadAccountForIdentityNoThrow(identity, true) ?? LoadAccountNoThrow();
 
                 var careersObj = account["Careers"];
@@ -694,9 +1354,6 @@ namespace Shadowrun.LocalService.Core.Persistence
                     SaveAccountNoThrow(account);
                     return;
                 }
-
-                // Ensure identifier is always correct/stable.
-                slot.CharacterIdentifier = NormalizeGuidish(identity) + ":" + slot.Index.ToString();
 
                 var updated = slot.ToDictionary();
                 foreach (DictionaryEntry entry in updated)
@@ -761,9 +1418,32 @@ namespace Shadowrun.LocalService.Core.Persistence
                     target.Index = index;
                 }
 
+                // Full wipe: this is the "clear slot" behavior from the client.
+                // Do not retain skills, inventory, wallets, or story progress when a career is deactivated.
+                target.Voiceset = string.Empty;
+                target.WantsBackgroundChange = false;
+                target.PrimaryWeaponItemId = string.Empty;
+                target.PrimaryWeaponInventoryKey = 0;
+                target.SecondaryWeaponItemId = string.Empty;
+                target.SecondaryWeaponInventoryKey = 1;
+                target.ArmorItemId = string.Empty;
+                target.ArmorInventoryKey = 2;
+                target.EquippedItems = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                target.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                target.SkillTreeDefinitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
+                target.Karma = 0;
+                target.Nuyen = 0;
+                target.MainCampaignCurrentChapter = 0;
+                target.MainCampaignMissionStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                target.MainCampaignInteractedNpcs = new List<string>();
+                target.Bodytype = 0UL;
+                target.SkinTextureIndex = 0;
+                target.BackgroundStory = 0UL;
+
                 target.IsOccupied = false;
                 target.CharacterName = string.Empty;
                 target.Portrait = string.Empty;
+                target.PortraitPath = string.Empty;
                 target.PendingPersistenceCreation = false;
                 target.HubId = IsNullOrWhiteSpace(hubId) ? "Act01_HUB_02" : hubId;
                 target.CharacterIdentifier = NormalizeGuidish(identity) + ":" + index.ToString();

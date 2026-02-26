@@ -51,6 +51,11 @@
       <SpecificVersion>False</SpecificVersion>
       <Private>True</Private>
     </Reference>
+    <Reference Include="Cliffhanger.ChatAndFriends.Interfaces">
+      <HintPath>..\Dependencies\Cliffhanger.ChatAndFriends.Interfaces.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
     <Reference Include="Cliffhanger.SRO.ServerClientCommons">
       <HintPath>..\Dependencies\Cliffhanger.SRO.ServerClientCommons.dll</HintPath>
       <SpecificVersion>False</SpecificVersion>
@@ -101,8 +106,21 @@
   <ItemGroup>
     <Compile Include="Career\CareerInfoGenerator.cs" />
     <Compile Include="Career\MatchConfigurationGenerator.cs" />
+    <Compile Include="AILogic\AiDecision.cs" />
+    <Compile Include="AILogic\AiMovementScorer.cs" />
+    <Compile Include="AILogic\BasicValuationContext.cs" />
+    <Compile Include="AILogic\BasicValuationFactory.cs" />
+    <Compile Include="AILogic\ConfigDrivenAiDecisionEngine.cs" />
+    <Compile Include="AILogic\EntityComponentAiBehaviourConfigLookup.cs" />
+    <Compile Include="AILogic\IAgentTemplateAiConfigLookup.cs" />
+    <Compile Include="AILogic\IAiBehaviourConfigLookup.cs" />
+    <Compile Include="AILogic\IAiDecisionEngine.cs" />
+    <Compile Include="AILogic\NullAgentTemplateAiConfigLookup.cs" />
+    <Compile Include="AILogic\NullAiDecisionEngine.cs" />
+    <Compile Include="AILogic\SkillSelectionStrategyFactory.cs" />
     <Compile Include="Persistence\LocalUserStore.cs" />
     <Compile Include="Persistence\LocalUserStore.IO.cs" />
+    <Compile Include="Persistence\FriendsStore.cs" />
     <Compile Include="Persistence\ISessionIdentityMap.cs" />
     <Compile Include="Persistence\ExpiringSessionIdentityMap.cs" />
     <Compile Include="Http\HttpStubServer.cs" />
@@ -110,10 +128,13 @@
     <Compile Include="LocalServiceOptions.cs" />
     <Compile Include="Protocols\APlayTcpStub.cs" />
     <Compile Include="Protocols\APlayTcpStub.StaticData.cs" />
+    <Compile Include="Protocols\CoopGroupHostRegistry.cs" />
     <Compile Include="Protocols\PhotonProxyTcpStub.cs" />
+    <Compile Include="Protocols\PhotonProxyTcpStub.ChatAndFriendsState.cs" />
     <Compile Include="Protocols\PhotonProxyTcpStub.Operations.cs" />
     <Compile Include="RequestLogger.cs" />
     <Compile Include="Simulation\LocalMissionLootController.cs" />
+    <Compile Include="Simulation\EncounterActivationTracker.cs" />
     <Compile Include="Simulation\NullMetagameplayrelevantChangeObserver.cs" />
     <Compile Include="Simulation\ServerSimulationSession.cs" />
     <Compile Include="Simulation\ServerSimulationSession.AiTurns.cs" />

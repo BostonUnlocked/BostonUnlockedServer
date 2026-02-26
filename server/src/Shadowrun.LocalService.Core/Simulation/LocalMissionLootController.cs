@@ -11,11 +11,15 @@ namespace Shadowrun.LocalService.Core.Simulation
 {
     internal sealed class LocalMissionLootController : IMissionLootController
     {
+        private const double AugmentedWeaponArmorChance = 0.5d;
+
         internal sealed class LootGrant
         {
             public string LootTable;
             public string ItemId;
             public int Delta;
+            public int Quality;
+            public int Flavour;
             public int SellPrice;
             public int Nuyen;
         }
@@ -82,6 +86,61 @@ namespace Shadowrun.LocalService.Core.Simulation
                 }
 
                 var definition = _staticData.MetagameplayData != null ? _staticData.MetagameplayData.GetDefinitionForItemId(rolled.ItemDefintionId) : null;
+
+                // Apply our own augmentation decision for weapon/armor drops and carry Quality/Flavour forward in LootGrant.
+                try
+                {
+                    var isWeapon = definition is LogicWeaponItemDefinition;
+                    var isArmor = false;
+                    var equipment = definition as LogicEquipmentItemDefinition;
+                    if (equipment != null)
+                    {
+                        // ItemTypeId=196821 is the armor slot (e.g. Item_EmptyArmor) and armor upgrades/mods.
+                        isArmor = equipment.ItemTypeId == 196821UL;
+                    }
+
+                    if (isWeapon || isArmor)
+                    {
+                        var shouldAugment = _random != null && _random.GetRandomDouble() < AugmentedWeaponArmorChance;
+                        if (shouldAugment)
+                        {
+                            // If the roll already produced an augmented item, keep it. Otherwise generate one now.
+                            if (rolled.Flavour == -1 && rolled.Quality == 0)
+                            {
+                                var augmented = augmentationFactory.CreateAugmentedItem(rolled.ItemDefintionId);
+                                if (augmented != null)
+                                {
+                                    rolled.Quality = augmented.Quality;
+                                    rolled.Flavour = augmented.FlavourIndex;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            rolled.Quality = 0;
+                            rolled.Flavour = -1;
+                        }
+                    }
+                }
+                catch
+                {
+                    // If anything goes wrong, keep the roll unaugmented for weapon/armor.
+                    if (definition is LogicWeaponItemDefinition)
+                    {
+                        rolled.Quality = 0;
+                        rolled.Flavour = -1;
+                    }
+                    else
+                    {
+                        var equipment = definition as LogicEquipmentItemDefinition;
+                        if (equipment != null && equipment.ItemTypeId == 196821UL)
+                        {
+                            rolled.Quality = 0;
+                            rolled.Flavour = -1;
+                        }
+                    }
+                }
+
                 var sellPrice = definition != null ? definition.SellPrice : 0;
                 var nuyen = 0;
                 if (sellPrice > 0)
@@ -106,6 +165,8 @@ namespace Shadowrun.LocalService.Core.Simulation
                         LootTable = lootTable,
                         ItemId = rolled.ItemDefintionId,
                         Delta = rolled.Delta,
+                        Quality = rolled.Quality,
+                        Flavour = rolled.Flavour,
                         SellPrice = sellPrice,
                         Nuyen = nuyen,
                     });
@@ -118,6 +179,8 @@ namespace Shadowrun.LocalService.Core.Simulation
                         LootTable = lootTable,
                         ItemId = rolled.ItemDefintionId,
                         Delta = rolled.Delta,
+                        Quality = rolled.Quality,
+                        Flavour = rolled.Flavour,
                         SellPrice = sellPrice,
                         Nuyen = nuyen,
                     });
