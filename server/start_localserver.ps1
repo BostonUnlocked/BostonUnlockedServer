@@ -2,7 +2,8 @@ param(
     [string]$BindHost = "0.0.0.0",
     [int]$Port = 80,
     [int]$APlayPort = 5055,
-    [int]$PhotonPort = 4530
+    [int]$PhotonPort = 4530,
+    [switch]$NoFileLogs
 )
 
 $ErrorActionPreference = "Stop"
@@ -88,4 +89,15 @@ if (-not (Test-Path $exe)) {
     throw "Host exe not found after build: $exe"
 }
 
-& $exe --host $BindHost --port $Port --aplay-port $APlayPort --photon-port $PhotonPort
+$argsList = @(
+    '--host', $BindHost,
+    '--port', $Port,
+    '--aplay-port', $APlayPort,
+    '--photon-port', $PhotonPort
+)
+
+if ($NoFileLogs) {
+    $argsList += '--no-file-logs'
+}
+
+& $exe @argsList

@@ -23,6 +23,7 @@ using SRO.Core.Compatibility.Gameplay.Levelrepresentation.Serialization;
 using SRO.Core.Compatibility.Logging;
 using SRO.Core.Compatibility.Math;
 using SRO.Core.Compatibility.Utilities;
+using Shadowrun.LocalService.Core.AILogic;
 
 namespace Shadowrun.LocalService.Core.Simulation
 {
@@ -44,7 +45,11 @@ namespace Shadowrun.LocalService.Core.Simulation
         private readonly GameworldController _controller;
         private readonly TurnObserver _turnObserver;
 
+        private readonly bool _enableAiLogic;
+        private readonly IAiDecisionEngine _aiDecisionEngine;
+
         private readonly LocalMissionLootController _lootController;
+        private readonly EncounterActivationTracker _encounterActivationTracker;
 
         private readonly object _lootPreviewLock;
         private readonly List<string> _pendingLootPreviews;
@@ -62,8 +67,11 @@ namespace Shadowrun.LocalService.Core.Simulation
             GameworldController controller,
             TurnObserver turnObserver,
             LocalMissionLootController lootController,
+            EncounterActivationTracker encounterActivationTracker,
             object lootPreviewLock,
-            List<string> pendingLootPreviews)
+            List<string> pendingLootPreviews,
+            bool enableAiLogic,
+            IAiDecisionEngine aiDecisionEngine)
         {
             _logger = logger;
             _peer = peer;
@@ -77,9 +85,13 @@ namespace Shadowrun.LocalService.Core.Simulation
             _controller = controller;
             _turnObserver = turnObserver;
             _lootController = lootController;
+            _encounterActivationTracker = encounterActivationTracker ?? new EncounterActivationTracker();
 
             _lootPreviewLock = lootPreviewLock ?? new object();
             _pendingLootPreviews = pendingLootPreviews ?? new List<string>();
+
+            _enableAiLogic = enableAiLogic;
+            _aiDecisionEngine = aiDecisionEngine;
         }
 
         internal LocalMissionLootController.LootGrant[] DrainPendingLoot()
@@ -107,6 +119,50 @@ namespace Shadowrun.LocalService.Core.Simulation
             }
         }
 
+        internal bool IsMissionStarted
+        {
+            get { return _simulation != null && _simulation.IsMissionStarted; }
+        }
+
+        internal bool IsMissionStopped
+        {
+            get { return _simulation != null && _simulation.IsMissionStopped; }
+        }
+
+        internal bool TryGetMissionOutcomeForPlayer(ulong playerId, out string outcome)
+        {
+            outcome = null;
+            try
+            {
+                if (_gameworld == null || _gameworld.MissionOutcomeTrackingSystem == null)
+                {
+                    return false;
+                }
+
+                var tracker = _gameworld.MissionOutcomeTrackingSystem;
+                if (!tracker.HasMissionEnded)
+                {
+                    return false;
+                }
+
+                var victors = tracker.GetVictoriousPlayers();
+                if (victors == null)
+                {
+                    return false;
+                }
+
+                // If the player is not listed as victorious, treat it as a defeat/failure.
+                var didWin = victors.Contains(playerId);
+                outcome = didWin ? "Victory" : "Defeat";
+                return true;
+            }
+            catch
+            {
+                outcome = null;
+                return false;
+            }
+        }
+
         public static ServerSimulationSession Create(
             RequestLogger logger,
             string peer,
@@ -119,7 +175,8 @@ namespace Shadowrun.LocalService.Core.Simulation
             uint seed2,
             uint seed3,
             string storyLine,
-            int chapter)
+            int chapter,
+            bool enableAiLogic)
         {
             if (logger == null) throw new ArgumentNullException("logger");
             if (staticDataDir == null) throw new ArgumentNullException("staticDataDir");
@@ -240,6 +297,12 @@ namespace Shadowrun.LocalService.Core.Simulation
             var turnObserver = new TurnObserver();
             simulation.AddTurnPhaseListener(turnObserver);
 
+            var encounterActivationTracker = new EncounterActivationTracker(logger, peer, gameworldInstance.EntitySystem);
+            if (gameworldInstance.InMissionEventObserver != null)
+            {
+                gameworldInstance.InMissionEventObserver.Add(encounterActivationTracker);
+            }
+
             controller.StartMission();
             controller.StartFirstRound();
 
@@ -297,7 +360,37 @@ namespace Shadowrun.LocalService.Core.Simulation
                 staticDataDir = staticDataDir,
             });
 
-            return new ServerSimulationSession(logger, peer, staticData, missionDefinition, matchConfiguration, levelData, random, gameworldInstance, simulation, controller, turnObserver, lootController, lootPreviewLock, pendingLootPreviews);
+            IAiDecisionEngine aiDecisionEngine;
+            if (enableAiLogic)
+            {
+                aiDecisionEngine = new ConfigDrivenAiDecisionEngine(
+                    new EntityComponentAiBehaviourConfigLookup(),
+                    new SkillSelectionStrategyFactory(),
+                    random);
+            }
+            else
+            {
+                aiDecisionEngine = new NullAiDecisionEngine();
+            }
+
+            return new ServerSimulationSession(
+                logger,
+                peer,
+                staticData,
+                missionDefinition,
+                matchConfiguration,
+                levelData,
+                random,
+                gameworldInstance,
+                simulation,
+                controller,
+                turnObserver,
+                lootController,
+                encounterActivationTracker,
+                lootPreviewLock,
+                pendingLootPreviews,
+                enableAiLogic,
+                aiDecisionEngine);
         }
 
         private static void PopulateMissionEntityTemplateResolver(MatchConfiguration matchConfiguration, ILevelData levelData, GameworldInstance gameworldInstance)
@@ -559,7 +652,7 @@ namespace Shadowrun.LocalService.Core.Simulation
             _controller.Stop();
         }
 
-        private void ExecuteCommand(
+        private bool ExecuteCommand(
             ICommand command,
             string commandName,
             int? weaponIndex,
@@ -570,7 +663,7 @@ namespace Shadowrun.LocalService.Core.Simulation
         {
             if (command == null)
             {
-                return;
+                return false;
             }
 
             float beforeStd = 0f;
@@ -647,10 +740,13 @@ namespace Shadowrun.LocalService.Core.Simulation
                     agentId = command.AgentId,
                     message = ex.Message,
                 });
-                return;
+                return false;
             }
 
             var afterTeam = _turnObserver.CurrentTeam;
+            var afterTeamId = afterTeam != null ? (int?)afterTeam.ID : null;
+            var afterTeamAi = afterTeam != null ? (bool?)afterTeam.AIControlled : null;
+            var afterActivatable = _turnObserver.CurrentActivatableMembers != null ? _turnObserver.CurrentActivatableMembers.Length : 0;
 
             try
             {
@@ -710,9 +806,9 @@ namespace Shadowrun.LocalService.Core.Simulation
                 beforeWalkRange = beforeWalkRange,
                 beforeSprintRange = beforeSprintRange,
                 beforeEffectiveMoveRange = beforeEffectiveMoveRange,
-                afterTeamId = afterTeam != null ? (int?)afterTeam.ID : null,
-                afterTeamAi = afterTeam != null ? (bool?)afterTeam.AIControlled : null,
-                afterActivatable = _turnObserver.CurrentActivatableMembers != null ? _turnObserver.CurrentActivatableMembers.Length : 0,
+                afterTeamId = afterTeamId,
+                afterTeamAi = afterTeamAi,
+                afterActivatable = afterActivatable,
                 afterStdActions = afterStd,
                 afterMoveActions = afterMove,
                 afterPosX = afterPosX,
@@ -721,6 +817,35 @@ namespace Shadowrun.LocalService.Core.Simulation
                 afterSprintRange = afterSprintRange,
                 afterEffectiveMoveRange = afterEffectiveMoveRange,
             });
+
+            // Heuristic: did this command actually advance state? Used to prevent AI loops from spamming
+            // when an action is repeatedly rejected by conditions.
+            if (beforeTeamId != afterTeamId)
+            {
+                return true;
+            }
+            if (beforeTeamAi != afterTeamAi)
+            {
+                return true;
+            }
+            if (beforeActivatable != afterActivatable)
+            {
+                return true;
+            }
+            if (beforePosX != afterPosX || beforePosY != afterPosY)
+            {
+                return true;
+            }
+            if (Math.Abs(beforeStd - afterStd) > 0.001f)
+            {
+                return true;
+            }
+            if (Math.Abs(beforeMove - afterMove) > 0.001f)
+            {
+                return true;
+            }
+
+            return false;
         }
 
         public void ExecuteFollowPath(int agentId, int targetX, int targetY)
@@ -972,15 +1097,43 @@ namespace Shadowrun.LocalService.Core.Simulation
             return simulation;
         }
 
-        public sealed class AiEndTurnAction
+        public enum AiTurnActionKind
         {
-            public AiEndTurnAction(int agentId, SeedPackage seeds)
+            FollowPath = 1,
+            ActivateActiveSkill = 2,
+        }
+
+        public sealed class AiTurnAction
+        {
+            public AiTurnAction(
+                AiTurnActionKind kind,
+                int agentId,
+                int targetX,
+                int targetY,
+                int weaponIndex,
+                int skillIndex,
+                int skillId,
+                SeedPackage seeds)
             {
+                Kind = kind;
                 AgentId = agentId;
+                TargetX = targetX;
+                TargetY = targetY;
+                WeaponIndex = weaponIndex;
+                SkillIndex = skillIndex;
+                SkillId = skillId;
                 Seeds = seeds;
             }
 
+            public AiTurnActionKind Kind { get; private set; }
             public int AgentId { get; private set; }
+            public int TargetX { get; private set; }
+            public int TargetY { get; private set; }
+
+            // ActivateActiveSkill only.
+            public int WeaponIndex { get; private set; }
+            public int SkillIndex { get; private set; }
+            public int SkillId { get; private set; }
             public SeedPackage Seeds { get; private set; }
         }
     }

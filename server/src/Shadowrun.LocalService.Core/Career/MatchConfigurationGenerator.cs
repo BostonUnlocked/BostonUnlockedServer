@@ -62,10 +62,61 @@ namespace Shadowrun.LocalService.Core.Career
             }
         }
 
+        public string GetCompressedMatchConfiguration(string mapName, Guid identityGuid, int careerIndex, string characterName, ulong playerId)
+        {
+            if (IsNullOrWhiteSpace(mapName))
+            {
+                mapName = "1_010_Prologue";
+            }
+
+            if (identityGuid == Guid.Empty)
+            {
+                identityGuid = Guid.NewGuid();
+            }
+            if (careerIndex < 0)
+            {
+                careerIndex = 0;
+            }
+            if (IsNullOrWhiteSpace(characterName))
+            {
+                characterName = "OfflineRunner";
+            }
+            if (playerId == 0UL)
+            {
+                playerId = 1UL;
+            }
+
+            lock (_cacheLock)
+            {
+                var cacheKey = mapName + "|" + identityGuid.ToString() + "|" + careerIndex.ToString() + "|" + characterName + "|" + playerId.ToString();
+                string cached;
+                if (_cache.TryGetValue(cacheKey, out cached) && !IsNullOrWhiteSpace(cached))
+                {
+                    return cached;
+                }
+
+                var generated = Generate(mapName, identityGuid, careerIndex, characterName, null, null, playerId);
+                if (!IsNullOrWhiteSpace(generated))
+                {
+                    _cache[cacheKey] = generated;
+                    return generated;
+                }
+
+                _cache[cacheKey] = string.Empty;
+                return string.Empty;
+            }
+        }
+
         public string GetCompressedMatchConfiguration(string mapName, Guid identityGuid, int careerIndex, string characterName, PlayerCharacterSnapshot[] selectedHenchmen)
         {
             // Selections can change frequently (team selection UI); keep this uncached to avoid stale rosters.
             return Generate(mapName, identityGuid, careerIndex, characterName, null, selectedHenchmen);
+        }
+
+        public string GetCompressedMatchConfiguration(string mapName, Guid identityGuid, int careerIndex, string characterName, PlayerCharacterSnapshot[] selectedHenchmen, ulong playerId)
+        {
+            // Selections can change frequently (team selection UI); keep this uncached to avoid stale rosters.
+            return Generate(mapName, identityGuid, careerIndex, characterName, null, selectedHenchmen, playerId);
         }
 
         public string GetCompressedMatchConfiguration(string mapName, Guid identityGuid, int careerIndex, CareerSlot slot)
@@ -128,20 +179,76 @@ namespace Shadowrun.LocalService.Core.Career
             return Generate(mapName, identityGuid, careerIndex, slot != null ? slot.CharacterName : null, slot, selectedHenchmen);
         }
 
+        public string GetCompressedMatchConfiguration(string mapName, Guid identityGuid, int careerIndex, CareerSlot slot, PlayerCharacterSnapshot[] selectedHenchmen, ulong playerId)
+        {
+            // Selections can change frequently (team selection UI); keep this uncached to avoid stale rosters.
+            return Generate(mapName, identityGuid, careerIndex, slot != null ? slot.CharacterName : null, slot, selectedHenchmen, playerId);
+        }
+
+        public string GetCompressedCoopMatchConfiguration(string mapName,
+            Guid identityGuidA, int careerIndexA, CareerSlot slotA,
+            Guid identityGuidB, int careerIndexB, CareerSlot slotB)
+        {
+            // Coop rosters are dynamic and depend on multiple careers; keep uncached.
+            return GenerateCoop(mapName,
+                new Guid[] { identityGuidA, identityGuidB },
+                new int[] { careerIndexA, careerIndexB },
+                new CareerSlot[] { slotA, slotB });
+        }
+
+        public string GetCompressedCoopMatchConfiguration(string mapName,
+            Guid identityGuidA, int careerIndexA, CareerSlot slotA, ulong playerIdA,
+            Guid identityGuidB, int careerIndexB, CareerSlot slotB, ulong playerIdB)
+        {
+            return GenerateCoop(mapName,
+                new Guid[] { identityGuidA, identityGuidB },
+                new int[] { careerIndexA, careerIndexB },
+                new CareerSlot[] { slotA, slotB },
+                new ulong[] { playerIdA, playerIdB });
+        }
+
+        public string GetCompressedCoopMatchConfiguration(string mapName, Guid[] identityGuids, int[] careerIndices, CareerSlot[] slots)
+        {
+            // Coop rosters are dynamic and depend on multiple careers; keep uncached.
+            return GenerateCoop(mapName, identityGuids, careerIndices, slots);
+        }
+
+        public string GetCompressedCoopMatchConfiguration(string mapName, Guid[] identityGuids, int[] careerIndices, CareerSlot[] slots, ulong[] playerIds)
+        {
+            // Coop rosters are dynamic and depend on multiple careers; keep uncached.
+            return GenerateCoop(mapName, identityGuids, careerIndices, slots, playerIds);
+        }
+
+        public string GetCompressedCoopMatchConfiguration(string mapName, Guid[] identityGuids, int[] careerIndices, CareerSlot[] slots, ulong[] playerIds, PlayerCharacterSnapshot[][] selectedHenchmenPerPlayer)
+        {
+            // Coop rosters are dynamic and depend on multiple careers; keep uncached.
+            return GenerateCoop(mapName, identityGuids, careerIndices, slots, playerIds, selectedHenchmenPerPlayer);
+        }
+
         private string Generate(string mapName, Guid identityGuid, int careerIndex, string characterName)
         {
-            return Generate(mapName, identityGuid, careerIndex, characterName, null, null);
+            return Generate(mapName, identityGuid, careerIndex, characterName, null, null, 1UL);
         }
 
         private string Generate(string mapName, Guid identityGuid, int careerIndex, string characterName, CareerSlot slot)
         {
-            return Generate(mapName, identityGuid, careerIndex, characterName, slot, null);
+            return Generate(mapName, identityGuid, careerIndex, characterName, slot, null, 1UL);
         }
 
         private string Generate(string mapName, Guid identityGuid, int careerIndex, string characterName, CareerSlot slot, PlayerCharacterSnapshot[] selectedHenchmen)
         {
+            return Generate(mapName, identityGuid, careerIndex, characterName, slot, selectedHenchmen, 1UL);
+        }
+
+        private string Generate(string mapName, Guid identityGuid, int careerIndex, string characterName, CareerSlot slot, PlayerCharacterSnapshot[] selectedHenchmen, ulong playerId)
+        {
             try
             {
+                if (playerId == 0UL)
+                {
+                    playerId = 1UL;
+                }
+
                 var matchConfig = new MatchConfiguration();
 
                 var pcInv = new PlayerCharacterInventory();
@@ -194,7 +301,7 @@ namespace Shadowrun.LocalService.Core.Career
 
                 var humanPlayer = new HumanPlayer();
                 humanPlayer.AccountHash = identityGuid.ToString();
-                humanPlayer.ID = 1UL;
+                humanPlayer.ID = playerId;
                 humanPlayer.PlayerCharacterSnapshot = pcs;
                 humanPlayer.Henchmen = selectedHenchmen ?? new PlayerCharacterSnapshot[0];
 
@@ -263,6 +370,218 @@ namespace Shadowrun.LocalService.Core.Career
                 });
                 return null;
             }
+        }
+
+        private string GenerateCoop(string mapName, Guid[] identityGuids, int[] careerIndices, CareerSlot[] slots)
+        {
+            return GenerateCoop(mapName, identityGuids, careerIndices, slots, null, null);
+        }
+
+        private string GenerateCoop(string mapName, Guid[] identityGuids, int[] careerIndices, CareerSlot[] slots, ulong[] playerIds)
+        {
+            return GenerateCoop(mapName, identityGuids, careerIndices, slots, playerIds, null);
+        }
+
+        private string GenerateCoop(string mapName, Guid[] identityGuids, int[] careerIndices, CareerSlot[] slots, ulong[] playerIds, PlayerCharacterSnapshot[][] selectedHenchmenPerPlayer)
+        {
+            try
+            {
+                if (IsNullOrWhiteSpace(mapName))
+                {
+                    mapName = "1_010_Prologue";
+                }
+
+                if (identityGuids == null || identityGuids.Length == 0)
+                {
+                    identityGuids = new Guid[] { Guid.NewGuid() };
+                }
+                if (careerIndices == null || careerIndices.Length != identityGuids.Length)
+                {
+                    careerIndices = new int[identityGuids.Length];
+                }
+                if (slots == null || slots.Length != identityGuids.Length)
+                {
+                    slots = new CareerSlot[identityGuids.Length];
+                }
+
+                for (var i = 0; i < identityGuids.Length; i++)
+                {
+                    if (identityGuids[i] == Guid.Empty)
+                    {
+                        identityGuids[i] = Guid.NewGuid();
+                    }
+                    if (careerIndices[i] < 0)
+                    {
+                        careerIndices[i] = 0;
+                    }
+                }
+
+                var matchConfig = new MatchConfiguration();
+
+                var coopPlayers = new List<IPlayer>();
+                for (var i = 0; i < identityGuids.Length; i++)
+                {
+                    var pcs = BuildPlayerSnapshot(identityGuids[i], careerIndices[i], slots[i]);
+                    var human = new HumanPlayer();
+                    human.AccountHash = identityGuids[i].ToString();
+                    var id = (ulong)(i + 1);
+                    if (playerIds != null && i < playerIds.Length && playerIds[i] != 0UL)
+                    {
+                        id = playerIds[i];
+                    }
+                    human.ID = id;
+                    human.PlayerCharacterSnapshot = pcs;
+                    if (selectedHenchmenPerPlayer != null
+                        && i < selectedHenchmenPerPlayer.Length
+                        && selectedHenchmenPerPlayer[i] != null)
+                    {
+                        human.Henchmen = selectedHenchmenPerPlayer[i];
+                    }
+                    else
+                    {
+                        human.Henchmen = new PlayerCharacterSnapshot[0];
+                    }
+                    coopPlayers.Add(human);
+                }
+
+                var teams = new List<Team>();
+
+                // Team 0 contains all human players.
+                var coopTeam = new Team(coopPlayers);
+                coopTeam.ID = 0;
+                teams.Add(coopTeam);
+
+                // Remaining teams are AI; ensure player IDs are unique and non-overlapping.
+                var nextId = 1UL;
+                for (var i = 0; i < coopPlayers.Count; i++)
+                {
+                    var p = coopPlayers[i] as IPlayer;
+                    if (p != null && p.ID >= nextId)
+                    {
+                        nextId = p.ID + 1;
+                    }
+                }
+                if (nextId < (ulong)(identityGuids.Length + 1))
+                {
+                    nextId = (ulong)(identityGuids.Length + 1);
+                }
+                for (var i = 1; i < DefaultTeamCount; i++)
+                {
+                    var ai = new AIControlledPlayer();
+                    ai.ID = nextId++;
+                    var team = new Team(ai);
+                    team.ID = i;
+                    teams.Add(team);
+                }
+
+                matchConfig.Mapname = mapName;
+                matchConfig.Teams = teams;
+
+                var blob = MissionSerializer.SerializeMatchConfiguration(matchConfig);
+                if (IsNullOrWhiteSpace(blob))
+                {
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "match-config-generate",
+                        status = "failed",
+                        reason = "serializer-returned-empty",
+                        mapName = mapName,
+                        coop = true,
+                    });
+                    return null;
+                }
+
+                // Validate base64.
+                Convert.FromBase64String(blob);
+
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "match-config-generate",
+                    status = "ok",
+                    blobLength = blob.Length,
+                    teamsCount = DefaultTeamCount,
+                    mapName = mapName,
+                    coop = true,
+                    humans = identityGuids.Length,
+                    managedDir = "Dependencies",
+                });
+
+                return blob;
+            }
+            catch (Exception ex)
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "match-config-generate",
+                    status = "failed",
+                    reason = "reflection-exception",
+                    mapName = mapName,
+                    coop = true,
+                    message = ex.Message,
+                });
+                return null;
+            }
+        }
+
+        private static PlayerCharacterSnapshot BuildPlayerSnapshot(Guid identityGuid, int careerIndex, CareerSlot slot)
+        {
+            var characterName = slot != null ? slot.CharacterName : null;
+            if (IsNullOrWhiteSpace(characterName))
+            {
+                characterName = "OfflineRunner";
+            }
+
+            var pcInv = new PlayerCharacterInventory();
+            var primaryItemId = (slot != null && !IsNullOrWhiteSpace(slot.PrimaryWeaponItemId)) ? slot.PrimaryWeaponItemId : PlayerCharacterDefaultValues.PrimaryWeapon;
+            var primaryKey = slot != null ? slot.PrimaryWeaponInventoryKey : 0;
+            pcInv.PrimaryWeapon = CreateItemWithId(primaryItemId, primaryKey);
+
+            var secondaryItemId = (slot != null && !IsNullOrWhiteSpace(slot.SecondaryWeaponItemId)) ? slot.SecondaryWeaponItemId : PlayerCharacterDefaultValues.SecondaryWeapon;
+            var secondaryKey = slot != null ? slot.SecondaryWeaponInventoryKey : 1;
+            pcInv.SecondaryWeapon = CreateItemWithId(secondaryItemId, secondaryKey);
+
+            var armorItemId = (slot != null && !IsNullOrWhiteSpace(slot.ArmorItemId)) ? slot.ArmorItemId : PlayerCharacterDefaultValues.Armor;
+            var armorKey = slot != null ? slot.ArmorInventoryKey : 2;
+            pcInv.Armor = CreateItemWithId(armorItemId, armorKey);
+
+#pragma warning disable 618 // PlayerCharacterSnapshot() is obsolete; recommended factory is in unavailable server-side DLLs.
+            var pcs = new PlayerCharacterSnapshot();
+#pragma warning restore 618
+            pcs.CharacterName = characterName;
+            pcs.CharacterIdentifier = identityGuid.ToString() + ":" + careerIndex.ToString();
+            pcs.DataVersion = 48;
+            pcs.PlayerCharacterInventory = pcInv;
+            pcs.SkillTreeDefinitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
+            if (slot != null && slot.SkillTreeDefinitions != null && slot.SkillTreeDefinitions.Count > 0)
+            {
+                foreach (var kvp in slot.SkillTreeDefinitions)
+                {
+                    if (string.IsNullOrEmpty(kvp.Key) || kvp.Value == null)
+                    {
+                        continue;
+                    }
+                    pcs.SkillTreeDefinitions[kvp.Key] = kvp.Value;
+                }
+            }
+            pcs.Wallet = new Wallet();
+            pcs.Wallet.Reset(CurrencyId.Karma, slot != null ? slot.Karma : 0, 0);
+            pcs.Wallet.Reset(CurrencyId.Nuyen, slot != null ? slot.Nuyen : 0, 0);
+            pcs.PortraitPath = (slot != null && !IsNullOrWhiteSpace(slot.PortraitPath)) ? slot.PortraitPath : PlayerCharacterDefaultValues.PortraitPath;
+            pcs.Voiceset = (slot != null && !IsNullOrWhiteSpace(slot.Voiceset)) ? slot.Voiceset : PlayerCharacterDefaultValues.Voiceset;
+            pcs.Bodytype = (slot != null && slot.Bodytype != 0UL) ? slot.Bodytype : PlayerCharacterDefaultValues.Bodytype;
+            pcs.SkinTextureIndex = (slot != null) ? slot.SkinTextureIndex : PlayerCharacterDefaultValues.SkinTextureIndex;
+            pcs.BackgroundStory = (slot != null && slot.BackgroundStory != 0UL) ? slot.BackgroundStory : PlayerCharacterDefaultValues.BackgroundStory;
+            pcs.WantsBackgroundChange = slot != null && slot.WantsBackgroundChange;
+
+            if (slot != null && slot.EquippedItems != null && slot.EquippedItems.Count > 0)
+            {
+                ApplyEquippedItems(pcInv, slot.EquippedItems);
+            }
+
+            return pcs;
         }
 
         private static Item CreateItemWithId(string itemId, int inventoryKey)
