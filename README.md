@@ -87,11 +87,11 @@ If you move/reinstall the game, re-run the extractor.
 
 The game client reads its endpoint hostnames from:
 
-- `<GameRoot>\Shadowrun_Data\resources.assets`
+* `<GameRoot>\Shadowrun_Data\resources.assets`
 
 This repo ships a patch tool executable:
 
-- `clientsetup/patch_embedded_configs.exe`
+* `clientsetup/patch_embedded_configs.exe`
 
 #### Patch for local server (127.0.0.1)
 
@@ -101,8 +101,9 @@ This repo ships a patch tool executable:
 
 Notes:
 
-- The tool creates a backup next to the asset (by default `resources.assets.bak`).
-- `--asset` is a global flag, so it must come **before** `patch`/`restore`.
+* 127.0.0.1 is the IP for localhost. Use this to play via your local server specifically. If you are connecting to a multiplayer server, this should be the public IP or hostname of the server as mentioned in [How to host your own server](#How to host your own server) and [How to connect to someone else's server](#How to connect to someone else's server)
+* The tool creates a backup next to the asset (by default `resources.assets.bak`).
+* `--asset` is a global flag, so it must come **before** `patch`/`restore`.
 
 #### Restore to connect to the normal/online servers again
 
@@ -111,6 +112,10 @@ If you patched to `127.0.0.1` and want to revert:
 ```powershell
 .\clientsetup\patch_embedded_configs.exe --asset "C:\Program Files (x86)\Steam\steamapps\common\ShadowrunChronicles\Shadowrun_Data\resources.assets" restore
 ```
+
+Notes:
+
+* `--asset` is a global flag, so it must come **before** `patch`/`restore`.
 
 Help:
 
@@ -142,7 +147,23 @@ Start the game normally, connect to the server as you would normally and play!
 
 ## How to host your own server
 
-WIP
+1. Install the server as described above
+2. Take the local server you've built/and run with the start local server script, then copy the full folder from:
+
+* \server\src\Shadowrun.LocalService.Host\bin\Release
+
+To the machine you want to host it on.
+3. Update these files
+
+* Release\Resources\config\config.xml
+* Release\Resources\config\LauncherConfig.xml
+
+To replace all instances of 127.0.0.1 with the reachable public ip / hostname of your server.
+
+**Notes:**
+
+1. If you're hosting on a LAN for local play, this can be a local IP 192.168.x.x
+2. If you want to play with other people over the Internet, it needs to be the public IP or a hostname that resolves to the public IP of your server.
 
 ## How to connect to someone else's server
 
@@ -150,28 +171,34 @@ Run steps 0, 1 and 3 from the Installation instructions but instead of 127.0.0.1
 
 ## Server progress/state (aka saves)
 
-The server persists state under:
+### Server Data Folder
 
-- `server/data/`
+The server persists state under the server data directory which can be either:
+
+* If the data directory already exists in the server's installation directory:
+
+    >`server/data/`
+
+* If the data directory does not exist in the server's installation directory, it will be saved in:
+
+    >`%LOCALAPPDATA%/ShadowrunLocalService`
 
 If you connect to someone else's server, that server is where your saves will be stored.
 
 ### Backing up server progress/state
 
-To backup all server progress, stop the server and copy this folder to where you want to back it up
-
-- `server/data/`
+To backup all server progress, stop the server and copy the server data folder to where you want to back it up
 
 ### Restoring server progress/state
 
-To restore server progress, stop the server and copy this folder from your backup into the server's corresponding directory. After starting up the server again, you will regain the progress stored.
-
-- `server/data/`
+To restore server progress, stop the server and copy the server data folder from your backup into the server's corresponding data directory. After starting up the server again, you will regain the progress stored.
 
 ### Resetting server progress/state
 
-To reset all server progress, stop the server and delete that folder:
+To reset all server progress, stop the server and delete the server data folder:
 
 ```powershell
-Remove-Item -Recurse -Force .\server\data
+Remove-Item -Recurse -Force <Server Data Folder>
 ```
+
+Where <Server Data Folder> is the appropriate location mentioned in [Server Data Folder](#Server Data Folder)
