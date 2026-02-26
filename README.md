@@ -12,7 +12,7 @@ This repo contains tooling and a C# local service that lets the Shadowrun Chroni
 This non-exhaustive list covers the main features of the server currently:
 
 1. Login to the game (Steam only for now)
-2. Host your own server - play offline solo or invite friends by sharing your IP to connect to
+2. Host your own server - play offline solo (inviting friends by sharing your publicly available IP to connect to is currently WIP)
 3. Chat, groups (hubs currently don't sync visible players but group features such as rewards, chat, playing in quests together with both visible, etc work)
 4. Working NPC AI, shops, quests, etc
 
@@ -140,6 +140,10 @@ If port 80 fails to bind, run your PowerShell terminal as Administrator.
 ### 5) Run the game and connect to the server
 
 Start the game normally, connect to the server as you would normally and play!
+
+## How to host your own server
+
+WIP
 
 ## How to connect to someone else's server
 
