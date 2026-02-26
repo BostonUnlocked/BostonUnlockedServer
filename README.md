@@ -147,6 +147,8 @@ Start the game normally, connect to the server as you would normally and play!
 
 ## How to host your own multiplayer server
 
+**We do not recommend hosting a multiplayer server from your personal computer (see Note 3 below for why)**
+
 1. Install the server as described above
 2. Take the local server you've built/and run with the start local server script, then copy the full folder from:
 
