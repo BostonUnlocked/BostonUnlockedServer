@@ -128,6 +128,7 @@ if (-not $SkipDependencies) {
 
     $dllNames = @(
         "APlayCommon.dll",
+        "Cliffhanger.ChatAndFriends.Interfaces.dll",
         "Cliffhanger.Core.Compatibility.dll",
         "Cliffhanger.GameLogic.dll",
         "Cliffhanger.SRO.ServerClientCommons.dll",
