@@ -19,19 +19,36 @@ public sealed partial class PhotonProxyTcpStub
     private readonly LocalUserStore _userStore;
     private readonly ISessionIdentityMap _sessionIdentityMap;
 
+    private readonly FriendsStore _friendsStore;
+    private readonly ChatAndFriendsState _chatAndFriends;
+    private readonly HashSet<Guid> _chatAdminAccountIds;
+    private readonly Dictionary<string, IChatCommand> _chatCommands;
+    private readonly CharacterStatePushBroker _characterStatePushBroker;
+
     private readonly ClientSerializer _serializer = new ClientSerializer();
 
     public PhotonProxyTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore)
-        : this(options, logger, userStore, null)
+        : this(options, logger, userStore, null, null)
     {
     }
 
     public PhotonProxyTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap)
+        : this(options, logger, userStore, sessionIdentityMap, null)
+    {
+    }
+
+    public PhotonProxyTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap, CharacterStatePushBroker characterStatePushBroker)
     {
         _options = options;
         _logger = logger;
         _userStore = userStore;
         _sessionIdentityMap = sessionIdentityMap;
+        _characterStatePushBroker = characterStatePushBroker ?? CharacterStatePushBroker.Shared;
+
+        _friendsStore = new FriendsStore(options, logger);
+        _chatAndFriends = new ChatAndFriendsState(this);
+        _chatAdminAccountIds = LoadChatAdminAccountIds(options);
+        _chatCommands = BuildChatCommandMap();
     }
 
     public void Run(ManualResetEvent stopEvent)
@@ -101,12 +118,18 @@ public sealed partial class PhotonProxyTcpStub
                 note = "connected",
             });
 
+            ConnectionState state = null;
             using (var stream = client.GetStream())
             {
                 var recvBuffer = new List<byte>();
                 var initCallbackSent = false;
 
-                var state = new ConnectionState();
+                state = new ConnectionState
+                {
+                    ConnectionId = Guid.NewGuid(),
+                    Endpoint = endpoint,
+                    Stream = stream,
+                };
 
                 while (!stopEvent.WaitOne(0))
                 {
@@ -308,6 +331,27 @@ public sealed partial class PhotonProxyTcpStub
                 }
             }
 
+            // Best-effort: unregister this peer from shared state.
+            try
+            {
+                _chatAndFriends.Unregister(state.ConnectionId);
+            }
+            catch
+            {
+            }
+
+            // If this disconnect caused the account to go offline (no remaining Photon connections), notify friends.
+            try
+            {
+                if (state != null && state.AccountId != Guid.Empty && (_chatAndFriends == null || !_chatAndFriends.IsAccountOnline(state.AccountId)))
+                {
+                    NotifyFriendsPresenceChanged(state.AccountId, false);
+                }
+            }
+            catch
+            {
+            }
+
             _logger.Log(new
             {
                 ts = RequestLogger.UtcNowIso(),
@@ -315,6 +359,31 @@ public sealed partial class PhotonProxyTcpStub
                 peer = endpoint,
                 note = "closed",
             });
+        }
+    }
+
+    private void NotifyFriendsPresenceChanged(Guid accountId, bool isOnline)
+    {
+        if (accountId == Guid.Empty || _friendsStore == null || _chatAndFriends == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var friendIds = _friendsStore.GetFriends(accountId);
+            for (var i = 0; i < friendIds.Count; i++)
+            {
+                var friendId = friendIds[i];
+                if (friendId == Guid.Empty || friendId == accountId)
+                {
+                    continue;
+                }
+                _chatAndFriends.PushFriendChanged(friendId, accountId, isOnline);
+            }
+        }
+        catch
+        {
         }
     }
 
@@ -454,6 +523,64 @@ public sealed partial class PhotonProxyTcpStub
         }
         return sb.ToString();
     }
+}
 
+[Flags]
+public enum CharacterStatePushPaths
+{
+    None = 0,
+    Wallet = 1,
+    Inventory = 2,
+    MetaSnapshot = 4,
+    CareerSummaries = 8,
+}
+
+public sealed class CharacterStatePushBroker
+{
+    public static readonly CharacterStatePushBroker Shared = new CharacterStatePushBroker();
+
+    private readonly object _lock = new object();
+    private readonly Dictionary<Guid, CharacterStatePushPaths> _pendingByIdentity = new Dictionary<Guid, CharacterStatePushPaths>();
+
+    public void Enqueue(Guid identityGuid, CharacterStatePushPaths paths)
+    {
+        if (identityGuid == Guid.Empty || paths == CharacterStatePushPaths.None)
+        {
+            return;
+        }
+
+        lock (_lock)
+        {
+            CharacterStatePushPaths existing;
+            if (_pendingByIdentity.TryGetValue(identityGuid, out existing))
+            {
+                _pendingByIdentity[identityGuid] = existing | paths;
+            }
+            else
+            {
+                _pendingByIdentity[identityGuid] = paths;
+            }
+        }
+    }
+
+    public bool TryDequeue(Guid identityGuid, out CharacterStatePushPaths paths)
+    {
+        paths = CharacterStatePushPaths.None;
+        if (identityGuid == Guid.Empty)
+        {
+            return false;
+        }
+
+        lock (_lock)
+        {
+            if (!_pendingByIdentity.TryGetValue(identityGuid, out paths) || paths == CharacterStatePushPaths.None)
+            {
+                return false;
+            }
+
+            _pendingByIdentity.Remove(identityGuid);
+            return true;
+        }
+    }
 }
 }

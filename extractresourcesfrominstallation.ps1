@@ -128,6 +128,7 @@ if (-not $SkipDependencies) {
 
     $dllNames = @(
         "APlayCommon.dll",
+        "Cliffhanger.ChatAndFriends.Interfaces.dll",
         "Cliffhanger.Core.Compatibility.dll",
         "Cliffhanger.GameLogic.dll",
         "Cliffhanger.SRO.ServerClientCommons.dll",
@@ -178,9 +179,9 @@ if (-not $SkipStreamingAssets) {
 
         New-DirectoryIfMissing $streamingAssetsOutDir
 
-        Write-Output "[extract] copying StreamingAssets (full folder)..."
+        Write-Output "[extract] copying StreamingAssets (excluding *.unity3d)..."
         # robocopy exit codes: 0-7 are success (files copied/extra/etc). >=8 indicates failure.
-        $null = & robocopy $streamingAssetsInDir $streamingAssetsOutDir /E /NFL /NDL /NJH /NJS /NP
+        $null = & robocopy $streamingAssetsInDir $streamingAssetsOutDir /E /XF *.unity3d /NFL /NDL /NJH /NJS /NP
         if ($LASTEXITCODE -ge 8) {
             throw "robocopy failed copying StreamingAssets (exit code $LASTEXITCODE)"
         }

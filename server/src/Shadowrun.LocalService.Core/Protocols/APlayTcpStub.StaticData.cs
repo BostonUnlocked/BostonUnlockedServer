@@ -25,12 +25,240 @@ namespace Shadowrun.LocalService.Core.Protocols
         private static Dictionary<string, StorylineInfo> _storylineMap;
         private static string _storylineMapSourceDir;
 
+        private static readonly object SkillKarmaCostMapLock = new object();
+        private static Dictionary<string, int> _skillKarmaCostMap;
+        private static string _skillKarmaCostMapSourceDir;
+
         private static JavaScriptSerializer CreateSerializer()
         {
             var serializer = new JavaScriptSerializer();
             serializer.MaxJsonLength = int.MaxValue;
             serializer.RecursionLimit = 100;
             return serializer;
+        }
+
+        private bool TryResolveSkillKarmaCost(string skillTechnicalName, out int karmaCost)
+        {
+            karmaCost = 0;
+            try
+            {
+                if (IsNullOrWhiteSpace(skillTechnicalName))
+                {
+                    return false;
+                }
+
+                var dir = _options != null ? _options.StaticDataDir : null;
+                if (IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
+                {
+                    return false;
+                }
+
+                Dictionary<string, int> map;
+                lock (SkillKarmaCostMapLock)
+                {
+                    if (_skillKarmaCostMap == null || !string.Equals(_skillKarmaCostMapSourceDir, dir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _skillKarmaCostMap = LoadSkillKarmaCostMap(dir);
+                        _skillKarmaCostMapSourceDir = dir;
+                    }
+                    map = _skillKarmaCostMap;
+                }
+
+                if (map == null || map.Count == 0)
+                {
+                    return false;
+                }
+
+                int found;
+                if (map.TryGetValue(skillTechnicalName.Trim(), out found) && found > 0)
+                {
+                    karmaCost = found;
+                    return true;
+                }
+
+                return false;
+            }
+            catch
+            {
+                karmaCost = 0;
+                return false;
+            }
+        }
+
+        private static Dictionary<string, int> LoadSkillKarmaCostMap(string staticDataDir)
+        {
+            var result = new Dictionary<string, int>(StringComparer.Ordinal);
+            try
+            {
+                var path = Path.Combine(staticDataDir, "metagameplay.json");
+                if (!File.Exists(path))
+                {
+                    return result;
+                }
+
+                var json = File.ReadAllText(path, Encoding.UTF8);
+                var root = Json.DeserializeObject(json);
+
+                object[] rootArr = null;
+                var rootDict = root as IDictionary;
+                if (rootDict != null && rootDict.Contains("Components") && rootDict["Components"] != null)
+                {
+                    rootArr = rootDict["Components"] as object[];
+                    if (rootArr == null)
+                    {
+                        var rootList = rootDict["Components"] as ArrayList;
+                        if (rootList != null)
+                        {
+                            rootArr = new object[rootList.Count];
+                            rootList.CopyTo(rootArr);
+                        }
+                    }
+                }
+                if (rootArr == null)
+                {
+                    rootArr = root as object[];
+                    if (rootArr == null)
+                    {
+                        var rootList = root as ArrayList;
+                        if (rootList != null)
+                        {
+                            rootArr = new object[rootList.Count];
+                            rootList.CopyTo(rootArr);
+                        }
+                    }
+                }
+
+                if (rootArr == null || rootArr.Length == 0)
+                {
+                    return result;
+                }
+
+                for (var i = 0; i < rootArr.Length; i++)
+                {
+                    var comp = rootArr[i] as IDictionary;
+                    if (comp == null)
+                    {
+                        continue;
+                    }
+
+                    var typeName = comp.Contains("TypeName") ? (comp["TypeName"] as string) : null;
+                    if (IsNullOrWhiteSpace(typeName) || typeName.IndexOf("SkillTreeData", StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        continue;
+                    }
+
+                    var defs = comp.Contains("SkillTreeDefinitions") ? comp["SkillTreeDefinitions"] : null;
+                    object[] defArr = defs as object[];
+                    if (defArr == null)
+                    {
+                        var list = defs as ArrayList;
+                        if (list != null)
+                        {
+                            defArr = new object[list.Count];
+                            list.CopyTo(defArr);
+                        }
+                    }
+                    if (defArr == null || defArr.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    for (var d = 0; d < defArr.Length; d++)
+                    {
+                        var def = defArr[d] as IDictionary;
+                        if (def == null)
+                        {
+                            continue;
+                        }
+
+                        var levelsObj = def.Contains("SkillLevels") ? def["SkillLevels"] : null;
+                        object[] levels = levelsObj as object[];
+                        if (levels == null)
+                        {
+                            var levelsList = levelsObj as ArrayList;
+                            if (levelsList != null)
+                            {
+                                levels = new object[levelsList.Count];
+                                levelsList.CopyTo(levels);
+                            }
+                        }
+                        if (levels == null || levels.Length == 0)
+                        {
+                            continue;
+                        }
+
+                        for (var l = 0; l < levels.Length; l++)
+                        {
+                            var level = levels[l] as IDictionary;
+                            if (level == null)
+                            {
+                                continue;
+                            }
+
+                            var skillsObj = level.Contains("SerializedSkills") ? level["SerializedSkills"] : null;
+                            object[] skills = skillsObj as object[];
+                            if (skills == null)
+                            {
+                                var skillsList = skillsObj as ArrayList;
+                                if (skillsList != null)
+                                {
+                                    skills = new object[skillsList.Count];
+                                    skillsList.CopyTo(skills);
+                                }
+                            }
+                            if (skills == null || skills.Length == 0)
+                            {
+                                continue;
+                            }
+
+                            for (var s = 0; s < skills.Length; s++)
+                            {
+                                var skill = skills[s] as IDictionary;
+                                if (skill == null)
+                                {
+                                    continue;
+                                }
+
+                                var tech = skill.Contains("TechnicalName") ? (skill["TechnicalName"] as string) : null;
+                                if (IsNullOrWhiteSpace(tech))
+                                {
+                                    continue;
+                                }
+
+                                var cost = 0;
+                                try
+                                {
+                                    if (skill.Contains("KarmaCost") && skill["KarmaCost"] != null)
+                                    {
+                                        cost = Convert.ToInt32(skill["KarmaCost"], CultureInfo.InvariantCulture);
+                                    }
+                                }
+                                catch
+                                {
+                                    cost = 0;
+                                }
+
+                                if (cost <= 0)
+                                {
+                                    continue;
+                                }
+
+                                // First write wins; costs are per-skill technical name.
+                                if (!result.ContainsKey(tech))
+                                {
+                                    result[tech] = cost;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return result;
+            }
+            catch
+            {
+                return result;
+            }
         }
 
         private bool TryResolveBodytypeId(ulong metatypeId, ulong genderId, out ulong bodytypeId)
@@ -722,6 +950,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             public string Hub;
             public List<string> RequiredMissions = new List<string>();
             public List<string> RequiredUnlocks = new List<string>();
+            public List<string> DialogNpcIds = new List<string>();
         }
 
         private bool TryGetStoryline(string storylineTechnicalName, out StorylineInfo storyline)
@@ -940,6 +1169,45 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             if (!IsNullOrWhiteSpace(missionName))
                                             {
                                                 ch.RequiredMissions.Add(missionName);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // NPCs with chapter dialogs (used for interaction-state fallback when explicit
+                                // InteractedWithNpcMessage traffic is absent in some client flows).
+                                if (chapterDict.Contains("DialogsForChapter") && chapterDict["DialogsForChapter"] != null)
+                                {
+                                    object[] dialogsArr = chapterDict["DialogsForChapter"] as object[];
+                                    if (dialogsArr == null)
+                                    {
+                                        var dialogsList = chapterDict["DialogsForChapter"] as ArrayList;
+                                        if (dialogsList != null)
+                                        {
+                                            dialogsArr = new object[dialogsList.Count];
+                                            dialogsList.CopyTo(dialogsArr);
+                                        }
+                                    }
+
+                                    if (dialogsArr != null)
+                                    {
+                                        for (var d = 0; d < dialogsArr.Length; d++)
+                                        {
+                                            var dialogDef = dialogsArr[d] as IDictionary;
+                                            if (dialogDef == null)
+                                            {
+                                                continue;
+                                            }
+
+                                            var npcId = dialogDef.Contains("Id") ? (dialogDef["Id"] as string) : null;
+                                            if (IsNullOrWhiteSpace(npcId))
+                                            {
+                                                continue;
+                                            }
+
+                                            if (!ch.DialogNpcIds.Contains(npcId))
+                                            {
+                                                ch.DialogNpcIds.Add(npcId);
                                             }
                                         }
                                     }
