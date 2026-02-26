@@ -6,6 +6,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
+import tkinter as tk
+from tkinter import filedialog
 from urllib.parse import urlsplit, urlunsplit
 import xml.etree.ElementTree as ET
 
@@ -13,8 +15,10 @@ import UnityPy
 
 
 DEFAULT_RESOURCES_ASSETS = (
-    r"d:/SteamLibrary/steamapps/common/ShadowrunChronicles/Shadowrun_Data/resources.assets"
+    r"C:\Program Files (x86)\Steam\steamapps\common\ShadowrunChronicles\Shadowrun_Data\resources.assets"
 )
+DEFAULT_INTERACTIVE_HOST = "127.0.0.1"
+REQUIRED_ASSET_FILENAME = "resources.assets"
 
 
 @dataclass
@@ -243,9 +247,23 @@ def _validate_host_arg(host: str) -> str:
     return host
 
 
+def _validate_asset_path_arg(asset_path: Path) -> None:
+    if asset_path.name != REQUIRED_ASSET_FILENAME:
+        raise ValueError(
+            f"--asset must point to a file named exactly '{REQUIRED_ASSET_FILENAME}' "
+            f"(got: '{asset_path.name}')"
+        )
+
+
 def cmd_patch(args: argparse.Namespace) -> int:
     asset_path = Path(args.asset)
     backup_path = Path(args.backup) if args.backup else asset_path.with_suffix(asset_path.suffix + ".bak")
+
+    try:
+        _validate_asset_path_arg(asset_path)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
 
     if not asset_path.exists():
         print(
@@ -285,6 +303,12 @@ def cmd_restore(args: argparse.Namespace) -> int:
     asset_path = Path(args.asset)
     backup_path = Path(args.backup) if args.backup else asset_path.with_suffix(asset_path.suffix + ".bak")
 
+    try:
+        _validate_asset_path_arg(asset_path)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
+
     if not backup_path.exists():
         print(f"ERROR: backup not found: {backup_path}", file=sys.stderr)
         return 2
@@ -293,6 +317,60 @@ def cmd_restore(args: argparse.Namespace) -> int:
     shutil.copy2(backup_path, asset_path)
     print(f"Restored: {asset_path}")
     return 0
+
+
+def _prompt_for_asset_path(default_asset: Path) -> Optional[Path]:
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected = filedialog.askopenfilename(
+            title="Select Shadowrun resources.assets [This is from your game installation, e.g. ShadowrunChronicles/Shadowrun_Data/resources.assets]",
+            initialdir=str(default_asset.parent),
+            initialfile=default_asset.name,
+            filetypes=[("resources.assets", "resources.assets"), ("All files", "*.*")],
+        )
+        root.destroy()
+    except Exception as e:
+        print(f"ERROR: could not open file picker dialog: {e}", file=sys.stderr)
+        return None
+
+    if not selected:
+        return None
+    return Path(selected)
+
+
+def _prompt_for_host(default_host: str) -> Optional[str]:
+    while True:
+        raw = input(f"Host address [{default_host}]: ").strip()
+        host = raw or default_host
+        try:
+            return _validate_host_arg(host)
+        except ValueError as e:
+            print(f"Invalid host: {e}")
+
+
+def run_interactive_patch() -> int:
+    print("No arguments supplied. Launching interactive patch mode...")
+
+    default_asset = Path(DEFAULT_RESOURCES_ASSETS)
+    asset_path = _prompt_for_asset_path(default_asset)
+    if asset_path is None:
+        print("No file selected. Aborting.", file=sys.stderr)
+        return 2
+
+    host = _prompt_for_host(DEFAULT_INTERACTIVE_HOST)
+    if host is None:
+        print("No host provided. Aborting.", file=sys.stderr)
+        return 2
+
+    args = argparse.Namespace(
+        asset=str(asset_path),
+        backup=None,
+        host=host,
+        force_backup=False,
+    )
+    return cmd_patch(args)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -331,6 +409,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    if len(sys.argv) == 1:
+        return run_interactive_patch()
+
     parser = build_parser()
     args = parser.parse_args()
     return int(args.func(args))
