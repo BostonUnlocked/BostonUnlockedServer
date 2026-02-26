@@ -28,8 +28,7 @@ As the server is currently heavily Work-In-Progress (WIP). It has the following 
 4. There's a good chance that in future when we get more things working any progress you have now won't be transferrable as we are likely to change the backing storage formats over time.
 5. All missions may not be playable yet; and similarly there may be no way to attain your favorite cosmetic / etc yet.
 6. Not all authentication paths are re-implemented, only Steam authentication works at this point.
-7. In co-op, henchmen when spawning into missions may be replaced by Payday instead of the ones selected in the mission lobby screen
-8. The AI was server-side so this re-creation may not match the original fully
+7. The AI was server-side so this re-creation may not match the original fully.
 
 ## How you can help
 
