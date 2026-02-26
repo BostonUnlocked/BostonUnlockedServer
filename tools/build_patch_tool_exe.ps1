@@ -1,6 +1,6 @@
 param(
     [ValidateSet('onefile','onedir','both')]
-    [string]$Mode = 'both',
+    [string]$Mode = 'onefile',
 
     [string]$PythonExe = "",
 
