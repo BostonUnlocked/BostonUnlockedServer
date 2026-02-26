@@ -629,6 +629,11 @@ namespace Shadowrun.LocalService.Core.Simulation
         private bool IsAgentEligibleForCombatAction(Entity agent, out string spawnManagerTag)
         {
             spawnManagerTag = null;
+            if (!HasHostileCombatTargetForAgent(agent))
+            {
+                return false;
+            }
+
             if (_encounterActivationTracker == null || _gameworld == null || _gameworld.EntitySystem == null)
             {
                 return true;
@@ -647,6 +652,69 @@ namespace Shadowrun.LocalService.Core.Simulation
 
             spawnManagerTag = spawnInfo.SpawnManagerTag;
             return _encounterActivationTracker.IsGroupEngaged(spawnManagerTag);
+        }
+
+        private bool HasHostileCombatTargetForAgent(Entity agent)
+        {
+            if (_gameworld == null || _gameworld.EntitySystem == null || agent == null)
+            {
+                return true;
+            }
+
+            TeamComponent myTeam;
+            if (!_gameworld.EntitySystem.TryGetComponent<TeamComponent>(agent, out myTeam) || myTeam == null)
+            {
+                return true;
+            }
+
+            TeamInfoComponent teamInfo;
+            if (!_gameworld.EntitySystem.TryGetComponent<TeamInfoComponent>(EnvironmentEntity.Instance, out teamInfo) || teamInfo == null)
+            {
+                return true;
+            }
+
+            var hostileTeams = teamInfo.GetAllHostileTeamsFor(myTeam.TeamID);
+            if (hostileTeams == null)
+            {
+                return false;
+            }
+
+            var hostileTeamSet = new HashSet<int>(hostileTeams);
+            if (hostileTeamSet.Count == 0)
+            {
+                return false;
+            }
+
+            foreach (var other in _gameworld.EntitySystem.GetAllEntities())
+            {
+                if (other == null || other == agent)
+                {
+                    continue;
+                }
+
+                TeamComponent otherTeam;
+                if (!_gameworld.EntitySystem.TryGetComponent<TeamComponent>(other, out otherTeam) || otherTeam == null)
+                {
+                    continue;
+                }
+
+                if (!hostileTeamSet.Contains(otherTeam.TeamID))
+                {
+                    continue;
+                }
+
+                GameplayPropertiesComponent gp;
+                if (_gameworld.EntitySystem.TryGetComponent<GameplayPropertiesComponent>(other, out gp)
+                    && gp != null
+                    && gp.InteractiveObject)
+                {
+                    continue;
+                }
+
+                return true;
+            }
+
+            return false;
         }
 
         private static string BuildAiDecisionReasoning(

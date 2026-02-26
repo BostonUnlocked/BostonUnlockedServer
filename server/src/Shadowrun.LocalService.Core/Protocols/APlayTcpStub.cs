@@ -2595,6 +2595,51 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 }
                             }
 
+                            string prepareMatchIdentifier = null;
+                            string prepareMatchPlayers = null;
+                            bool prepareMatchCoop = false;
+                            string prepareMatchMapName = null;
+                            string prepareMatchSelectedHenchmen = null;
+                            var hasPrepareMatchPayload = shared.Value.ApMsgId == 1
+                                && shared.Value.EntityId == 3
+                                && shared.Value.FieldId == 4
+                                && TryParsePrepareMatchPayload(
+                                    shared.Value.Data,
+                                    out prepareMatchIdentifier,
+                                    out prepareMatchPlayers,
+                                    out prepareMatchCoop,
+                                    out prepareMatchMapName,
+                                    out prepareMatchSelectedHenchmen);
+
+                            if (hasPrepareMatchPayload)
+                            {
+                                payloadStrings = new List<string>(4)
+                                {
+                                    prepareMatchIdentifier ?? string.Empty,
+                                    prepareMatchPlayers ?? string.Empty,
+                                    prepareMatchMapName ?? string.Empty,
+                                    prepareMatchSelectedHenchmen ?? string.Empty,
+                                };
+
+                                var selectedPreview = prepareMatchSelectedHenchmen ?? string.Empty;
+                                if (selectedPreview.Length > 320)
+                                {
+                                    selectedPreview = selectedPreview.Substring(0, 320);
+                                }
+
+                                _logger.Log(new
+                                {
+                                    ts = RequestLogger.UtcNowIso(),
+                                    type = "aplay-preparematch-decoded",
+                                    peer = peer,
+                                    matchIdentifier = prepareMatchIdentifier,
+                                    coop = prepareMatchCoop,
+                                    mapName = prepareMatchMapName,
+                                    selectedHenchmenLength = prepareMatchSelectedHenchmen != null ? prepareMatchSelectedHenchmen.Length : 0,
+                                    selectedHenchmenPreview = selectedPreview,
+                                });
+                            }
+
                             var isHubEntityCall = shared.Value.ApMsgId == 1
                                 && shared.Value.EntityId == HubEntityId;
                             if (isHubEntityCall)
@@ -3111,20 +3156,34 @@ namespace Shadowrun.LocalService.Core.Protocols
                             //   CoopGroup<guid>_On_<mapName>S, ["<account>:0", ...], <mapName>, []
                             // If we don't respond with StartMissionAccepted/StartMissionForClients, the UI will sit at
                             // "Waiting for Game Server..." forever.
-                            var isCoopMissionStart = payloadStrings.Count > 0
-                                && !IsNullOrWhiteSpace(payloadStrings[0])
-                                && payloadStrings[0].StartsWith("CoopGroup", StringComparison.OrdinalIgnoreCase)
-                                && payloadStrings[0].IndexOf("_On_", StringComparison.OrdinalIgnoreCase) >= 0;
+                            var coopIdentifier = hasPrepareMatchPayload
+                                ? prepareMatchIdentifier
+                                : (payloadStrings.Count > 0 ? payloadStrings[0] : null);
+                            var isCoopMissionStart = !IsNullOrWhiteSpace(coopIdentifier)
+                                && coopIdentifier.StartsWith("CoopGroup", StringComparison.OrdinalIgnoreCase)
+                                && coopIdentifier.IndexOf("_On_", StringComparison.OrdinalIgnoreCase) >= 0;
 
                             if (isCoopMissionStart)
                             {
-                                var coopGroupName = payloadStrings[0];
-                                var coopParsedSelections = payloadStrings.Count > 3
-                                    ? TryExtractCoopPayloadHenchmanSelections(payloadStrings[3])
-                                    : null;
+                                var coopGroupName = coopIdentifier;
+
+                                List<ParsedHenchmanSelection> coopParsedSelections = null;
+                                var selectedHenchmanParseSource = "none";
+                                if (hasPrepareMatchPayload && !IsNullOrWhiteSpace(prepareMatchSelectedHenchmen))
+                                {
+                                    coopParsedSelections = TryExtractCoopPayloadHenchmanSelections(prepareMatchSelectedHenchmen);
+                                    if (coopParsedSelections != null && coopParsedSelections.Count > 0)
+                                    {
+                                        selectedHenchmanParseSource = "preparematch-selected";
+                                    }
+                                }
 
                                 string mapName = null;
-                                if (payloadStrings.Count >= 3 && !IsNullOrWhiteSpace(payloadStrings[2]))
+                                if (hasPrepareMatchPayload && !IsNullOrWhiteSpace(prepareMatchMapName))
+                                {
+                                    mapName = prepareMatchMapName;
+                                }
+                                else if (payloadStrings.Count >= 3 && !IsNullOrWhiteSpace(payloadStrings[2]))
                                 {
                                     mapName = payloadStrings[2];
                                 }
@@ -3158,7 +3217,13 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     fieldId = shared.Value.FieldId,
                                     coopGroupName = coopGroupName,
                                     mapName = mapName,
-                                    memberList = payloadStrings.Count > 1 ? payloadStrings[1] : null,
+                                    memberList = hasPrepareMatchPayload
+                                        ? prepareMatchPlayers
+                                        : (payloadStrings.Count > 1 ? payloadStrings[1] : null),
+                                    selectedHenchmanParseSource = selectedHenchmanParseSource,
+                                    selectedHenchmenRawLength = hasPrepareMatchPayload && prepareMatchSelectedHenchmen != null
+                                        ? prepareMatchSelectedHenchmen.Length
+                                        : 0,
                                     henchSelectionCount = coopParsedSelections != null ? coopParsedSelections.Count : 0,
                                 });
 
@@ -6866,6 +6931,89 @@ namespace Shadowrun.LocalService.Core.Protocols
                 pos += byteLen;
             }
             return output;
+        }
+
+        private static bool TryParsePrepareMatchPayload(
+            byte[] data,
+            out string matchIdentifier,
+            out string players,
+            out bool coop,
+            out string mapName,
+            out string selectedHenchmen)
+        {
+            matchIdentifier = null;
+            players = null;
+            coop = false;
+            mapName = null;
+            selectedHenchmen = null;
+
+            if (data == null || data.Length < 13)
+            {
+                return false;
+            }
+
+            var pos = 0;
+            if (!TryReadUtf16LengthPrefixedString(data, ref pos, out matchIdentifier))
+            {
+                return false;
+            }
+
+            if (!TryReadUtf16LengthPrefixedString(data, ref pos, out players))
+            {
+                return false;
+            }
+
+            if (pos >= data.Length)
+            {
+                return false;
+            }
+
+            coop = data[pos++] != 0;
+
+            if (!TryReadUtf16LengthPrefixedString(data, ref pos, out mapName))
+            {
+                return false;
+            }
+
+            if (!TryReadUtf16LengthPrefixedString(data, ref pos, out selectedHenchmen))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool TryReadUtf16LengthPrefixedString(byte[] data, ref int pos, out string value)
+        {
+            value = null;
+            if (data == null || pos < 0 || pos + 4 > data.Length)
+            {
+                return false;
+            }
+
+            var strlen = ReadInt32LE(data, pos);
+            pos += 4;
+            if (strlen < 0)
+            {
+                return false;
+            }
+
+            var remaining = data.Length - pos;
+            if (strlen > (remaining / 2))
+            {
+                return false;
+            }
+
+            var byteLenLong = (long)strlen * 2L;
+            if (byteLenLong < 0 || byteLenLong > int.MaxValue)
+            {
+                return false;
+            }
+
+            var byteLen = (int)byteLenLong;
+            value = byteLen == 0 ? string.Empty : Encoding.Unicode.GetString(data, pos, byteLen);
+            pos += byteLen;
+            return true;
         }
 
         private static byte[] BuildUtf16StringPayload(params string[] values)
