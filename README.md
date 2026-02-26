@@ -145,7 +145,7 @@ If port 80 fails to bind, run your PowerShell terminal as Administrator.
 
 Start the game normally, connect to the server as you would normally and play!
 
-## How to host your own server
+## How to host your own multiplayer server
 
 1. Install the server as described above
 2. Take the local server you've built/and run with the start local server script, then copy the full folder from:
@@ -164,6 +164,7 @@ To replace all instances of 127.0.0.1 with the reachable public ip / hostname of
 
 1. If you're hosting on a LAN for local play, this can be a local IP 192.168.x.x
 2. If you want to play with other people over the Internet, it needs to be the public IP or a hostname that resolves to the public IP of your server.
+3. If you are hosting your own multiplayer server, you will need to port forward all 3 of the ports mentioned in step 4 of the installation instructions. This can cause security risks as one of them is port 80 so **hosting a multiplayer server is best done if you know how to host servers already and how to secure your system and networks**.
 
 ## How to connect to someone else's server
 
