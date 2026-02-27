@@ -12,14 +12,23 @@ namespace Shadowrun.LocalService.Core.Career
     public sealed class CareerInfoGenerator
     {
         private const string FallbackZippedCareerInfo = "Y2AAgjQGZgZ8gBeI/YGq0hhyGDIZ8hhSGYIYSoE0iFWESxMjAwA=";
+        private const string CouponGameName = "SRO";
+        private const string CouponUnlocksPlayerInfoKey = "CouponUnlocks";
 
         private readonly RequestLogger _logger;
+        private readonly LocalUserStore _userStore;
         private readonly object _cacheLock = new object();
         private readonly Dictionary<string, string> _cache = new Dictionary<string, string>(StringComparer.Ordinal);
 
         public CareerInfoGenerator(RequestLogger logger)
+            : this(logger, null)
+        {
+        }
+
+        public CareerInfoGenerator(RequestLogger logger, LocalUserStore userStore)
         {
             _logger = logger;
+            _userStore = userStore;
         }
 
         public string GetZippedCareerInfo()
@@ -36,7 +45,8 @@ namespace Shadowrun.LocalService.Core.Career
         {
             lock (_cacheLock)
             {
-                var cacheKey = identityGuid.ToString() + "|" + careerIndex.ToString() + "|" + (characterName ?? string.Empty) + "|" + (pendingPersistenceCreation ? "1" : "0") + "|";
+                var unlockCacheKey = BuildCouponUnlockCacheKey(identityGuid);
+                var cacheKey = identityGuid.ToString() + "|" + careerIndex.ToString() + "|" + (characterName ?? string.Empty) + "|" + (pendingPersistenceCreation ? "1" : "0") + "|" + unlockCacheKey;
                 string cached;
                 if (_cache.TryGetValue(cacheKey, out cached) && !IsNullOrWhiteSpace(cached))
                 {
@@ -89,10 +99,12 @@ namespace Shadowrun.LocalService.Core.Career
                 var storyKey = BuildStoryProgressKey(slot);
                 var skillKey = BuildSkillTreeKey(slot);
                 var itemKey = BuildItemPossessionsKey(slot);
+                var unlockCacheKey = BuildCouponUnlockCacheKey(identityGuid);
 
                 var karma = slot != null ? slot.Karma : 0;
+                var spentKarma = slot != null ? slot.SpentKarma : 0;
                 var nuyen = slot != null ? slot.Nuyen : 0;
-                var cacheKey = identityGuid.ToString() + "|" + careerIndex.ToString() + "|" + (characterName ?? string.Empty) + "|" + (pendingPersistenceCreation ? "1" : "0") + "|" + bodytype.ToString() + "|" + skin.ToString() + "|" + story.ToString() + "|" + portraitPath + "|" + voiceset + "|" + (wants ? "1" : "0") + "|" + karma.ToString(CultureInfo.InvariantCulture) + "|" + nuyen.ToString(CultureInfo.InvariantCulture) + "|" + equippedKey + "|" + loadoutKey + "|" + storyKey + "|" + skillKey + "|" + itemKey;
+                var cacheKey = identityGuid.ToString() + "|" + careerIndex.ToString() + "|" + (characterName ?? string.Empty) + "|" + (pendingPersistenceCreation ? "1" : "0") + "|" + bodytype.ToString() + "|" + skin.ToString() + "|" + story.ToString() + "|" + portraitPath + "|" + voiceset + "|" + (wants ? "1" : "0") + "|" + karma.ToString(CultureInfo.InvariantCulture) + "|" + spentKarma.ToString(CultureInfo.InvariantCulture) + "|" + nuyen.ToString(CultureInfo.InvariantCulture) + "|" + equippedKey + "|" + loadoutKey + "|" + storyKey + "|" + skillKey + "|" + itemKey + "|" + unlockCacheKey;
                 string cached;
                 if (_cache.TryGetValue(cacheKey, out cached) && !IsNullOrWhiteSpace(cached))
                 {
@@ -124,7 +136,7 @@ namespace Shadowrun.LocalService.Core.Career
 #pragma warning disable 618 // PlayerCharacterSnapshot() is obsolete; recommended factory is in unavailable server-side DLLs.
                 var pcs = new PlayerCharacterSnapshot();
 #pragma warning restore 618
-                var unlock = new UnlockContainer();
+                var unlock = BuildUnlockContainer(identityGuid);
                 var inventory = BuildInventoryFromSlot(slot);
                 var story = BuildStoryProgress(slot);
                 var mgd = new MetagameplayData(string.Empty, unlock, string.Empty, inventory, story);
@@ -174,7 +186,7 @@ namespace Shadowrun.LocalService.Core.Career
                     }
                 }
                 pcs.Wallet = new Wallet();
-                pcs.Wallet.Reset(CurrencyId.Karma, slot != null ? slot.Karma : 0, 0);
+                pcs.Wallet.Reset(CurrencyId.Karma, slot != null ? slot.Karma : 0, slot != null ? slot.SpentKarma : 0);
                 pcs.Wallet.Reset(CurrencyId.Nuyen, slot != null ? slot.Nuyen : 0, 0);
                 pcs.PortraitPath = (slot != null && !IsNullOrWhiteSpace(slot.PortraitPath)) ? slot.PortraitPath : PlayerCharacterDefaultValues.PortraitPath;
                 pcs.Voiceset = (slot != null && !IsNullOrWhiteSpace(slot.Voiceset)) ? slot.Voiceset : PlayerCharacterDefaultValues.Voiceset;
@@ -243,6 +255,83 @@ namespace Shadowrun.LocalService.Core.Career
                 });
                 return null;
             }
+        }
+
+        private string BuildCouponUnlockCacheKey(Guid identityGuid)
+        {
+            var unlocks = GetCouponUnlocksForIdentity(identityGuid);
+            if (unlocks.Count <= 0)
+            {
+                return string.Empty;
+            }
+
+            unlocks.Sort(StringComparer.OrdinalIgnoreCase);
+            return string.Join(";", unlocks.ToArray());
+        }
+
+        private UnlockContainer BuildUnlockContainer(Guid identityGuid)
+        {
+            var container = new UnlockContainer();
+            var unlocks = GetCouponUnlocksForIdentity(identityGuid);
+            for (var i = 0; i < unlocks.Count; i++)
+            {
+                var technicalName = unlocks[i];
+                if (IsNullOrWhiteSpace(technicalName))
+                {
+                    continue;
+                }
+
+                container.Add(new Unlock
+                {
+                    TechnicalName = technicalName,
+                    Active = true,
+                });
+            }
+
+            return container;
+        }
+
+        private List<string> GetCouponUnlocksForIdentity(Guid identityGuid)
+        {
+            var unlocks = new List<string>();
+            if (_userStore == null || identityGuid == Guid.Empty)
+            {
+                return unlocks;
+            }
+
+            try
+            {
+                var playerInfo = _userStore.GetPlayerInfo(identityGuid.ToString(), CouponGameName);
+                if (playerInfo == null)
+                {
+                    return unlocks;
+                }
+
+                string raw;
+                if (!playerInfo.TryGetValue(CouponUnlocksPlayerInfoKey, out raw) || IsNullOrWhiteSpace(raw))
+                {
+                    return unlocks;
+                }
+
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var parts = raw.Split(new[] { ';', ',', '|' }, StringSplitOptions.RemoveEmptyEntries);
+                for (var i = 0; i < parts.Length; i++)
+                {
+                    var trimmed = parts[i] != null ? parts[i].Trim() : null;
+                    if (IsNullOrWhiteSpace(trimmed) || seen.Contains(trimmed))
+                    {
+                        continue;
+                    }
+
+                    seen.Add(trimmed);
+                    unlocks.Add(trimmed);
+                }
+            }
+            catch
+            {
+            }
+
+            return unlocks;
         }
 
         private static Inventory BuildInventoryFromSlot(CareerSlot slot)

@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Web.Script.Serialization;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay;
 
@@ -21,6 +22,13 @@ namespace Shadowrun.LocalService.Core.Persistence
         private static List<string> CachedHairBeardIds;
         private static string CachedHairBeardIdsSourceDir;
         private static int LoggedCosmeticSeed;
+
+        private static readonly object CouponItemPackageLock = new object();
+        private static Dictionary<string, List<string>> CachedCouponItemPackages;
+        private static string CachedCouponItemPackagesSourceDir;
+
+        private const string CouponGameName = "SRO";
+        private const string CouponPackagesPlayerInfoKey = "CouponPackages";
 
         private static int LoggedStaticDataDir;
 
@@ -417,12 +425,12 @@ namespace Shadowrun.LocalService.Core.Persistence
         {
             lock (_lock)
             {
+                var identity = IsGuidish(identityHash) ? NormalizeGuidish(identityHash) : GetOrCreateIdentityHash();
                 var account = LoadAccountForIdentityNoThrow(identityHash, true) ?? LoadAccountNoThrow();
                 var careersObj = account["Careers"];
                 var careersList = CoerceToArrayList(careersObj);
                 if (careersList == null)
                 {
-                    var identity = IsGuidish(identityHash) ? NormalizeGuidish(identityHash) : GetOrCreateIdentityHash();
                     careersList = BuildDefaultCareers(identity);
                     account["Careers"] = careersList;
                     SaveAccountNoThrow(account);
@@ -435,6 +443,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 }
 
                 var results = new List<CareerSlot>();
+                var anyChanged = false;
                 for (var i = 0; i < careersList.Count; i++)
                 {
                     var dict = careersList[i] as IDictionary;
@@ -446,8 +455,23 @@ namespace Shadowrun.LocalService.Core.Persistence
                     var slot = CareerSlot.FromDictionary(dict);
                     if (slot != null)
                     {
+                        if (slot.IsOccupied && ApplyCouponItemPackagesToCareerNoLock(identity, slot))
+                        {
+                            var updated = slot.ToDictionary();
+                            foreach (DictionaryEntry entry in updated)
+                            {
+                                dict[entry.Key] = entry.Value;
+                            }
+                            anyChanged = true;
+                        }
+
                         results.Add(slot);
                     }
+                }
+
+                if (anyChanged)
+                {
+                    SaveAccountNoThrow(account);
                 }
 
                 results.Sort(delegate (CareerSlot a, CareerSlot b) { return a.Index.CompareTo(b.Index); });
@@ -552,6 +576,7 @@ namespace Shadowrun.LocalService.Core.Persistence
 
                         // Starting karma for newly created characters.
                         slotObj.Karma = 0;
+                        slotObj.SpentKarma = 0;
                     }
 
                     // Ensure the character creator has enough cosmetic options (hair/beard) even if the career
@@ -572,6 +597,8 @@ namespace Shadowrun.LocalService.Core.Persistence
                     SeedStarterHairAndBeardOptions(slotObj);
                     SeedAllHairAndBeardOptions(slotObj);
                 }
+
+                ApplyCouponItemPackagesToCareerNoLock(identity, slotObj);
 
                 // Ensure identifier is always correct/stable.
                 slotObj.CharacterIdentifier = NormalizeGuidish(identity) + ":" + index.ToString();
@@ -1318,6 +1345,12 @@ namespace Shadowrun.LocalService.Core.Persistence
                 // Ensure identifier is always correct/stable. If the client omitted it or sent a legacy format,
                 // we normalize it. If it contained a different GUID prefix, we already rejected above.
                 slot.CharacterIdentifier = NormalizeGuidish(identity) + ":" + slot.Index.ToString(CultureInfo.InvariantCulture);
+
+                if (slot.IsOccupied)
+                {
+                    ApplyCouponItemPackagesToCareerNoLock(identity, slot);
+                }
+
                 var account = LoadAccountForIdentityNoThrow(identity, true) ?? LoadAccountNoThrow();
 
                 var careersObj = account["Careers"];
@@ -1362,6 +1395,434 @@ namespace Shadowrun.LocalService.Core.Persistence
                 }
                 SaveAccountNoThrow(account);
             }
+        }
+
+        public bool TryResolveCouponItemPackageCode(string code, out string packageTechnicalName)
+        {
+            packageTechnicalName = null;
+            if (IsNullOrWhiteSpace(code))
+            {
+                return false;
+            }
+
+            var packages = GetOrLoadCouponItemPackagesByTechnicalName();
+            if (packages == null || packages.Count <= 0)
+            {
+                return false;
+            }
+
+            List<string> ignored;
+            if (packages.TryGetValue(code, out ignored))
+            {
+                packageTechnicalName = code;
+                return true;
+            }
+
+            var normalized = NormalizeCouponCode(code);
+            foreach (var kvp in packages)
+            {
+                if (string.Equals(NormalizeCouponCode(kvp.Key), normalized, StringComparison.OrdinalIgnoreCase))
+                {
+                    packageTechnicalName = kvp.Key;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public bool ApplyCouponItemPackageToAllCareers(string identityHash, string packageTechnicalName)
+        {
+            if (!IsGuidish(identityHash) || IsNullOrWhiteSpace(packageTechnicalName))
+            {
+                return false;
+            }
+
+            lock (_lock)
+            {
+                var identity = NormalizeGuidish(identityHash);
+                var account = LoadAccountForIdentityNoThrow(identity, true) ?? LoadAccountNoThrow();
+                var careersObj = account["Careers"];
+                var careersList = CoerceToArrayList(careersObj);
+                if (careersList == null)
+                {
+                    careersList = BuildDefaultCareers(identity);
+                    account["Careers"] = careersList;
+                }
+                else if (!(careersObj is ArrayList))
+                {
+                    account["Careers"] = careersList;
+                }
+
+                var anyChanged = false;
+                for (var i = 0; i < careersList.Count; i++)
+                {
+                    var dict = careersList[i] as IDictionary;
+                    if (dict == null)
+                    {
+                        continue;
+                    }
+
+                    var slot = CareerSlot.FromDictionary(dict);
+                    if (slot == null || !slot.IsOccupied)
+                    {
+                        continue;
+                    }
+
+                    if (!ApplyCouponItemPackageToCareerNoLock(slot, packageTechnicalName))
+                    {
+                        continue;
+                    }
+
+                    var updated = slot.ToDictionary();
+                    foreach (DictionaryEntry entry in updated)
+                    {
+                        dict[entry.Key] = entry.Value;
+                    }
+                    anyChanged = true;
+                }
+
+                if (anyChanged)
+                {
+                    SaveAccountNoThrow(account);
+                }
+
+                return anyChanged;
+            }
+        }
+
+        private bool ApplyCouponItemPackagesToCareerNoLock(string identityHash, CareerSlot slot)
+        {
+            if (slot == null || !slot.IsOccupied || !IsGuidish(identityHash))
+            {
+                return false;
+            }
+
+            var changed = false;
+            var entitled = GetCouponItemPackageEntitlementsForIdentityNoLock(identityHash);
+            if (entitled == null || entitled.Count <= 0)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < entitled.Count; i++)
+            {
+                if (ApplyCouponItemPackageToCareerNoLock(slot, entitled[i]))
+                {
+                    changed = true;
+                }
+            }
+
+            return changed;
+        }
+
+        private bool ApplyCouponItemPackageToCareerNoLock(CareerSlot slot, string packageTechnicalName)
+        {
+            if (slot == null || !slot.IsOccupied || IsNullOrWhiteSpace(packageTechnicalName))
+            {
+                return false;
+            }
+
+            if (slot.AppliedCouponItemPackages == null)
+            {
+                slot.AppliedCouponItemPackages = new List<string>();
+            }
+
+            var alreadyApplied = ListContainsIgnoreCase(slot.AppliedCouponItemPackages, packageTechnicalName);
+
+            var packages = GetOrLoadCouponItemPackagesByTechnicalName();
+            if (packages == null)
+            {
+                return false;
+            }
+
+            List<string> items;
+            if (!packages.TryGetValue(packageTechnicalName, out items) || items == null || items.Count <= 0)
+            {
+                return false;
+            }
+
+            if (slot.ItemPossessions == null)
+            {
+                slot.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            if (alreadyApplied)
+            {
+                return EnsureCouponItemPackageItemsPresentNoLock(slot, items);
+            }
+
+            for (var i = 0; i < items.Count; i++)
+            {
+                AddOwnedItemAmount(slot, items[i], 1);
+            }
+
+            slot.AppliedCouponItemPackages.Add(packageTechnicalName);
+            return true;
+        }
+
+        private static bool EnsureCouponItemPackageItemsPresentNoLock(CareerSlot slot, List<string> items)
+        {
+            if (slot == null || items == null || items.Count <= 0)
+            {
+                return false;
+            }
+
+            if (slot.ItemPossessions == null)
+            {
+                slot.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var requiredByItem = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < items.Count; i++)
+            {
+                var itemId = items[i];
+                if (IsNullOrWhiteSpace(itemId))
+                {
+                    continue;
+                }
+
+                int required;
+                if (!requiredByItem.TryGetValue(itemId, out required) || required < 0)
+                {
+                    required = 0;
+                }
+
+                if (required < int.MaxValue)
+                {
+                    required++;
+                }
+
+                requiredByItem[itemId] = required;
+            }
+
+            var changed = false;
+            foreach (var kvp in requiredByItem)
+            {
+                var possessionKey = kvp.Key + "|0|-1";
+                var required = kvp.Value;
+                int existing;
+                if (!slot.ItemPossessions.TryGetValue(possessionKey, out existing) || existing < 0)
+                {
+                    existing = 0;
+                }
+
+                if (existing >= required)
+                {
+                    continue;
+                }
+
+                var missing = required - existing;
+                AddOwnedItemAmount(slot, kvp.Key, missing);
+                changed = true;
+            }
+
+            return changed;
+        }
+
+        private List<string> GetCouponItemPackageEntitlementsForIdentityNoLock(string identityHash)
+        {
+            var packages = new List<string>();
+            if (!IsGuidish(identityHash))
+            {
+                return packages;
+            }
+
+            var playerInfo = GetPlayerInfo(identityHash, CouponGameName);
+            if (playerInfo == null)
+            {
+                return packages;
+            }
+
+            string raw;
+            if (!playerInfo.TryGetValue(CouponPackagesPlayerInfoKey, out raw) || IsNullOrWhiteSpace(raw))
+            {
+                return packages;
+            }
+
+            var seen = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            var split = raw.Split(new[] { ';', ',', '|' }, StringSplitOptions.RemoveEmptyEntries);
+            for (var i = 0; i < split.Length; i++)
+            {
+                var s = split[i] != null ? split[i].Trim() : null;
+                if (IsNullOrWhiteSpace(s) || seen.ContainsKey(s))
+                {
+                    continue;
+                }
+                seen[s] = true;
+                packages.Add(s);
+            }
+
+            return packages;
+        }
+
+        private Dictionary<string, List<string>> GetOrLoadCouponItemPackagesByTechnicalName()
+        {
+            try
+            {
+                var staticDataDir = _options != null ? _options.StaticDataDir : null;
+                if (IsNullOrWhiteSpace(staticDataDir) || !Directory.Exists(staticDataDir))
+                {
+                    return new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+                }
+
+                lock (CouponItemPackageLock)
+                {
+                    if (CachedCouponItemPackages != null && string.Equals(CachedCouponItemPackagesSourceDir, staticDataDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return CachedCouponItemPackages;
+                    }
+
+                    CachedCouponItemPackages = LoadCouponItemPackagesByTechnicalName(staticDataDir);
+                    CachedCouponItemPackagesSourceDir = staticDataDir;
+                    return CachedCouponItemPackages;
+                }
+            }
+            catch
+            {
+                return new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
+        private static Dictionary<string, List<string>> LoadCouponItemPackagesByTechnicalName(string staticDataDir)
+        {
+            var result = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                if (IsNullOrWhiteSpace(staticDataDir))
+                {
+                    return result;
+                }
+
+                var path = Path.Combine(staticDataDir, "serverData.json");
+                if (!File.Exists(path))
+                {
+                    return result;
+                }
+
+                var json = File.ReadAllText(path, Encoding.UTF8);
+                if (IsNullOrWhiteSpace(json))
+                {
+                    return result;
+                }
+
+                var packagePattern =
+                    "\\\"TypeName\\\"\\s*:\\s*\\\"Cliffhanger\\.SRO\\.ServerClientCommons\\.Definitions\\.ItemPackageDefinition, Cliffhanger\\.SRO\\.ServerClientCommons\\\"" +
+                    "\\s*,\\s*\\\"TechnicalName\\\"\\s*:\\s*\\\"(?<name>[^\\\"]+)\\\"" +
+                    "\\s*,\\s*\\\"Items\\\"\\s*:\\s*\\[(?<items>.*?)\\]";
+
+                var packageRegex = new Regex(packagePattern, RegexOptions.Singleline | RegexOptions.IgnoreCase);
+                var itemRegex = new Regex("\\\"(?<item>[^\\\"]+)\\\"", RegexOptions.Singleline);
+
+                var matches = packageRegex.Matches(json);
+                for (var i = 0; i < matches.Count; i++)
+                {
+                    var match = matches[i];
+                    if (match == null)
+                    {
+                        continue;
+                    }
+
+                    var name = match.Groups["name"] != null ? match.Groups["name"].Value : null;
+                    if (IsNullOrWhiteSpace(name))
+                    {
+                        continue;
+                    }
+
+                    var itemsBlob = match.Groups["items"] != null ? match.Groups["items"].Value : null;
+                    var items = new List<string>();
+                    if (!IsNullOrWhiteSpace(itemsBlob))
+                    {
+                        var itemMatches = itemRegex.Matches(itemsBlob);
+                        for (var itemIndex = 0; itemIndex < itemMatches.Count; itemIndex++)
+                        {
+                            var itemMatch = itemMatches[itemIndex];
+                            var itemId = itemMatch != null && itemMatch.Groups["item"] != null ? itemMatch.Groups["item"].Value : null;
+                            if (!IsNullOrWhiteSpace(itemId))
+                            {
+                                items.Add(itemId);
+                            }
+                        }
+                    }
+
+                    if (items.Count > 0)
+                    {
+                        result[name] = items;
+                    }
+                }
+            }
+            catch
+            {
+                return new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            return result;
+        }
+
+        private static string NormalizeCouponCode(string value)
+        {
+            if (IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var sb = new StringBuilder(value.Length);
+            for (var i = 0; i < value.Length; i++)
+            {
+                var ch = value[i];
+                if (char.IsLetterOrDigit(ch))
+                {
+                    sb.Append(char.ToUpperInvariant(ch));
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        private static bool ListContainsIgnoreCase(List<string> list, string value)
+        {
+            if (list == null || IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            for (var i = 0; i < list.Count; i++)
+            {
+                if (string.Equals(list[i], value, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static void AddOwnedItemAmount(CareerSlot slot, string itemId, int amount)
+        {
+            if (slot == null || IsNullOrWhiteSpace(itemId) || amount <= 0)
+            {
+                return;
+            }
+
+            if (slot.ItemPossessions == null)
+            {
+                slot.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var possessionKey = itemId + "|0|-1";
+            int existing;
+            if (!slot.ItemPossessions.TryGetValue(possessionKey, out existing) || existing < 0)
+            {
+                existing = 0;
+            }
+
+            if (existing > int.MaxValue - amount)
+            {
+                slot.ItemPossessions[possessionKey] = int.MaxValue;
+                return;
+            }
+
+            slot.ItemPossessions[possessionKey] = existing + amount;
         }
 
         public CareerSlot DeactivateCareerSlot(int index, string hubId)
@@ -1432,6 +1893,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 target.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                 target.SkillTreeDefinitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
                 target.Karma = 0;
+                target.SpentKarma = 0;
                 target.Nuyen = 0;
                 target.MainCampaignCurrentChapter = 0;
                 target.MainCampaignMissionStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -1506,6 +1968,8 @@ namespace Shadowrun.LocalService.Core.Persistence
         public Dictionary<string, string> EquippedItems;
         // Spendable karma (skill currency). This is what the hub UI displays.
         public int Karma;
+        // Cumulative spent karma used for progression reference (Karma + SpentKarma).
+        public int SpentKarma;
         // Spendable nuyen (cash). This is what the hub UI displays.
         public int Nuyen;
         public string CharacterIdentifier;
@@ -1530,6 +1994,9 @@ namespace Shadowrun.LocalService.Core.Persistence
         // Key format: "{ItemId}|{Quality}|{Flavour}" (quality/flavour default to 0/-1).
         public Dictionary<string, int> ItemPossessions;
 
+        // Account-level coupon item packs that have already been materialized into this career's inventory.
+        public List<string> AppliedCouponItemPackages;
+
         public IDictionary ToDictionary()
         {
             var dict = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
@@ -1548,6 +2015,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             dict["ArmorInventoryKey"] = ArmorInventoryKey;
             dict["EquippedItems"] = EquippedItems ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             dict["Karma"] = Karma;
+            dict["SpentKarma"] = SpentKarma;
             dict["Nuyen"] = Nuyen;
             dict["CharacterIdentifier"] = CharacterIdentifier ?? string.Empty;
             dict["PendingPersistenceCreation"] = PendingPersistenceCreation;
@@ -1560,6 +2028,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             dict["MainCampaignMissionStates"] = MainCampaignMissionStates ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             dict["MainCampaignInteractedNpcs"] = MainCampaignInteractedNpcs ?? new List<string>();
             dict["ItemPossessions"] = ItemPossessions ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            dict["AppliedCouponItemPackages"] = AppliedCouponItemPackages ?? new List<string>();
             return dict;
         }
 
@@ -1600,6 +2069,12 @@ namespace Shadowrun.LocalService.Core.Persistence
                 if (dict.Contains("Karma")) slot.Karma = Convert.ToInt32(dict["Karma"]);
             }
             catch { slot.Karma = 0; }
+
+            try
+            {
+                if (dict.Contains("SpentKarma")) slot.SpentKarma = Convert.ToInt32(dict["SpentKarma"]);
+            }
+            catch { slot.SpentKarma = 0; }
 
             try
             {
@@ -1644,6 +2119,12 @@ namespace Shadowrun.LocalService.Core.Persistence
                 if (dict.Contains("Karma") && dict["Karma"] != null) slot.Karma = Convert.ToInt32(dict["Karma"]);
             }
             catch { slot.Karma = 0; }
+
+            try
+            {
+                if (dict.Contains("SpentKarma") && dict["SpentKarma"] != null) slot.SpentKarma = Convert.ToInt32(dict["SpentKarma"]);
+            }
+            catch { slot.SpentKarma = 0; }
 
             try
             {
@@ -1849,6 +2330,40 @@ namespace Shadowrun.LocalService.Core.Persistence
             catch
             {
                 slot.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            slot.AppliedCouponItemPackages = new List<string>();
+            try
+            {
+                if (dict.Contains("AppliedCouponItemPackages") && dict["AppliedCouponItemPackages"] != null)
+                {
+                    var asObjArray = dict["AppliedCouponItemPackages"] as object[];
+                    if (asObjArray == null)
+                    {
+                        var asList = dict["AppliedCouponItemPackages"] as ArrayList;
+                        if (asList != null)
+                        {
+                            asObjArray = new object[asList.Count];
+                            asList.CopyTo(asObjArray);
+                        }
+                    }
+
+                    if (asObjArray != null)
+                    {
+                        for (var i = 0; i < asObjArray.Length; i++)
+                        {
+                            var s = asObjArray[i] as string;
+                            if (!IsNullOrWhiteSpace(s) && !slot.AppliedCouponItemPackages.Contains(s))
+                            {
+                                slot.AppliedCouponItemPackages.Add(s);
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                slot.AppliedCouponItemPackages = new List<string>();
             }
             return slot;
         }

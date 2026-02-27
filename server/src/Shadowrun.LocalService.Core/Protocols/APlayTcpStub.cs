@@ -922,7 +922,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             var wallet = new Wallet();
             try
             {
-                wallet.Reset(CurrencyId.Karma, slot != null ? slot.Karma : 0, 0);
+                wallet.Reset(CurrencyId.Karma, slot != null ? slot.Karma : 0, slot != null ? slot.SpentKarma : 0);
                 wallet.Reset(CurrencyId.Nuyen, slot != null ? slot.Nuyen : 0, 0);
             }
             catch
@@ -1181,7 +1181,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             return -1;
         }
 
-        private static PlayerCharacterSnapshot CloneHenchSnapshotForMission(PlayerCharacterSnapshot src, Guid ownerAccountGuid, int slotIndex, int ownerKarma, int ownerNuyen)
+        private static PlayerCharacterSnapshot CloneHenchSnapshotForMission(PlayerCharacterSnapshot src, Guid ownerAccountGuid, int slotIndex, int ownerKarma, int ownerSpentKarma, int ownerNuyen)
         {
             if (src == null)
             {
@@ -1263,7 +1263,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             clone.Wallet = new Wallet();
-            clone.Wallet.Reset(CurrencyId.Karma, ownerKarma, 0);
+            clone.Wallet.Reset(CurrencyId.Karma, ownerKarma, ownerSpentKarma);
             clone.Wallet.Reset(CurrencyId.Nuyen, ownerNuyen, 0);
 
             return clone;
@@ -1324,7 +1324,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     snapshot.WantsBackgroundChange = slot != null && slot.WantsBackgroundChange;
                     if (snapshot.Wallet != null)
                     {
-                        snapshot.Wallet.Reset(CurrencyId.Karma, slot != null ? slot.Karma : 0, 0);
+                        snapshot.Wallet.Reset(CurrencyId.Karma, slot != null ? slot.Karma : 0, slot != null ? slot.SpentKarma : 0);
                         snapshot.Wallet.Reset(CurrencyId.Nuyen, slot != null ? slot.Nuyen : 0, 0);
                     }
 
@@ -1401,8 +1401,9 @@ namespace Shadowrun.LocalService.Core.Protocols
             if (snapshot.Wallet != null)
             {
                 var karma = slot != null ? slot.Karma : 0;
+                var spentKarma = slot != null ? slot.SpentKarma : 0;
                 var nuyen = slot != null ? slot.Nuyen : 0;
-                snapshot.Wallet.Reset(CurrencyId.Karma, karma, 0);
+                snapshot.Wallet.Reset(CurrencyId.Karma, karma, spentKarma);
                 snapshot.Wallet.Reset(CurrencyId.Nuyen, nuyen, 0);
             }
 
@@ -1732,7 +1733,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             _logger = logger;
             _userStore = userStore ?? new LocalUserStore(options, logger);
             _sessionIdentityMap = sessionIdentityMap;
-            _careerInfoGenerator = new CareerInfoGenerator(logger);
+            _careerInfoGenerator = new CareerInfoGenerator(logger, _userStore);
             _matchConfigurationGenerator = new MatchConfigurationGenerator(logger);
             _characterStatePushBroker = characterStatePushBroker ?? CharacterStatePushBroker.Shared;
         }
@@ -3424,6 +3425,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                     if (snapshots != null && snapshots.Count > 0)
                                                     {
                                                         var ownerKarma = slots[i] != null ? slots[i].Karma : 0;
+                                                        var ownerSpentKarma = slots[i] != null ? slots[i].SpentKarma : 0;
                                                         var ownerNuyen = slots[i] != null ? slots[i].Nuyen : 0;
 
                                                         var resolved = new List<PlayerCharacterSnapshot>();
@@ -3436,7 +3438,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                             }
 
                                                             var src = snapshots[selection.HenchmanId];
-                                                            var clone = CloneHenchSnapshotForMission(src, guid, si, ownerKarma, ownerNuyen);
+                                                            var clone = CloneHenchSnapshotForMission(src, guid, si, ownerKarma, ownerSpentKarma, ownerNuyen);
                                                             if (clone != null)
                                                             {
                                                                 resolved.Add(clone);
@@ -3810,8 +3812,27 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             // Deduct karma for new purchases (best-effort). Never go negative.
                                             if (!applyReset && karmaCostApplied > 0)
                                             {
-                                                var next = slot.Karma - karmaCostApplied;
-                                                slot.Karma = next >= 0 ? next : 0;
+                                                var spendApplied = karmaCostApplied;
+                                                if (spendApplied > slot.Karma)
+                                                {
+                                                    spendApplied = slot.Karma;
+                                                }
+                                                if (spendApplied < 0)
+                                                {
+                                                    spendApplied = 0;
+                                                }
+                                                slot.Karma = slot.Karma - spendApplied;
+                                                try
+                                                {
+                                                    checked
+                                                    {
+                                                        slot.SpentKarma = slot.SpentKarma + spendApplied;
+                                                    }
+                                                }
+                                                catch
+                                                {
+                                                    slot.SpentKarma = int.MaxValue;
+                                                }
                                             }
 
                                             try { _userStore.UpsertCareer(activeIdentityHash, slot); } catch { }
@@ -4420,6 +4441,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                                 // Starting karma for a brand new runner.
                                                 slot.Karma = 0;
+                                                slot.SpentKarma = 0;
 
                                                 // Reset main campaign progression for a brand new runner.
                                                 slot.MainCampaignMissionStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -5394,6 +5416,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         if (snapshots != null && snapshots.Count > 0)
                                         {
                                             var ownerKarma = 0;
+                                            var ownerSpentKarma = 0;
                                             var ownerNuyen = 0;
                                             CareerSlot slotForWallet = null;
                                             if (_userStore != null)
@@ -5410,6 +5433,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             if (slotForWallet != null)
                                             {
                                                 ownerKarma = slotForWallet.Karma;
+                                                ownerSpentKarma = slotForWallet.SpentKarma;
                                                 ownerNuyen = slotForWallet.Nuyen;
                                             }
 
@@ -5425,7 +5449,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 }
 
                                                 var src = snapshots[selection.HenchmanId];
-                                                var clone = CloneHenchSnapshotForMission(src, activeIdentityGuid, i, ownerKarma, ownerNuyen);
+                                                var clone = CloneHenchSnapshotForMission(src, activeIdentityGuid, i, ownerKarma, ownerSpentKarma, ownerNuyen);
                                                 if (clone != null)
                                                 {
                                                     resolved.Add(clone);

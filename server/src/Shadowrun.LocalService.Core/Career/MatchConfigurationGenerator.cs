@@ -285,7 +285,7 @@ namespace Shadowrun.LocalService.Core.Career
                     }
                 }
                 pcs.Wallet = new Wallet();
-                pcs.Wallet.Reset(CurrencyId.Karma, slot != null ? slot.Karma : 0, 0);
+                pcs.Wallet.Reset(CurrencyId.Karma, slot != null ? slot.Karma : 0, slot != null ? slot.SpentKarma : 0);
                 pcs.Wallet.Reset(CurrencyId.Nuyen, slot != null ? slot.Nuyen : 0, 0);
                 pcs.PortraitPath = (slot != null && !IsNullOrWhiteSpace(slot.PortraitPath)) ? slot.PortraitPath : PlayerCharacterDefaultValues.PortraitPath;
                 pcs.Voiceset = (slot != null && !IsNullOrWhiteSpace(slot.Voiceset)) ? slot.Voiceset : PlayerCharacterDefaultValues.Voiceset;
@@ -567,7 +567,7 @@ namespace Shadowrun.LocalService.Core.Career
                 }
             }
             pcs.Wallet = new Wallet();
-            pcs.Wallet.Reset(CurrencyId.Karma, slot != null ? slot.Karma : 0, 0);
+            pcs.Wallet.Reset(CurrencyId.Karma, slot != null ? slot.Karma : 0, slot != null ? slot.SpentKarma : 0);
             pcs.Wallet.Reset(CurrencyId.Nuyen, slot != null ? slot.Nuyen : 0, 0);
             pcs.PortraitPath = (slot != null && !IsNullOrWhiteSpace(slot.PortraitPath)) ? slot.PortraitPath : PlayerCharacterDefaultValues.PortraitPath;
             pcs.Voiceset = (slot != null && !IsNullOrWhiteSpace(slot.Voiceset)) ? slot.Voiceset : PlayerCharacterDefaultValues.Voiceset;

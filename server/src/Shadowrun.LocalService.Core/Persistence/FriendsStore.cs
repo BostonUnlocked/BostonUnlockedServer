@@ -55,15 +55,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                     return new List<Guid>();
                 }
 
-                var list = raw as object[];
-                if (list == null)
-                {
-                    var stringList = raw as List<object>;
-                    if (stringList != null)
-                    {
-                        list = stringList.ToArray();
-                    }
-                }
+                var list = ConvertToStringList(raw);
 
                 var result = new List<Guid>();
                 if (list == null)
@@ -71,9 +63,9 @@ namespace Shadowrun.LocalService.Core.Persistence
                     return result;
                 }
 
-                for (var i = 0; i < list.Length; i++)
+                for (var i = 0; i < list.Count; i++)
                 {
-                    var s = list[i] != null ? list[i].ToString() : null;
+                    var s = list[i];
                     Guid g;
                     if (TryParseGuidish(s, out g) && g != Guid.Empty)
                     {
@@ -131,27 +123,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 return;
             }
 
-            var list = raw as List<string>;
-            if (list == null)
-            {
-                var objList = raw as List<object>;
-                if (objList != null)
-                {
-                    list = new List<string>();
-                    for (var i = 0; i < objList.Count; i++)
-                    {
-                        if (objList[i] != null)
-                        {
-                            list.Add(objList[i].ToString());
-                        }
-                    }
-                }
-            }
-
-            if (list == null)
-            {
-                list = new List<string>();
-            }
+            var list = ConvertToStringList(raw) ?? new List<string>();
 
             for (var i = 0; i < list.Count; i++)
             {
@@ -177,33 +149,64 @@ namespace Shadowrun.LocalService.Core.Persistence
                 return;
             }
 
-            var list = raw as List<object>;
-            if (list != null)
+            var list = ConvertToStringList(raw);
+            if (list == null)
             {
-                for (var i = list.Count - 1; i >= 0; i--)
-                {
-                    var s = list[i] != null ? list[i].ToString() : null;
-                    if (string.Equals(NormalizeGuidish(s), toKey, StringComparison.OrdinalIgnoreCase))
-                    {
-                        list.RemoveAt(i);
-                    }
-                }
-                friends[fromKey] = list;
                 return;
+            }
+
+            for (var i = list.Count - 1; i >= 0; i--)
+            {
+                if (string.Equals(NormalizeGuidish(list[i]), toKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    list.RemoveAt(i);
+                }
+            }
+            friends[fromKey] = list;
+        }
+
+        private static List<string> ConvertToStringList(object raw)
+        {
+            if (raw == null)
+            {
+                return null;
             }
 
             var strList = raw as List<string>;
             if (strList != null)
             {
-                for (var i = strList.Count - 1; i >= 0; i--)
+                return strList;
+            }
+
+            var objList = raw as List<object>;
+            if (objList != null)
+            {
+                var converted = new List<string>(objList.Count);
+                for (var i = 0; i < objList.Count; i++)
                 {
-                    if (string.Equals(NormalizeGuidish(strList[i]), toKey, StringComparison.OrdinalIgnoreCase))
+                    if (objList[i] != null)
                     {
-                        strList.RemoveAt(i);
+                        converted.Add(objList[i].ToString());
                     }
                 }
-                friends[fromKey] = strList;
+                return converted;
             }
+
+            var arr = raw as object[];
+            if (arr != null)
+            {
+                var converted = new List<string>(arr.Length);
+                for (var i = 0; i < arr.Length; i++)
+                {
+                    if (arr[i] != null)
+                    {
+                        converted.Add(arr[i].ToString());
+                    }
+                }
+                return converted;
+            }
+
+            return null;
         }
 
         private Dictionary<string, object> LoadNoThrow()
