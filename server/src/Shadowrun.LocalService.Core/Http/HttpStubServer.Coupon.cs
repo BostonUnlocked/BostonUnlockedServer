@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Text;
+using System.Globalization;
 
 namespace Shadowrun.LocalService.Core.Http
 {
@@ -9,6 +10,7 @@ namespace Shadowrun.LocalService.Core.Http
     {
         private const string CouponGameName = "SRO";
         private const string CouponUnlocksPlayerInfoKey = "CouponUnlocks";
+        private const string CouponPackagesPlayerInfoKey = "CouponPackages";
         private const string CouponHistoryPlayerInfoKey = "CouponHistory";
         private static readonly Dictionary<string, string> CouponCodeToUnlock = CreateCouponCodeToUnlockMap();
 
@@ -55,8 +57,23 @@ namespace Shadowrun.LocalService.Core.Http
                 return JsonResponse(200, BuildRedeemCouponResult(1, "InvalidRequest", null, null));
             }
 
+            string unlockTechnicalName;
+            if (!TryResolveCouponUnlockTechnicalName(code, out unlockTechnicalName))
+            {
+                unlockTechnicalName = null;
+            }
+
             string packageTechnicalName;
-            if (!TryResolveCouponPackageTechnicalName(code, out packageTechnicalName))
+            if (_userStore != null && _userStore.TryResolveCouponItemPackageCode(code, out packageTechnicalName))
+            {
+                // packageTechnicalName resolved
+            }
+            else
+            {
+                packageTechnicalName = null;
+            }
+
+            if (IsNullOrWhiteSpace(unlockTechnicalName) && IsNullOrWhiteSpace(packageTechnicalName))
             {
                 return JsonResponse(200, BuildRedeemCouponResult(2, "InvalidCoupon", null, null));
             }
@@ -65,17 +82,26 @@ namespace Shadowrun.LocalService.Core.Http
             IDictionary existing;
             if (TryFindActiveCouponByCode(history, code, out existing))
             {
-                var existingTechnicalName = GetString(existing, "PackageTechnicalName") ?? packageTechnicalName;
+                var existingTechnicalName = GetString(existing, "PackageTechnicalName")
+                    ?? GetString(existing, "UnlockTechnicalName")
+                    ?? packageTechnicalName
+                    ?? unlockTechnicalName;
                 return JsonResponse(200, BuildRedeemCouponResult(3, "AlreadyRedeemed", GetCouponPackageDisplayName(existingTechnicalName), existingTechnicalName));
             }
 
             var unlocks = LoadCouponUnlocks(accountId);
-            if (!ContainsIgnoreCase(unlocks, packageTechnicalName))
+            if (!IsNullOrWhiteSpace(unlockTechnicalName) && !ContainsIgnoreCase(unlocks, unlockTechnicalName))
             {
-                unlocks.Add(packageTechnicalName);
+                unlocks.Add(unlockTechnicalName);
             }
 
-            var now = DateTime.UtcNow;
+            var packages = LoadCouponPackages(accountId);
+            if (!IsNullOrWhiteSpace(packageTechnicalName) && !ContainsIgnoreCase(packages, packageTechnicalName))
+            {
+                packages.Add(packageTechnicalName);
+            }
+
+            var now = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
             history.Add(new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
             {
                 { "CouponCode", code },
@@ -83,11 +109,19 @@ namespace Shadowrun.LocalService.Core.Http
                 { "TimeClaimed", now },
                 { "TimeReturned", null },
                 { "PackageTechnicalName", packageTechnicalName },
-                { "PackageName", GetCouponPackageDisplayName(packageTechnicalName) },
+                { "UnlockTechnicalName", unlockTechnicalName },
+                { "PackageName", GetCouponPackageDisplayName(packageTechnicalName ?? unlockTechnicalName) },
             });
 
-            SaveCouponState(accountId, unlocks, history);
-            return JsonResponse(200, BuildRedeemCouponResult(0, "OK", GetCouponPackageDisplayName(packageTechnicalName), packageTechnicalName));
+            SaveCouponState(accountId, unlocks, packages, history);
+
+            if (!IsNullOrWhiteSpace(packageTechnicalName) && _userStore != null)
+            {
+                _userStore.ApplyCouponItemPackageToAllCareers(accountId, packageTechnicalName);
+            }
+
+            var redeemedTechnicalName = packageTechnicalName ?? unlockTechnicalName;
+            return JsonResponse(200, BuildRedeemCouponResult(0, "OK", GetCouponPackageDisplayName(redeemedTechnicalName), redeemedTechnicalName));
         }
 
         private HttpResponse HandleCouponHistory(string normalizedPath)
@@ -99,7 +133,7 @@ namespace Shadowrun.LocalService.Core.Http
             }
 
             var history = LoadCouponHistory(identityHash);
-            return JsonResponse(200, history.ToArray());
+            return JsonResponse(200, NormalizeCouponHistoryForClient(history));
         }
 
         private HttpResponse HandleCouponReturn(HttpRequest request)
@@ -126,16 +160,23 @@ namespace Shadowrun.LocalService.Core.Http
                 return JsonResponse(200, BuildReturnCouponResult(3, "CouponNotFound"));
             }
 
-            matched["TimeReturned"] = DateTime.UtcNow;
+            matched["TimeReturned"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
 
             var packageTechnicalName = GetString(matched, "PackageTechnicalName");
+            var unlockTechnicalName = GetString(matched, "UnlockTechnicalName") ?? packageTechnicalName;
             var unlocks = LoadCouponUnlocks(identityHash);
-            if (!IsNullOrWhiteSpace(packageTechnicalName) && !HasAnyActiveCouponForPackage(history, packageTechnicalName))
+            if (!IsNullOrWhiteSpace(unlockTechnicalName) && !HasAnyActiveCouponForTechnical(history, unlockTechnicalName, "UnlockTechnicalName"))
             {
-                RemoveIgnoreCase(unlocks, packageTechnicalName);
+                RemoveIgnoreCase(unlocks, unlockTechnicalName);
             }
 
-            SaveCouponState(identityHash, unlocks, history);
+            var packages = LoadCouponPackages(identityHash);
+            if (!IsNullOrWhiteSpace(packageTechnicalName) && !HasAnyActiveCouponForTechnical(history, packageTechnicalName, "PackageTechnicalName"))
+            {
+                RemoveIgnoreCase(packages, packageTechnicalName);
+            }
+
+            SaveCouponState(identityHash, unlocks, packages, history);
             return JsonResponse(200, BuildReturnCouponResult(0, "OK"));
         }
 
@@ -186,7 +227,7 @@ namespace Shadowrun.LocalService.Core.Http
             return packageTechnicalName;
         }
 
-        private static bool TryResolveCouponPackageTechnicalName(string code, out string packageTechnicalName)
+        private static bool TryResolveCouponUnlockTechnicalName(string code, out string packageTechnicalName)
         {
             packageTechnicalName = null;
             if (IsNullOrWhiteSpace(code))
@@ -511,7 +552,43 @@ namespace Shadowrun.LocalService.Core.Http
             return history;
         }
 
-        private void SaveCouponState(string identityHash, List<string> unlocks, List<Dictionary<string, object>> history)
+        private List<string> LoadCouponPackages(string identityHash)
+        {
+            var packages = new List<string>();
+            if (_userStore == null || !IsGuidish(identityHash))
+            {
+                return packages;
+            }
+
+            var playerInfo = _userStore.GetPlayerInfo(identityHash, CouponGameName);
+            if (playerInfo == null)
+            {
+                return packages;
+            }
+
+            string raw;
+            if (!playerInfo.TryGetValue(CouponPackagesPlayerInfoKey, out raw) || IsNullOrWhiteSpace(raw))
+            {
+                return packages;
+            }
+
+            var seen = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            var parts = raw.Split(new[] { ';', ',', '|' }, StringSplitOptions.RemoveEmptyEntries);
+            for (var i = 0; i < parts.Length; i++)
+            {
+                var value = parts[i] != null ? parts[i].Trim() : null;
+                if (IsNullOrWhiteSpace(value) || seen.ContainsKey(value))
+                {
+                    continue;
+                }
+                seen[value] = true;
+                packages.Add(value);
+            }
+
+            return packages;
+        }
+
+        private void SaveCouponState(string identityHash, List<string> unlocks, List<string> packages, List<Dictionary<string, object>> history)
         {
             if (_userStore == null || !IsGuidish(identityHash))
             {
@@ -519,12 +596,15 @@ namespace Shadowrun.LocalService.Core.Http
             }
 
             unlocks = unlocks ?? new List<string>();
+            packages = packages ?? new List<string>();
             history = history ?? new List<Dictionary<string, object>>();
 
             unlocks.Sort(StringComparer.OrdinalIgnoreCase);
+            packages.Sort(StringComparer.OrdinalIgnoreCase);
             var update = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
                 { CouponUnlocksPlayerInfoKey, string.Join(";", unlocks.ToArray()) },
+                { CouponPackagesPlayerInfoKey, string.Join(";", packages.ToArray()) },
                 { CouponHistoryPlayerInfoKey, Json.Serialize(history.ToArray()) },
             };
 
@@ -554,7 +634,7 @@ namespace Shadowrun.LocalService.Core.Http
                 }
 
                 var returned = candidate.ContainsKey("TimeReturned") ? candidate["TimeReturned"] : null;
-                if (returned == null || IsNullOrWhiteSpace(returned as string))
+                if (IsMissingCouponTimestamp(returned))
                 {
                     entry = candidate;
                     return true;
@@ -564,9 +644,9 @@ namespace Shadowrun.LocalService.Core.Http
             return false;
         }
 
-        private static bool HasAnyActiveCouponForPackage(List<Dictionary<string, object>> history, string packageTechnicalName)
+        private static bool HasAnyActiveCouponForTechnical(List<Dictionary<string, object>> history, string technicalName, string fieldName)
         {
-            if (history == null || IsNullOrWhiteSpace(packageTechnicalName))
+            if (history == null || IsNullOrWhiteSpace(technicalName) || IsNullOrWhiteSpace(fieldName))
             {
                 return false;
             }
@@ -579,14 +659,19 @@ namespace Shadowrun.LocalService.Core.Http
                     continue;
                 }
 
-                var candidate = GetString(entry, "PackageTechnicalName");
-                if (!string.Equals(candidate, packageTechnicalName, StringComparison.OrdinalIgnoreCase))
+                var candidate = GetString(entry, fieldName);
+                if (IsNullOrWhiteSpace(candidate) && string.Equals(fieldName, "UnlockTechnicalName", StringComparison.OrdinalIgnoreCase))
+                {
+                    candidate = GetString(entry, "PackageTechnicalName");
+                }
+
+                if (!string.Equals(candidate, technicalName, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
 
                 var returned = entry.ContainsKey("TimeReturned") ? entry["TimeReturned"] : null;
-                if (returned == null || IsNullOrWhiteSpace(returned as string))
+                if (IsMissingCouponTimestamp(returned))
                 {
                     return true;
                 }
@@ -640,6 +725,152 @@ namespace Shadowrun.LocalService.Core.Http
             {
                 var ignored = new Guid(value);
                 return ignored != Guid.Empty;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static object[] NormalizeCouponHistoryForClient(List<Dictionary<string, object>> history)
+        {
+            if (history == null || history.Count == 0)
+            {
+                return new object[0];
+            }
+
+            var normalized = new object[history.Count];
+            for (var i = 0; i < history.Count; i++)
+            {
+                var source = history[i];
+                if (source == null)
+                {
+                    normalized[i] = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+                    continue;
+                }
+
+                var entry = new Dictionary<string, object>(source, StringComparer.OrdinalIgnoreCase);
+                NormalizeCouponHistoryTimestamp(entry, "TimeRedeemed");
+                NormalizeCouponHistoryTimestamp(entry, "TimeClaimed");
+                NormalizeCouponHistoryTimestamp(entry, "TimeReturned");
+                normalized[i] = entry;
+            }
+
+            return normalized;
+        }
+
+        private static void NormalizeCouponHistoryTimestamp(Dictionary<string, object> entry, string key)
+        {
+            if (entry == null || IsNullOrWhiteSpace(key) || !entry.ContainsKey(key))
+            {
+                return;
+            }
+
+            var value = entry[key];
+            if (IsMissingCouponTimestamp(value))
+            {
+                entry[key] = null;
+                return;
+            }
+
+            DateTime utc;
+            if (TryConvertToUtcDateTime(value, out utc))
+            {
+                entry[key] = utc.ToString("o", CultureInfo.InvariantCulture);
+                return;
+            }
+
+            var asString = value as string;
+            entry[key] = IsNullOrWhiteSpace(asString) ? null : asString;
+        }
+
+        private static bool IsMissingCouponTimestamp(object value)
+        {
+            if (value == null)
+            {
+                return true;
+            }
+
+            var asString = value as string;
+            return asString != null && IsNullOrWhiteSpace(asString);
+        }
+
+        private static bool TryConvertToUtcDateTime(object value, out DateTime utc)
+        {
+            utc = default(DateTime);
+            if (value == null)
+            {
+                return false;
+            }
+
+            if (value is DateTime)
+            {
+                var dt = (DateTime)value;
+                utc = dt.Kind == DateTimeKind.Utc ? dt : dt.ToUniversalTime();
+                return true;
+            }
+
+            var asString = value as string;
+            if (IsNullOrWhiteSpace(asString))
+            {
+                return false;
+            }
+
+            var trimmed = asString.Trim();
+            if (TryParseJavaScriptDate(trimmed, out utc))
+            {
+                return true;
+            }
+
+            DateTime parsed;
+            if (DateTime.TryParse(trimmed, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out parsed))
+            {
+                utc = parsed.Kind == DateTimeKind.Utc ? parsed : parsed.ToUniversalTime();
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryParseJavaScriptDate(string value, out DateTime utc)
+        {
+            utc = default(DateTime);
+            if (IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            if (!StartsWith(value, "/Date(") || !EndsWith(value, ")/"))
+            {
+                return false;
+            }
+
+            var inner = value.Substring(6, value.Length - 8);
+            if (IsNullOrWhiteSpace(inner))
+            {
+                return false;
+            }
+
+            var millisecondsPart = inner;
+            var offsetPlus = inner.IndexOf('+');
+            var offsetMinus = inner.IndexOf('-', 1);
+            var offsetIndex = offsetPlus >= 0 ? offsetPlus : offsetMinus;
+            if (offsetIndex > 0)
+            {
+                millisecondsPart = inner.Substring(0, offsetIndex);
+            }
+
+            long milliseconds;
+            if (!long.TryParse(millisecondsPart, NumberStyles.Integer, CultureInfo.InvariantCulture, out milliseconds))
+            {
+                return false;
+            }
+
+            var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            try
+            {
+                utc = epoch.AddMilliseconds(milliseconds);
+                return true;
             }
             catch
             {
