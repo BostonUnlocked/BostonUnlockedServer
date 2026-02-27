@@ -3591,6 +3591,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 mapName = mapName,
                                                 coopGroupName = coopGroupName,
                                             });
+
+                                            MissionRuntimeRegistry.MarkCoopMissionStarted(coopGroupName);
                                         }
                                         catch (Exception ex)
                                         {
@@ -5535,6 +5537,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             storyLineForLoot,
                                             chapterForLoot,
                                             _options != null && _options.EnableAiLogic);
+
+                                        if (simulationSession != null)
+                                        {
+                                            MissionRuntimeRegistry.MarkSoloMissionStarted(peer);
+                                        }
                                     }
                                     catch (Exception ex)
                                     {
@@ -6136,6 +6143,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             catch
                                             {
                                             }
+                                            MissionRuntimeRegistry.MarkSoloMissionEnded(peer);
                                             simulationSession = null;
                                             simulationSessionSync = null;
                                         }
@@ -6472,6 +6480,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                         var chunk = ReadChunk(stream);
                         if (chunk.Length == 0)
                         {
+                            if (simulationSession != null && IsNullOrWhiteSpace(currentCoopGroupName))
+                            {
+                                MissionRuntimeRegistry.MarkSoloMissionEnded(peer);
+                            }
+
                             connectionClosed.Set();
                             _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "aplay-conn", peer = peer, note = "socket closed" });
                             break;
@@ -6557,6 +6570,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 {
                                     session.Simulation.Stop();
                                     session.Simulation = null;
+                                    MissionRuntimeRegistry.MarkCoopMissionEnded(coopGroupName);
                                 }
                             }
                         }

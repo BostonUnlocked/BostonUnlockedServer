@@ -456,6 +456,130 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
             }
 
+            public int BroadcastAnnouncement(Guid senderAccountId, string text)
+            {
+                if (senderAccountId == Guid.Empty || string.IsNullOrEmpty(text))
+                {
+                    return 0;
+                }
+
+                var targetsByChannel = new Dictionary<string, HashSet<Guid>>(StringComparer.OrdinalIgnoreCase);
+
+                lock (_lock)
+                {
+                    var globalTargets = new HashSet<Guid>();
+                    foreach (var kvp in _connIdsByAccountId)
+                    {
+                        if (kvp.Key == Guid.Empty || kvp.Value == null || kvp.Value.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        globalTargets.Add(kvp.Key);
+                    }
+                    if (globalTargets.Count > 0)
+                    {
+                        targetsByChannel["Global"] = globalTargets;
+                    }
+
+                    foreach (var channelEntry in _channelMembers)
+                    {
+                        var channelName = channelEntry.Key;
+                        var connIds = channelEntry.Value;
+                        if (string.IsNullOrEmpty(channelName) || connIds == null || connIds.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        HashSet<Guid> channelTargets;
+                        if (!targetsByChannel.TryGetValue(channelName, out channelTargets) || channelTargets == null)
+                        {
+                            channelTargets = new HashSet<Guid>();
+                            targetsByChannel[channelName] = channelTargets;
+                        }
+
+                        foreach (var connId in connIds)
+                        {
+                            Peer peer;
+                            if (!_peersByConnId.TryGetValue(connId, out peer) || peer == null || peer.AccountId == Guid.Empty)
+                            {
+                                continue;
+                            }
+
+                            channelTargets.Add(peer.AccountId);
+                        }
+                    }
+
+                    foreach (var rec in _groupsById.Values)
+                    {
+                        if (rec == null || rec.Group == null || rec.MemberAccountIds == null || rec.MemberAccountIds.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        var groupChannel = rec.Group.ChannelName;
+                        if (string.IsNullOrEmpty(groupChannel))
+                        {
+                            continue;
+                        }
+
+                        HashSet<Guid> groupTargets;
+                        if (!targetsByChannel.TryGetValue(groupChannel, out groupTargets) || groupTargets == null)
+                        {
+                            groupTargets = new HashSet<Guid>();
+                            targetsByChannel[groupChannel] = groupTargets;
+                        }
+
+                        foreach (var memberAccountId in rec.MemberAccountIds)
+                        {
+                            if (memberAccountId == Guid.Empty)
+                            {
+                                continue;
+                            }
+
+                            List<Guid> connIds;
+                            if (_connIdsByAccountId.TryGetValue(memberAccountId, out connIds) && connIds != null && connIds.Count > 0)
+                            {
+                                groupTargets.Add(memberAccountId);
+                            }
+                        }
+                    }
+                }
+
+                var deliveredChannels = 0;
+                foreach (var kvp in targetsByChannel)
+                {
+                    var channelName = kvp.Key;
+                    var targets = kvp.Value;
+                    if (string.IsNullOrEmpty(channelName) || targets == null || targets.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    var payload = new TextMessageEventParameters
+                    {
+                        Sender = senderAccountId,
+                        Text = text,
+                        ChannelName = channelName,
+                        ServerTimestamp = DateTime.UtcNow,
+                    };
+
+                    foreach (var accountId in targets)
+                    {
+                        if (accountId == Guid.Empty)
+                        {
+                            continue;
+                        }
+
+                        SendEventToAccount(accountId, payload);
+                    }
+
+                    deliveredChannels++;
+                }
+
+                return deliveredChannels;
+            }
+
             public void SendTextMessageToAccount(Guid toAccountId, string channelName, Guid senderAccountId, string text)
             {
                 if (toAccountId == Guid.Empty)
