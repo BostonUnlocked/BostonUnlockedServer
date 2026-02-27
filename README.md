@@ -16,12 +16,12 @@ This non-exhaustive list covers the main features of the server currently:
 
 1. Login to the game (Steam only for now)
 2. Host your own server:
-    1. Play offline solo, see [Installation of the full server for local and offline play](#Installation of the full server for local and offline play)
-    2. Host multiplayer servers - **with important caveats, see [How to host your own multiplayer server](#How to host your own multiplayer server))**
-    3. Connect to someone else's server, see [How to connect to someone else's server](#How to connect to someone else's server)
+    1. Play offline solo, see [Installation of the full server for local and offline play](https://github.com/BostonUnlocked/BostonUnlockedServer?tab=readme-ov-file#installation-of-the-full-server-for-local-and-offline-play)
+    2. Host multiplayer servers - **with important caveats, see [How to host your own multiplayer server](https://github.com/BostonUnlocked/BostonUnlockedServer?tab=readme-ov-file#how-to-host-your-own-multiplayer-server)**
+    3. Connect to someone else's server, see [How to connect to someone else's server](https://github.com/BostonUnlocked/BostonUnlockedServer?tab=readme-ov-file#how-to-connect-to-someone-elses-server)
 3. Chat, friends, groups - hubs currently don't sync players visibly together but group features such as rewards, chat, playing in quests together with both visible, etc work
 4. Working NPC AI, shops, quests, etc
-5. DLC support via coupons, see [Enabling DLC](#Enabling DLC) - this includes all DLC, even previously restricted backer rewards so everyone can experience all the content officially released
+5. DLC support via coupons, see [Enabling DLC](https://github.com/BostonUnlocked/BostonUnlockedServer?tab=readme-ov-file#enabling-dlc) - **this includes all DLC, even previously restricted backer rewards so everyone can experience all the content officially released**
 
 **All features should be considered WIP and there might be bugs. Please report bugs by creating an Issue in the Issues tab on this repository. For help, reach out in the Community Discord in the support channel.**
 
@@ -109,7 +109,7 @@ This repo ships a patch tool executable:
 
 Notes:
 
-* 127.0.0.1 is the IP for localhost. Use this to play via your local server specifically. If you are connecting to a multiplayer server, this should be the public IP or hostname of the server as mentioned in [How to host your own multiplayer server](#How to host your own multiplayer server) and [How to connect to someone else's server](#How to connect to someone else's server)
+* 127.0.0.1 is the IP for localhost. Use this to play via your local server specifically. If you are connecting to a multiplayer server, this should be the public IP or hostname of the server as mentioned in [How to host your own multiplayer server](https://github.com/BostonUnlocked/BostonUnlockedServer?tab=readme-ov-file#how-to-host-your-own-multiplayer-server) and [How to connect to someone else's server](https://github.com/BostonUnlocked/BostonUnlockedServer?tab=readme-ov-file#how-to-connect-to-someone-elses-server)
 * The tool creates a backup next to the asset (by default `resources.assets.bak`).
 * `--asset` is a global flag, so it must come **before** `patch`/`restore`.
 
@@ -226,4 +226,4 @@ To reset all server progress, stop the server and delete the server data folder:
 Remove-Item -Recurse -Force <Server Data Folder>
 ```
 
-Where <Server Data Folder> is the appropriate location mentioned in [Server Data Folder](#Server Data Folder)
+Where <Server Data Folder> is the appropriate location mentioned in [Server Data Folder](https://github.com/BostonUnlocked/BostonUnlockedServer?tab=readme-ov-file#server-data-folder)
