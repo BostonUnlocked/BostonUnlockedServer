@@ -15,9 +15,13 @@ This repository contains tooling and a C# local service that lets the Shadowrun 
 This non-exhaustive list covers the main features of the server currently:
 
 1. Login to the game (Steam only for now)
-2. Host your own server - play offline solo (inviting friends by sharing your publicly available IP to connect to is currently WIP)
-3. Chat, friends, groups (hubs currently don't sync visible players but group features such as rewards, chat, playing in quests together with both visible, etc work)
+2. Host your own server:
+    1. Play offline solo, see [Installation of the full server for local and offline play](#Installation of the full server for local and offline play)
+    2. Host multiplayer servers - **with important caveats, see [How to host your own multiplayer server](#How to host your own multiplayer server))**
+    3. Connect to someone else's server, see [How to connect to someone else's server](#How to connect to someone else's server)
+3. Chat, friends, groups - hubs currently don't sync players visibly together but group features such as rewards, chat, playing in quests together with both visible, etc work
 4. Working NPC AI, shops, quests, etc
+5. DLC support via coupons, see [Enabling DLC](#Enabling DLC) - this includes all DLC, even previously restricted backer rewards so everyone can experience all the content officially released
 
 **All features should be considered WIP and there might be bugs. Please report bugs by creating an Issue in the Issues tab on this repository. For help, reach out in the Community Discord in the support channel.**
 
@@ -183,6 +187,12 @@ To replace all instances of 127.0.0.1 with the reachable public ip / hostname of
 3. It will open a file browser asking you to point to the resources.assets file in the Steam installation folder for the game. Select the file and click on "Open" to proceeed.
 4. After this, in the command line it will ask for a host, simply enter the IP of the server you want to connect to and press ENTER.
 5. Once done, simply launch the game normally and enjoy!
+
+## Enabling DLC
+
+1. From the game's launcher, click on Coupons
+2. Add the coupon codes in this document to enable the DLC you want:
+<https://raw.githubusercontent.com/BostonUnlocked/BostonUnlockedServer/refs/heads/main/docs/coupon_codes.md>
 
 ## Server progress/state (aka saves)
 
