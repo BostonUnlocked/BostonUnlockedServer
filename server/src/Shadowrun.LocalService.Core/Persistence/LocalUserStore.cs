@@ -552,6 +552,7 @@ namespace Shadowrun.LocalService.Core.Persistence
 
                         // Starting karma for newly created characters.
                         slotObj.Karma = 0;
+                        slotObj.SpentKarma = 0;
                     }
 
                     // Ensure the character creator has enough cosmetic options (hair/beard) even if the career
@@ -1432,6 +1433,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 target.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                 target.SkillTreeDefinitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
                 target.Karma = 0;
+                target.SpentKarma = 0;
                 target.Nuyen = 0;
                 target.MainCampaignCurrentChapter = 0;
                 target.MainCampaignMissionStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -1506,6 +1508,8 @@ namespace Shadowrun.LocalService.Core.Persistence
         public Dictionary<string, string> EquippedItems;
         // Spendable karma (skill currency). This is what the hub UI displays.
         public int Karma;
+        // Cumulative spent karma used for progression reference (Karma + SpentKarma).
+        public int SpentKarma;
         // Spendable nuyen (cash). This is what the hub UI displays.
         public int Nuyen;
         public string CharacterIdentifier;
@@ -1548,6 +1552,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             dict["ArmorInventoryKey"] = ArmorInventoryKey;
             dict["EquippedItems"] = EquippedItems ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             dict["Karma"] = Karma;
+            dict["SpentKarma"] = SpentKarma;
             dict["Nuyen"] = Nuyen;
             dict["CharacterIdentifier"] = CharacterIdentifier ?? string.Empty;
             dict["PendingPersistenceCreation"] = PendingPersistenceCreation;
@@ -1603,6 +1608,12 @@ namespace Shadowrun.LocalService.Core.Persistence
 
             try
             {
+                if (dict.Contains("SpentKarma")) slot.SpentKarma = Convert.ToInt32(dict["SpentKarma"]);
+            }
+            catch { slot.SpentKarma = 0; }
+
+            try
+            {
                 if (dict.Contains("Nuyen")) slot.Nuyen = Convert.ToInt32(dict["Nuyen"]);
             }
             catch { slot.Nuyen = 0; }
@@ -1644,6 +1655,12 @@ namespace Shadowrun.LocalService.Core.Persistence
                 if (dict.Contains("Karma") && dict["Karma"] != null) slot.Karma = Convert.ToInt32(dict["Karma"]);
             }
             catch { slot.Karma = 0; }
+
+            try
+            {
+                if (dict.Contains("SpentKarma") && dict["SpentKarma"] != null) slot.SpentKarma = Convert.ToInt32(dict["SpentKarma"]);
+            }
+            catch { slot.SpentKarma = 0; }
 
             try
             {
