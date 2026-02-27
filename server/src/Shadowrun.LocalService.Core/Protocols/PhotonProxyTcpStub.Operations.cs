@@ -1234,6 +1234,8 @@ namespace Shadowrun.LocalService.Core.Protocols
         {
             var map = new Dictionary<string, IChatCommand>(StringComparer.OrdinalIgnoreCase);
             RegisterChatCommand(map, new HelpChatCommand());
+            RegisterChatCommand(map, new AnnounceChatCommand());
+            RegisterChatCommand(map, new ActiveMissionsChatCommand());
             RegisterChatCommand(map, new SetBalanceCommand("setkarma", true));
             RegisterChatCommand(map, new SetBalanceCommand("setnuyen", false));
             RegisterChatCommand(map, new AddItemCommand());
@@ -1479,10 +1481,67 @@ namespace Shadowrun.LocalService.Core.Protocols
                 var isAdmin = owner.IsChatCommandAuthorized(context.SenderAccountId);
                 if (isAdmin)
                 {
-                    return ChatCommandResult.Ok("Commands: /help, /setkarma {X}, /setnuyen {X}, /additem {ItemCode} [Variant]");
+                    return ChatCommandResult.Ok("Commands: /help, /announce {message}, /activemissions, /setkarma {X}, /setnuyen {X}, /additem {ItemCode} [Variant]");
                 }
 
                 return ChatCommandResult.Ok("Commands: /help");
+            }
+        }
+
+        private sealed class AnnounceChatCommand : IChatCommand
+        {
+            public string Name { get { return "announce"; } }
+            public bool RequiresAdmin { get { return true; } }
+
+            public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
+            {
+                if (owner == null || context == null)
+                {
+                    return ChatCommandResult.Fail("Invalid command context.");
+                }
+
+                if (args == null || args.Length == 0)
+                {
+                    return ChatCommandResult.Fail("Usage: /announce {message}");
+                }
+
+                var message = string.Join(" ", args).Trim();
+                if (IsNullOrEmpty(message))
+                {
+                    return ChatCommandResult.Fail("Usage: /announce {message}");
+                }
+
+                if (owner._chatAndFriends == null)
+                {
+                    return ChatCommandResult.Fail("Chat service is unavailable.");
+                }
+
+                var formatted = "[ANNOUNCEMENT] " + message;
+                var channelCount = owner._chatAndFriends.BroadcastAnnouncement(context.SenderAccountId, formatted);
+
+                owner.LogAdminEvent(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "chat-command",
+                    action = "announce-broadcast",
+                    senderAccountId = context.SenderAccountId,
+                    channels = channelCount,
+                    text = message,
+                });
+
+                return ChatCommandResult.Ok("Announcement sent to " + channelCount.ToString() + " channel(s).");
+            }
+        }
+
+        private sealed class ActiveMissionsChatCommand : IChatCommand
+        {
+            public string Name { get { return "activemissions"; } }
+            public bool RequiresAdmin { get { return true; } }
+
+            public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
+            {
+                var count = MissionRuntimeRegistry.GetActiveMissionCount();
+                return ChatCommandResult.Ok("Active missions in progress: " + count.ToString());
             }
         }
 
