@@ -192,7 +192,7 @@ To replace all instances of 127.0.0.1 with the reachable public ip / hostname of
 
 1. From the game's launcher, click on Coupons
 2. Add the coupon codes in this document to enable the DLC you want:
-<https://raw.githubusercontent.com/BostonUnlocked/BostonUnlockedServer/refs/heads/main/docs/coupon_codes.md>
+[Coupon codes list](https://github.com/BostonUnlocked/BostonUnlockedServer/blob/main/docs/coupon_codes.md)
 
 ## Server progress/state (aka saves)
 
