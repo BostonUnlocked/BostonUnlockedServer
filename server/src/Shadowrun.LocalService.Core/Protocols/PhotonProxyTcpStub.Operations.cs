@@ -376,6 +376,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                         group = EnsureGroup(state, req);
                     }
+
+                    PartyHubFollowRegistry.ClearForMember(state.AccountId);
                     return new CreateGroupResponse { GroupData = group };
                 }
 
@@ -435,7 +437,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                     var req = DeserializeMessage<AcceptInvitationRequest>(requestPayload);
                     try
                     {
-                        return _chatAndFriends.AcceptInvitation(state.AccountId, req != null ? req.InvitationId : 0);
+                        var response = _chatAndFriends.AcceptInvitation(state.AccountId, req != null ? req.InvitationId : 0);
+                        Guid hostAccountId;
+                        if (response != null && string.Equals(response.ResultCode, "Success", StringComparison.OrdinalIgnoreCase)
+                            && TryResolveGroupHostAccountId(response.GroupData, state.AccountId, out hostAccountId))
+                        {
+                            PartyHubFollowRegistry.SetHostForMember(state.AccountId, hostAccountId);
+                        }
+                        return response;
                     }
                     catch
                     {
@@ -463,6 +472,19 @@ namespace Shadowrun.LocalService.Core.Protocols
                     try
                     {
                         result = _chatAndFriends.RemoveGroupMember(state.AccountId, req != null ? req.GroupId : 0, req != null ? req.MemberId : Guid.Empty);
+                        if (string.Equals(result, "Success", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(result, "Ok", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (req != null && req.MemberId != Guid.Empty)
+                            {
+                                PartyHubFollowRegistry.ClearForMember(req.MemberId);
+                            }
+
+                            if (req == null || req.MemberId == Guid.Empty || req.MemberId == state.AccountId)
+                            {
+                                PartyHubFollowRegistry.ClearForMember(state.AccountId);
+                            }
+                        }
                     }
                     catch
                     {
@@ -1327,6 +1349,29 @@ namespace Shadowrun.LocalService.Core.Protocols
             };
 
             return state.Group;
+        }
+
+        private static bool TryResolveGroupHostAccountId(Group group, Guid requesterAccountId, out Guid hostAccountId)
+        {
+            hostAccountId = Guid.Empty;
+            if (group == null || group.Members == null || group.Members.Count == 0)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < group.Members.Count; i++)
+            {
+                var member = group.Members[i];
+                if (member == null || member.AccountId == Guid.Empty || member.AccountId == requesterAccountId)
+                {
+                    continue;
+                }
+
+                hostAccountId = member.AccountId;
+                return true;
+            }
+
+            return false;
         }
 
         private T DeserializeMessage<T>(byte[] bytes) where T : class, ISerializableMessage

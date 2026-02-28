@@ -214,6 +214,17 @@ namespace Shadowrun.LocalService.Core.Protocols
                         var notify = rec.MemberAccountIds != null ? rec.MemberAccountIds.ToArray() : new Guid[0];
                         DisbandGroup_NoLock(groupsToDisband[i]);
 
+                        var leftEvt = BuildGroupMemberLeftEvent(accountId, groupSnapshot, "GroupManager.LeftGroup");
+                        for (var n = 0; n < notify.Length; n++)
+                        {
+                            var m = notify[n];
+                            if (m == Guid.Empty || m == accountId)
+                            {
+                                continue;
+                            }
+                            pending.Add(new PendingAccountEvent { AccountId = m, Event = leftEvt });
+                        }
+
                         var evt = BuildGroupsListChangedEvent(groupSnapshot, 0);
                         for (var n = 0; n < notify.Length; n++)
                         {

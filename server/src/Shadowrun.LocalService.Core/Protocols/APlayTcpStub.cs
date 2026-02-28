@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Xml;
@@ -59,6 +60,9 @@ namespace Shadowrun.LocalService.Core.Protocols
         private const string DefaultHubId = "Act01_HUB_02";
         private const string FallbackSerializedHubState = "CwAAAEgAVQBCAF8AcwBjAGUAbgBlAF8AMQALAAAASABVAEIAXwBzAGMAZQBuAGUAXwAxAAA=";
         private static long _hubInstanceSequence;
+        private static long _hubDuplicateSessionRetiredTotal;
+        private static long _hubReadyFallbackTriggeredTotal;
+        private static long _hubReadyFallbackSkippedTotal;
         private static readonly object HenchmanCollectionCacheLock = new object();
         private static string CachedSerializedHenchmanCollection;
         private static DateTime CachedSerializedHenchmanCollectionLastWriteUtc;
@@ -1382,6 +1386,1192 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
+        private string BuildSerializedSharedHubStateOrFallback(string hubId, string fallbackCharacterIdentifier, string fallbackCharacterName, CareerSlot fallbackSlot)
+        {
+            if (IsNullOrWhiteSpace(hubId))
+            {
+                return FallbackSerializedHubState;
+            }
+
+            try
+            {
+                var state = new HubState
+                {
+                    HubId = hubId,
+                    Name = GetHubNameFromHubInstanceId(hubId),
+                };
+
+                var participants = _hubPresenceRegistry.GetParticipantsInHub(hubId);
+                var anyAdded = false;
+                if (participants != null)
+                {
+                    for (var i = 0; i < participants.Count; i++)
+                    {
+                        var participant = participants[i];
+                        if (participant == null || IsNullOrWhiteSpace(participant.CharacterId))
+                        {
+                            continue;
+                        }
+
+                        CareerSlot slot = null;
+                        if (fallbackSlot != null && !IsNullOrWhiteSpace(fallbackCharacterIdentifier)
+                            && string.Equals(fallbackCharacterIdentifier, participant.CharacterId, StringComparison.OrdinalIgnoreCase))
+                        {
+                            slot = fallbackSlot;
+                        }
+                        else if (_userStore != null && !IsNullOrWhiteSpace(participant.IdentityHash))
+                        {
+                            try
+                            {
+                                slot = _userStore.GetOrCreateCareer(participant.IdentityHash, participant.CareerIndex, false);
+                            }
+                            catch
+                            {
+                                slot = null;
+                            }
+                        }
+
+                        var characterName = !IsNullOrWhiteSpace(participant.CharacterName) ? participant.CharacterName : fallbackCharacterName;
+                        var snapshot = BuildPlayerCharacterSnapshotForSlot(participant.CharacterId, characterName, slot);
+                        ulong mappedPlayerId;
+                        var participantAccountId = TryParseAccountIdFromCharacterIdentifier(participant.CharacterId);
+                        if (participantAccountId != Guid.Empty
+                            && TryGetGameClientEntityIdForIdentity(participantAccountId, out mappedPlayerId)
+                            && mappedPlayerId != 0UL)
+                        {
+                            snapshot.PlayerId = mappedPlayerId;
+                        }
+                        state.Add(snapshot, new Vector2D(participant.X, participant.Y));
+                        anyAdded = true;
+                    }
+                }
+
+                if (!anyAdded)
+                {
+                    return SerializeHubStateOrFallback(hubId, fallbackCharacterIdentifier, fallbackCharacterName, fallbackSlot, GetHubNameFromHubInstanceId(hubId));
+                }
+
+                return HubSerializer.SerializeHubState(state);
+            }
+            catch
+            {
+                return SerializeHubStateOrFallback(hubId, fallbackCharacterIdentifier, fallbackCharacterName, fallbackSlot, GetHubNameFromHubInstanceId(hubId));
+            }
+        }
+
+        private static string GetHubNameFromHubInstanceId(string hubId)
+        {
+            if (IsNullOrWhiteSpace(hubId))
+            {
+                return DefaultHubId;
+            }
+
+            var idx = hubId.IndexOf('#');
+            if (idx > 0)
+            {
+                return hubId.Substring(0, idx);
+            }
+
+            return hubId;
+        }
+
+        private static bool TryParseRequestStoryHubForPayload(byte[] data, out string groupHostCharacterId, out Guid groupHostAccountId)
+        {
+            groupHostCharacterId = null;
+            groupHostAccountId = Guid.Empty;
+
+            if (data == null || data.Length < 8)
+            {
+                return false;
+            }
+
+            var pos = 0;
+            string rawHostAccountId;
+            if (!TryReadUtf16LengthPrefixedString(data, ref pos, out groupHostCharacterId))
+            {
+                return false;
+            }
+
+            if (!TryReadUtf16LengthPrefixedString(data, ref pos, out rawHostAccountId))
+            {
+                return false;
+            }
+
+            try
+            {
+                if (!IsNullOrWhiteSpace(rawHostAccountId))
+                {
+                    groupHostAccountId = new Guid(rawHostAccountId);
+                }
+            }
+            catch
+            {
+                groupHostAccountId = Guid.Empty;
+            }
+
+            return true;
+        }
+
+        private HubPlayerCharacter BuildHubPlayerCharacterFromParticipant(HubPresenceRegistry.Participant participant)
+        {
+            if (participant == null || IsNullOrWhiteSpace(participant.CharacterId))
+            {
+                return null;
+            }
+
+            CareerSlot slot = null;
+            if (_userStore != null && !IsNullOrWhiteSpace(participant.IdentityHash))
+            {
+                try
+                {
+                    slot = _userStore.GetOrCreateCareer(participant.IdentityHash, participant.CareerIndex, false);
+                }
+                catch
+                {
+                    slot = null;
+                }
+            }
+
+            var snapshot = BuildPlayerCharacterSnapshotForSlot(participant.CharacterId, participant.CharacterName, slot);
+            ulong mappedPlayerId;
+            var participantAccountId = TryParseAccountIdFromCharacterIdentifier(participant.CharacterId);
+            if (participantAccountId != Guid.Empty
+                && TryGetGameClientEntityIdForIdentity(participantAccountId, out mappedPlayerId)
+                && mappedPlayerId != 0UL)
+            {
+                snapshot.PlayerId = mappedPlayerId;
+            }
+            return new HubPlayerCharacter(participant.CharacterId, new Vector2D(participant.X, participant.Y), snapshot);
+        }
+
+        private void RegisterHubPeerStream(string peer, NetworkStream stream)
+        {
+            if (IsNullOrWhiteSpace(peer) || stream == null)
+            {
+                return;
+            }
+
+            lock (_hubPeerStreamsLock)
+            {
+                _hubPeerStreams[peer] = stream;
+            }
+        }
+
+        private void UnregisterHubPeerStream(string peer, NetworkStream stream)
+        {
+            if (IsNullOrWhiteSpace(peer))
+            {
+                return;
+            }
+
+            lock (_hubPeerStreamsLock)
+            {
+                NetworkStream existing;
+                if (_hubPeerStreams.TryGetValue(peer, out existing) && (stream == null || object.ReferenceEquals(existing, stream)))
+                {
+                    _hubPeerStreams.Remove(peer);
+                }
+            }
+
+            ClearHubAnnouncementsForPeer(peer);
+        }
+
+        private static string BuildHubAnnouncementToken(string hubId, string characterId)
+        {
+            return (hubId ?? string.Empty) + "|" + (characterId ?? string.Empty);
+        }
+
+        private static bool IsHubAnnouncementTokenForHub(string token, string hubId)
+        {
+            if (IsNullOrWhiteSpace(token) || IsNullOrWhiteSpace(hubId))
+            {
+                return false;
+            }
+
+            var prefix = hubId + "|";
+            return token.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool TryMarkHubCharacterAnnounced(string targetPeer, string hubId, string characterId)
+        {
+            if (IsNullOrWhiteSpace(targetPeer) || IsNullOrWhiteSpace(hubId) || IsNullOrWhiteSpace(characterId))
+            {
+                return false;
+            }
+
+            var token = BuildHubAnnouncementToken(hubId, characterId);
+            lock (_hubAnnouncedByPeerLock)
+            {
+                HashSet<string> announced;
+                if (!_hubAnnouncedByPeer.TryGetValue(targetPeer, out announced) || announced == null)
+                {
+                    announced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    _hubAnnouncedByPeer[targetPeer] = announced;
+                }
+
+                if (announced.Contains(token))
+                {
+                    return false;
+                }
+
+                announced.Add(token);
+                return true;
+            }
+        }
+
+        private bool IsHubCharacterAnnounced(string targetPeer, string hubId, string characterId)
+        {
+            if (IsNullOrWhiteSpace(targetPeer) || IsNullOrWhiteSpace(hubId) || IsNullOrWhiteSpace(characterId))
+            {
+                return false;
+            }
+
+            var token = BuildHubAnnouncementToken(hubId, characterId);
+            lock (_hubAnnouncedByPeerLock)
+            {
+                HashSet<string> announced;
+                if (!_hubAnnouncedByPeer.TryGetValue(targetPeer, out announced) || announced == null)
+                {
+                    return false;
+                }
+
+                return announced.Contains(token);
+            }
+        }
+
+        private void SendHubStateAddToTarget(string hubId, HubPresenceRegistry.Participant participant, HubPeerTarget target, string mode, string source)
+        {
+            if (IsNullOrWhiteSpace(hubId)
+                || participant == null
+                || target == null
+                || target.Stream == null
+                || IsNullOrWhiteSpace(target.Peer)
+                || IsNullOrWhiteSpace(participant.CharacterId))
+            {
+                return;
+            }
+
+            var hubPlayerCharacter = BuildHubPlayerCharacterFromParticipant(participant);
+            if (hubPlayerCharacter == null)
+            {
+                return;
+            }
+
+            var update = HubStateUpdate.CreateForCharacterAddtion(hubPlayerCharacter, hubId);
+            var serializedUpdate = HubSerializer.SerializeHubStateUpdate(update);
+            var data = BuildUtf16StringPayload(serializedUpdate);
+
+            LogHubAddPayloadSummary(
+                mode,
+                hubId,
+                target.Peer,
+                participant,
+                hubPlayerCharacter,
+                data,
+                source ?? string.Empty);
+
+            var msgNo = ReserveMetaGameplayMsgNos(1);
+            var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, HubEntityId, 7, data), msgNo);
+            SendRawFrame(target.Stream, target.Peer, PrefixLength(core), "sent HubCommunicationObject HubStateChanged add (" + (mode ?? string.Empty) + ")");
+
+            _logger.Log(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "hub-add-send",
+                mode = mode ?? string.Empty,
+                source = source ?? string.Empty,
+                hubId = hubId,
+                senderPeer = participant.Peer ?? string.Empty,
+                characterId = participant.CharacterId,
+                sentCount = 1,
+                targetPeers = new[] { target.Peer },
+            });
+        }
+
+        private bool EnsureHubCharacterAnnouncedForTarget(string hubId, HubPresenceRegistry.Participant participant, HubPeerTarget target, string source)
+        {
+            if (IsNullOrWhiteSpace(hubId)
+                || participant == null
+                || target == null
+                || IsNullOrWhiteSpace(target.Peer)
+                || IsNullOrWhiteSpace(participant.CharacterId))
+            {
+                return false;
+            }
+
+            if (IsHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId))
+            {
+                return true;
+            }
+
+            if (!TryMarkHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId))
+            {
+                return IsHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId);
+            }
+
+            SendHubStateAddToTarget(hubId, participant, target, "ensure-announced", source ?? string.Empty);
+            return true;
+        }
+
+        private void ClearHubAnnouncementsForPeer(string peer)
+        {
+            if (IsNullOrWhiteSpace(peer))
+            {
+                return;
+            }
+
+            lock (_hubAnnouncedByPeerLock)
+            {
+                _hubAnnouncedByPeer.Remove(peer);
+            }
+
+            lock (_hubReadyByPeerLock)
+            {
+                _hubReadyByPeer.Remove(peer);
+            }
+
+        }
+
+        private void ClearHubAnnouncementsForPeerHub(string peer, string hubId)
+        {
+            if (IsNullOrWhiteSpace(peer) || IsNullOrWhiteSpace(hubId))
+            {
+                return;
+            }
+
+            lock (_hubAnnouncedByPeerLock)
+            {
+                HashSet<string> announced;
+                if (_hubAnnouncedByPeer.TryGetValue(peer, out announced) && announced != null)
+                {
+                    announced.RemoveWhere(token => IsHubAnnouncementTokenForHub(token, hubId));
+                    if (announced.Count == 0)
+                    {
+                        _hubAnnouncedByPeer.Remove(peer);
+                    }
+                }
+            }
+
+
+            lock (_hubReadyByPeerLock)
+            {
+                HashSet<string> readyHubs;
+                if (_hubReadyByPeer.TryGetValue(peer, out readyHubs) && readyHubs != null)
+                {
+                    readyHubs.Remove(hubId);
+                    if (readyHubs.Count == 0)
+                    {
+                        _hubReadyByPeer.Remove(peer);
+                    }
+                }
+            }
+
+        }
+
+        private void ClearHubAnnouncementForAllPeers(string hubId, string characterId)
+        {
+            if (IsNullOrWhiteSpace(hubId) || IsNullOrWhiteSpace(characterId))
+            {
+                return;
+            }
+
+            var token = BuildHubAnnouncementToken(hubId, characterId);
+            lock (_hubAnnouncedByPeerLock)
+            {
+                foreach (var pair in _hubAnnouncedByPeer)
+                {
+                    if (pair.Value != null)
+                    {
+                        pair.Value.Remove(token);
+                    }
+                }
+            }
+
+        }
+
+        private static string ResolveHubCharacterIdentifier(CareerSlot slot, Guid identityGuid, int careerIndex, string existingCharacterId)
+        {
+            if (!IsNullOrWhiteSpace(existingCharacterId))
+            {
+                return existingCharacterId;
+            }
+
+            if (slot != null && !IsNullOrWhiteSpace(slot.CharacterIdentifier))
+            {
+                return slot.CharacterIdentifier;
+            }
+
+            return identityGuid != Guid.Empty
+                ? (identityGuid.ToString() + ":" + careerIndex.ToString(CultureInfo.InvariantCulture))
+                : string.Empty;
+        }
+
+        private bool TryMarkHubPeerReady(string peer, string hubId)
+        {
+            if (IsNullOrWhiteSpace(peer) || IsNullOrWhiteSpace(hubId))
+            {
+                return false;
+            }
+
+            lock (_hubReadyByPeerLock)
+            {
+                HashSet<string> readyHubs;
+                if (!_hubReadyByPeer.TryGetValue(peer, out readyHubs) || readyHubs == null)
+                {
+                    readyHubs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    _hubReadyByPeer[peer] = readyHubs;
+                }
+
+                if (readyHubs.Contains(hubId))
+                {
+                    return false;
+                }
+
+                readyHubs.Add(hubId);
+                return true;
+            }
+        }
+
+        private bool IsHubPeerReady(string peer, string hubId)
+        {
+            if (IsNullOrWhiteSpace(peer) || IsNullOrWhiteSpace(hubId))
+            {
+                return false;
+            }
+
+            lock (_hubReadyByPeerLock)
+            {
+                HashSet<string> readyHubs;
+                if (!_hubReadyByPeer.TryGetValue(peer, out readyHubs) || readyHubs == null)
+                {
+                    return false;
+                }
+
+                return readyHubs.Contains(hubId);
+            }
+        }
+
+        private IList<HubPeerTarget> GetHubBroadcastTargets(string hubId, string senderPeer)
+        {
+            var targets = new List<HubPeerTarget>();
+            if (IsNullOrWhiteSpace(hubId))
+            {
+                return targets;
+            }
+
+            var participants = _hubPresenceRegistry.GetParticipantsInHub(hubId);
+            if (participants == null || participants.Count == 0)
+            {
+                return targets;
+            }
+
+            lock (_hubPeerStreamsLock)
+            {
+                for (var i = 0; i < participants.Count; i++)
+                {
+                    var participant = participants[i];
+                    if (participant == null || IsNullOrWhiteSpace(participant.Peer))
+                    {
+                        continue;
+                    }
+                    if (!IsNullOrWhiteSpace(senderPeer) && string.Equals(participant.Peer, senderPeer, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    NetworkStream stream;
+                    if (!_hubPeerStreams.TryGetValue(participant.Peer, out stream) || stream == null)
+                    {
+                        continue;
+                    }
+
+                    targets.Add(new HubPeerTarget(participant.Peer, stream));
+                }
+            }
+
+            return targets;
+        }
+
+        private static string ComputePayloadSha1(byte[] payload)
+        {
+            if (payload == null || payload.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                using (var sha1 = new SHA1Managed())
+                {
+                    var hash = sha1.ComputeHash(payload);
+                    var sb = new StringBuilder(hash.Length * 2);
+                    for (var i = 0; i < hash.Length; i++)
+                    {
+                        sb.Append(hash[i].ToString("x2", CultureInfo.InvariantCulture));
+                    }
+
+                    return sb.ToString();
+                }
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static string GetInventoryItemId(Item item)
+        {
+            if (Item.IsNullOrEmpty(item) || IsNullOrWhiteSpace(item.ItemId))
+            {
+                return string.Empty;
+            }
+
+            return item.ItemId;
+        }
+
+        private static object[] BuildEquippedItemsDiagnostics(PlayerCharacterInventory inventory)
+        {
+            if (inventory == null || inventory.EquippedItems == null || inventory.EquippedItems.Count == 0)
+            {
+                return new object[0];
+            }
+
+            var diagnostics = new List<object>(inventory.EquippedItems.Count);
+            for (var i = 0; i < inventory.EquippedItems.Count; i++)
+            {
+                var equipped = inventory.EquippedItems[i];
+                if (equipped == null)
+                {
+                    continue;
+                }
+
+                var item = equipped.Item;
+                diagnostics.Add(new
+                {
+                    slotId = equipped.Definition != null ? equipped.Definition.Id : 0UL,
+                    itemId = GetInventoryItemId(item),
+                    inventoryKey = item != null ? item.InventoryKey : 0,
+                    amount = item != null ? item.Amount : 0,
+                    flavourIndex = item != null ? item.FlavourIndex : 0,
+                    quality = item != null ? item.Quality : 0,
+                });
+            }
+
+            return diagnostics.ToArray();
+        }
+
+        private void LogHubAddPayloadSummary(
+            string source,
+            string hubId,
+            string targetPeer,
+            HubPresenceRegistry.Participant participant,
+            HubPlayerCharacter hubPlayerCharacter,
+            byte[] payload,
+            string replaySource)
+        {
+            if (participant == null || IsNullOrWhiteSpace(targetPeer))
+            {
+                return;
+            }
+
+            var snapshot = hubPlayerCharacter != null ? hubPlayerCharacter.Snapshot : null;
+            var inventory = snapshot != null ? snapshot.PlayerCharacterInventory : null;
+            HubPresenceRegistry.Participant targetParticipant;
+            _hubPresenceRegistry.TryGetParticipantForPeer(targetPeer, out targetParticipant);
+
+            _logger.Log(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "hub-add-payload-summary",
+                source = source ?? string.Empty,
+                hubId = hubId ?? string.Empty,
+                targetPeer = targetPeer,
+                sourcePeer = participant.Peer ?? string.Empty,
+                accountId = participant.AccountId != Guid.Empty ? participant.AccountId.ToString() : string.Empty,
+                identityHash = participant.IdentityHash ?? string.Empty,
+                targetAccountId = (targetParticipant != null && targetParticipant.AccountId != Guid.Empty)
+                    ? targetParticipant.AccountId.ToString()
+                    : string.Empty,
+                targetIdentityHash = targetParticipant != null ? (targetParticipant.IdentityHash ?? string.Empty) : string.Empty,
+                targetCharacterId = targetParticipant != null ? (targetParticipant.CharacterId ?? string.Empty) : string.Empty,
+                targetHubId = targetParticipant != null ? (targetParticipant.HubId ?? string.Empty) : string.Empty,
+                participantCharacterId = participant.CharacterId ?? string.Empty,
+                participantCharacterName = participant.CharacterName ?? string.Empty,
+                snapshotCharacterId = snapshot != null ? (snapshot.CharacterIdentifier ?? string.Empty) : string.Empty,
+                snapshotCharacterName = snapshot != null ? (snapshot.CharacterName ?? string.Empty) : string.Empty,
+                playerId = snapshot != null ? snapshot.PlayerId : 0UL,
+                dataVersion = snapshot != null ? snapshot.DataVersion : 0,
+                // TEMP DEBUG DIAGNOSTICS: remove these fields once hub add-materialization issues are resolved.
+                snapshotBodytype = snapshot != null ? snapshot.Bodytype : 0UL,
+                snapshotSkinTextureIndex = snapshot != null ? snapshot.SkinTextureIndex : 0,
+                snapshotBackgroundStory = snapshot != null ? snapshot.BackgroundStory : 0UL,
+                snapshotVoiceSet = snapshot != null ? (snapshot.Voiceset ?? string.Empty) : string.Empty,
+                snapshotPortraitPath = snapshot != null ? (snapshot.PortraitPath ?? string.Empty) : string.Empty,
+                snapshotPrimaryWeaponItemId = inventory != null ? GetInventoryItemId(inventory.PrimaryWeapon) : string.Empty,
+                snapshotSecondaryWeaponItemId = inventory != null ? GetInventoryItemId(inventory.SecondaryWeapon) : string.Empty,
+                snapshotArmorItemId = inventory != null ? GetInventoryItemId(inventory.Armor) : string.Empty,
+                snapshotEquippedItems = BuildEquippedItemsDiagnostics(inventory),
+                payloadBytes = payload != null ? payload.Length : 0,
+                payloadSha1 = ComputePayloadSha1(payload),
+                replaySource = replaySource ?? string.Empty,
+            });
+        }
+
+        private void ReplayHubRosterToPeer(string hubId, string targetPeer, string source)
+        {
+            if (IsNullOrWhiteSpace(hubId) || IsNullOrWhiteSpace(targetPeer))
+            {
+                return;
+            }
+
+            NetworkStream targetStream;
+            lock (_hubPeerStreamsLock)
+            {
+                if (!_hubPeerStreams.TryGetValue(targetPeer, out targetStream) || targetStream == null)
+                {
+                    return;
+                }
+            }
+
+            var participants = _hubPresenceRegistry.GetParticipantsInHub(hubId);
+            if (participants == null || participants.Count == 0)
+            {
+                return;
+            }
+
+            var updates = new List<byte[]>();
+            var sentPlayerIds = new List<ulong>();
+            var candidateCount = 0;
+            var sentCharacterIds = new List<string>();
+            for (var i = 0; i < participants.Count; i++)
+            {
+                var participant = participants[i];
+                if (participant == null
+                    || IsNullOrWhiteSpace(participant.Peer)
+                    || IsNullOrWhiteSpace(participant.CharacterId)
+                    || string.Equals(participant.Peer, targetPeer, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                candidateCount++;
+
+                if (IsHubCharacterAnnounced(targetPeer, hubId, participant.CharacterId))
+                {
+                    continue;
+                }
+
+                if (!TryMarkHubCharacterAnnounced(targetPeer, hubId, participant.CharacterId))
+                {
+                    continue;
+                }
+
+                var hubPlayerCharacter = BuildHubPlayerCharacterFromParticipant(participant);
+                if (hubPlayerCharacter == null)
+                {
+                    continue;
+                }
+
+                var update = HubStateUpdate.CreateForCharacterAddtion(hubPlayerCharacter, hubId);
+                var serializedUpdate = HubSerializer.SerializeHubStateUpdate(update);
+                var payload = BuildUtf16StringPayload(serializedUpdate);
+                updates.Add(payload);
+                sentCharacterIds.Add(participant.CharacterId);
+                sentPlayerIds.Add(hubPlayerCharacter.Snapshot != null ? hubPlayerCharacter.Snapshot.PlayerId : 0UL);
+
+                LogHubAddPayloadSummary(
+                    "roster-replay",
+                    hubId,
+                    targetPeer,
+                    participant,
+                    hubPlayerCharacter,
+                    payload,
+                    source);
+            }
+
+            if (updates.Count == 0)
+            {
+                return;
+            }
+
+            var firstMsgNo = ReserveMetaGameplayMsgNos(updates.Count);
+            for (var i = 0; i < updates.Count; i++)
+            {
+                try
+                {
+                    var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, HubEntityId, 7, updates[i]), firstMsgNo + (ulong)i);
+                    SendRawFrame(targetStream, targetPeer, PrefixLength(core), "sent HubCommunicationObject HubStateChanged add (roster replay)");
+                }
+                catch
+                {
+                }
+            }
+
+            _logger.Log(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "hub-roster-replay",
+                targetPeer = targetPeer,
+                hubId = hubId,
+                candidates = candidateCount,
+                sent = updates.Count,
+                sentCharacterIds = sentCharacterIds,
+                sentPlayerIds = sentPlayerIds,
+                source = source ?? string.Empty,
+            });
+
+            _logger.Log(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "hub-add-send",
+                mode = "roster-replay",
+                targetPeer = targetPeer,
+                hubId = hubId,
+                source = source ?? string.Empty,
+                sentCount = updates.Count,
+                sentCharacterIds = sentCharacterIds,
+            });
+        }
+
+        private bool TryActivateHubReadiness(string peer, string hubId, string reason)
+        {
+            if (IsNullOrWhiteSpace(peer) || IsNullOrWhiteSpace(hubId))
+            {
+                return false;
+            }
+
+            HubPresenceRegistry.Participant participant;
+            if (!_hubPresenceRegistry.TryGetParticipantForPeer(peer, out participant)
+                || participant == null
+                || IsNullOrWhiteSpace(participant.HubId)
+                || !string.Equals(participant.HubId, hubId, StringComparison.OrdinalIgnoreCase)
+                || IsNullOrWhiteSpace(participant.CharacterId))
+            {
+                return false;
+            }
+
+            if (!TryMarkHubPeerReady(peer, hubId))
+            {
+                return false;
+            }
+
+            ReplayHubRosterToPeer(hubId, peer, reason ?? string.Empty);
+            BroadcastHubStateAddToReadyPeers(hubId, peer, participant, reason ?? string.Empty);
+
+            _logger.Log(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "hub-first-move-sync",
+                peer = peer,
+                hubId = hubId,
+                characterId = participant.CharacterId,
+                reason = reason ?? string.Empty,
+            });
+
+            _logger.Log(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "hub-ready",
+                peer = peer,
+                hubId = hubId,
+                characterId = participant.CharacterId,
+                reason = reason ?? string.Empty,
+            });
+
+            return true;
+        }
+
+        private void BroadcastHubMovement(string hubId, string senderPeer, string characterId, float x, float y)
+        {
+            if (IsNullOrWhiteSpace(hubId) || IsNullOrWhiteSpace(characterId))
+            {
+                return;
+            }
+
+            var targets = GetHubBroadcastTargets(hubId, senderPeer);
+            if (targets.Count == 0)
+            {
+                return;
+            }
+
+            HubPresenceRegistry.Participant senderParticipant;
+            var canEnsureAnnouncement = _hubPresenceRegistry.TryGetParticipantForPeer(senderPeer, out senderParticipant)
+                && senderParticipant != null
+                && !IsNullOrWhiteSpace(senderParticipant.CharacterId)
+                && string.Equals(senderParticipant.CharacterId, characterId, StringComparison.OrdinalIgnoreCase);
+
+            var filteredTargets = new List<HubPeerTarget>(targets.Count);
+            var ensuredTargets = new List<string>();
+            var blockedTargets = new List<string>();
+            for (var i = 0; i < targets.Count; i++)
+            {
+                var target = targets[i];
+                if (target == null || IsNullOrWhiteSpace(target.Peer))
+                {
+                    continue;
+                }
+
+                if (IsHubCharacterAnnounced(target.Peer, hubId, characterId))
+                {
+                    filteredTargets.Add(target);
+                }
+                else if (canEnsureAnnouncement
+                    && IsHubPeerReady(target.Peer, hubId)
+                    && EnsureHubCharacterAnnouncedForTarget(hubId, senderParticipant, target, "move-send"))
+                {
+                    filteredTargets.Add(target);
+                    ensuredTargets.Add(target.Peer);
+                }
+                else
+                {
+                    blockedTargets.Add(target.Peer);
+                }
+            }
+
+            if (filteredTargets.Count == 0)
+            {
+                return;
+            }
+
+            var targetPeers = new List<string>(filteredTargets.Count);
+            for (var i = 0; i < filteredTargets.Count; i++)
+            {
+                if (filteredTargets[i] != null && !IsNullOrWhiteSpace(filteredTargets[i].Peer))
+                {
+                    targetPeers.Add(filteredTargets[i].Peer);
+                }
+            }
+
+            _logger.Log(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "hub-move-broadcast",
+                hubId = hubId,
+                senderPeer = senderPeer ?? string.Empty,
+                characterId = characterId,
+                x = x,
+                y = y,
+                targets = targetPeers,
+            });
+
+            _logger.Log(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "hub-move-send",
+                hubId = hubId,
+                senderPeer = senderPeer ?? string.Empty,
+                characterId = characterId,
+                totalTargets = targets.Count,
+                eligibleTargets = filteredTargets.Count,
+                ensuredTargets = ensuredTargets,
+                blockedTargets = blockedTargets,
+            });
+
+            var moveRequests = new[]
+            {
+                new KeyValuePair<string, Vector2D>(characterId, new Vector2D(x, y))
+            };
+
+            var serializedMoves = HubMovementSerializer.Serialize(moveRequests);
+            var data = BuildUtf16StringPayload(serializedMoves);
+
+            BroadcastHubFieldEvent(filteredTargets, 4, data, "sent HubCommunicationObject ExecuteMoveToPosition (broadcast)");
+        }
+
+        private void BroadcastHubStateAddToReadyPeers(string hubId, string senderPeer, HubPresenceRegistry.Participant participant, string source)
+        {
+            if (IsNullOrWhiteSpace(hubId) || participant == null)
+            {
+                return;
+            }
+
+            var hubPlayerCharacter = BuildHubPlayerCharacterFromParticipant(participant);
+            if (hubPlayerCharacter == null)
+            {
+                return;
+            }
+
+            var update = HubStateUpdate.CreateForCharacterAddtion(hubPlayerCharacter, hubId);
+            var serializedUpdate = HubSerializer.SerializeHubStateUpdate(update);
+            var data = BuildUtf16StringPayload(serializedUpdate);
+
+            var targets = GetHubBroadcastTargets(hubId, senderPeer);
+            if (targets.Count == 0)
+            {
+                return;
+            }
+
+            var filteredTargets = new List<HubPeerTarget>(targets.Count);
+            for (var i = 0; i < targets.Count; i++)
+            {
+                var target = targets[i];
+                if (target == null || IsNullOrWhiteSpace(target.Peer))
+                {
+                    continue;
+                }
+
+                if (!IsHubPeerReady(target.Peer, hubId))
+                {
+                    continue;
+                }
+
+                if (TryMarkHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId))
+                {
+                    filteredTargets.Add(target);
+                }
+            }
+
+            if (filteredTargets.Count == 0)
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "hub-add-broadcast",
+                    hubId = hubId,
+                    senderPeer = senderPeer ?? string.Empty,
+                    characterId = participant.CharacterId,
+                    playerId = (hubPlayerCharacter.Snapshot != null ? hubPlayerCharacter.Snapshot.PlayerId : 0UL),
+                    targets = targets.Count,
+                    sentTargets = 0,
+                });
+                return;
+            }
+
+            _logger.Log(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "hub-add-broadcast",
+                hubId = hubId,
+                senderPeer = senderPeer ?? string.Empty,
+                characterId = participant.CharacterId,
+                playerId = (hubPlayerCharacter.Snapshot != null ? hubPlayerCharacter.Snapshot.PlayerId : 0UL),
+                targets = targets.Count,
+                sentTargets = filteredTargets.Count,
+                targetPeers = filteredTargets.Select(t => t != null ? t.Peer : string.Empty).ToList(),
+            });
+
+            _logger.Log(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "hub-add-send",
+                mode = "broadcast",
+                source = source ?? string.Empty,
+                hubId = hubId,
+                senderPeer = senderPeer ?? string.Empty,
+                characterId = participant.CharacterId,
+                sentCount = filteredTargets.Count,
+                targetPeers = filteredTargets.Select(t => t != null ? t.Peer : string.Empty).ToList(),
+            });
+
+            for (var i = 0; i < filteredTargets.Count; i++)
+            {
+                var target = filteredTargets[i];
+                if (target == null || IsNullOrWhiteSpace(target.Peer))
+                {
+                    continue;
+                }
+
+                LogHubAddPayloadSummary(
+                    "broadcast",
+                    hubId,
+                    target.Peer,
+                    participant,
+                    hubPlayerCharacter,
+                    data,
+                    source ?? string.Empty);
+            }
+
+            BroadcastHubFieldEvent(filteredTargets, 7, data, "sent HubCommunicationObject HubStateChanged add (broadcast)");
+        }
+
+        private void BroadcastHubStateRemove(string hubId, string senderPeer, string removedCharacterId)
+        {
+            if (IsNullOrWhiteSpace(hubId) || IsNullOrWhiteSpace(removedCharacterId))
+            {
+                return;
+            }
+
+            ClearHubAnnouncementForAllPeers(hubId, removedCharacterId);
+
+            var update = HubStateUpdate.CreateForRemoveCharacter(removedCharacterId, hubId);
+            var serializedUpdate = HubSerializer.SerializeHubStateUpdate(update);
+            var data = BuildUtf16StringPayload(serializedUpdate);
+
+            var targets = GetHubBroadcastTargets(hubId, senderPeer);
+            if (targets.Count == 0)
+            {
+                return;
+            }
+
+            _logger.Log(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "hub-remove-send",
+                hubId = hubId,
+                senderPeer = senderPeer ?? string.Empty,
+                removedCharacterId = removedCharacterId,
+                sentCount = targets.Count,
+                targetPeers = targets.Select(t => t != null ? t.Peer : string.Empty).ToList(),
+            });
+
+            BroadcastHubFieldEvent(targets, 7, data, "sent HubCommunicationObject HubStateChanged remove (broadcast)");
+        }
+
+        private void BroadcastHubFieldEvent(IList<HubPeerTarget> targets, ushort fieldId, byte[] data, string note)
+        {
+            if (targets == null || targets.Count == 0 || data == null)
+            {
+                return;
+            }
+
+            var firstMsgNo = ReserveMetaGameplayMsgNos(targets.Count);
+            for (var i = 0; i < targets.Count; i++)
+            {
+                var target = targets[i];
+                if (target == null || target.Stream == null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, HubEntityId, fieldId, data), firstMsgNo + (ulong)i);
+                    SendRawFrame(target.Stream, target.Peer, PrefixLength(core), note);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private void RemoveHubPresenceWithBroadcast(string peer)
+        {
+            if (IsNullOrWhiteSpace(peer))
+            {
+                return;
+            }
+
+            ClearHubAnnouncementsForPeer(peer);
+
+            HubPresenceRegistry.Participant existing;
+            if (_hubPresenceRegistry.TryGetParticipantForPeer(peer, out existing)
+                && existing != null
+                && !IsNullOrWhiteSpace(existing.HubId)
+                && !IsNullOrWhiteSpace(existing.CharacterId))
+            {
+                BroadcastHubStateRemove(existing.HubId, peer, existing.CharacterId);
+            }
+
+            _hubPresenceRegistry.RemovePeer(peer);
+        }
+
+        private void RegisterOrUpdateHubPresenceWithDuplicateRetire(
+            string peer,
+            Guid accountId,
+            string identityHash,
+            int careerIndex,
+            string characterId,
+            string characterName,
+            string hubId,
+            float x,
+            float y,
+            string reason)
+        {
+            if (!IsNullOrWhiteSpace(characterId))
+            {
+                string existingPeer;
+                if (_hubPresenceRegistry.TryGetPeerForCharacter(characterId, out existingPeer)
+                    && !IsNullOrWhiteSpace(existingPeer)
+                    && !string.Equals(existingPeer, peer, StringComparison.OrdinalIgnoreCase))
+                {
+                    var total = Interlocked.Increment(ref _hubDuplicateSessionRetiredTotal);
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "hub-duplicate-session-retired",
+                        reason = reason ?? string.Empty,
+                        characterId = characterId,
+                        replacementPeer = peer ?? string.Empty,
+                        retiredPeer = existingPeer,
+                        total = total,
+                    });
+
+                    RemoveHubPresenceWithBroadcast(existingPeer);
+                    UnregisterHubPeerStream(existingPeer, null);
+                }
+            }
+
+            _hubPresenceRegistry.RegisterOrUpdate(
+                peer,
+                accountId,
+                identityHash,
+                careerIndex,
+                characterId,
+                characterName,
+                hubId,
+                x,
+                y);
+        }
+
+        private bool IsHubMoveOwnershipValid(
+            string peer,
+            Guid activeIdentityGuid,
+            string movedCharacterId,
+            HubPresenceRegistry.Participant movementParticipant)
+        {
+            if (IsNullOrWhiteSpace(movedCharacterId))
+            {
+                return true;
+            }
+
+            if (activeIdentityGuid == Guid.Empty)
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "hub-move-rejected-owner-mismatch",
+                    reason = "unauthenticated-identity",
+                    peer = peer ?? string.Empty,
+                    characterId = movedCharacterId,
+                });
+                return false;
+            }
+
+            var ownerAccountId = TryParseAccountIdFromCharacterIdentifier(movedCharacterId);
+            if (ownerAccountId == Guid.Empty || ownerAccountId != activeIdentityGuid)
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "hub-move-rejected-owner-mismatch",
+                    reason = ownerAccountId == Guid.Empty ? "invalid-character-id" : "account-mismatch",
+                    peer = peer ?? string.Empty,
+                    characterId = movedCharacterId,
+                    activeIdentityGuid = activeIdentityGuid.ToString(),
+                    parsedOwnerAccountId = ownerAccountId != Guid.Empty ? ownerAccountId.ToString() : string.Empty,
+                });
+                return false;
+            }
+
+            if (movementParticipant != null
+                && !IsNullOrWhiteSpace(movementParticipant.CharacterId)
+                && !string.Equals(movementParticipant.CharacterId, movedCharacterId, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "hub-move-rejected-owner-mismatch",
+                    reason = "registered-character-mismatch",
+                    peer = peer ?? string.Empty,
+                    characterId = movedCharacterId,
+                    registeredCharacterId = movementParticipant.CharacterId,
+                });
+                return false;
+            }
+
+            return true;
+        }
+
         private static PlayerCharacterSnapshot BuildPlayerCharacterSnapshotForSlot(string characterIdentifier, string characterName, CareerSlot slot)
         {
             var snapshot = new PlayerCharacterSnapshot();
@@ -1463,6 +2653,28 @@ namespace Shadowrun.LocalService.Core.Protocols
             snapshot.PlayerCharacterInventory = pcInv;
 
             return snapshot;
+        }
+
+        private static Guid TryParseAccountIdFromCharacterIdentifier(string characterIdentifier)
+        {
+            if (IsNullOrWhiteSpace(characterIdentifier))
+            {
+                return Guid.Empty;
+            }
+
+            var separator = characterIdentifier.IndexOf(':');
+            var guidPart = separator > 0 ? characterIdentifier.Substring(0, separator) : characterIdentifier;
+            Guid parsed;
+            try
+            {
+                parsed = new Guid(guidPart);
+            }
+            catch
+            {
+                return Guid.Empty;
+            }
+
+            return parsed;
         }
 
         private static IDictionary TryDeserializeJsonDict(string json)
@@ -1630,7 +2842,13 @@ namespace Shadowrun.LocalService.Core.Protocols
         private const int CreationInfoDedupWindowMs = 10000;
         private readonly object _hubPushDedupLock = new object();
         private readonly Dictionary<string, HubPushDedupState> _hubPushDedupByPeer = new Dictionary<string, HubPushDedupState>(StringComparer.OrdinalIgnoreCase);
-
+        private readonly HubPresenceRegistry _hubPresenceRegistry = new HubPresenceRegistry();
+        private readonly object _hubPeerStreamsLock = new object();
+        private readonly Dictionary<string, NetworkStream> _hubPeerStreams = new Dictionary<string, NetworkStream>(StringComparer.OrdinalIgnoreCase);
+        private readonly object _hubAnnouncedByPeerLock = new object();
+        private readonly Dictionary<string, HashSet<string>> _hubAnnouncedByPeer = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        private readonly object _hubReadyByPeerLock = new object();
+        private readonly Dictionary<string, HashSet<string>> _hubReadyByPeer = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         private sealed class HubPushDedupState
         {
             public ulong HubStateHash;
@@ -2439,6 +3657,122 @@ namespace Shadowrun.LocalService.Core.Protocols
                     Guid activeIdentityGuid = Guid.Empty;
                     var activeCareerIndex = 0;
                     var activeCharacterName = "OfflineRunner";
+                    string currentHubInstanceId = null;
+                    const int HubReadyFallbackDelayMs = 2500;
+                    var hubReadyFallbackLock = new object();
+                    var hubReadyFallbackGeneration = 0;
+                    string hubReadyFallbackHubId = null;
+                    string hubReadyFallbackCharacterId = null;
+
+                    Action<string> cancelHubReadyFallback = null;
+                    Action<string, string, string> armHubReadyFallback = null;
+
+                    cancelHubReadyFallback = delegate (string reason)
+                    {
+                        lock (hubReadyFallbackLock)
+                        {
+                            hubReadyFallbackGeneration++;
+                            hubReadyFallbackHubId = null;
+                            hubReadyFallbackCharacterId = null;
+                        }
+
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "hub-ready-fallback",
+                            peer = peer,
+                            status = "cancel",
+                            reason = reason ?? string.Empty,
+                        });
+                    };
+
+                    armHubReadyFallback = delegate (string hubId, string characterId, string reason)
+                    {
+                        if (IsNullOrWhiteSpace(hubId) || IsNullOrWhiteSpace(characterId))
+                        {
+                            return;
+                        }
+
+                        if (IsHubPeerReady(peer, hubId))
+                        {
+                            return;
+                        }
+
+                        int generation;
+                        lock (hubReadyFallbackLock)
+                        {
+                            hubReadyFallbackGeneration++;
+                            generation = hubReadyFallbackGeneration;
+                            hubReadyFallbackHubId = hubId;
+                            hubReadyFallbackCharacterId = characterId;
+                        }
+
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "hub-ready-fallback",
+                            peer = peer,
+                            status = "arm",
+                            reason = reason ?? string.Empty,
+                            hubId = hubId,
+                            characterId = characterId,
+                            delayMs = HubReadyFallbackDelayMs,
+                        });
+
+                        ThreadPool.QueueUserWorkItem(delegate
+                        {
+                            SleepWithStop(stopEvent, HubReadyFallbackDelayMs);
+                            if (stopEvent.WaitOne(0) || connectionClosed.WaitOne(0))
+                            {
+                                return;
+                            }
+
+                            string pendingHubId;
+                            string pendingCharacterId;
+                            lock (hubReadyFallbackLock)
+                            {
+                                if (generation != hubReadyFallbackGeneration)
+                                {
+                                    return;
+                                }
+
+                                pendingHubId = hubReadyFallbackHubId;
+                                pendingCharacterId = hubReadyFallbackCharacterId;
+                            }
+
+                            if (IsNullOrWhiteSpace(pendingHubId) || IsNullOrWhiteSpace(pendingCharacterId))
+                            {
+                                return;
+                            }
+
+                            var activated = TryActivateHubReadiness(peer, pendingHubId, "fallback-delay");
+                            var total = activated
+                                ? Interlocked.Increment(ref _hubReadyFallbackTriggeredTotal)
+                                : Interlocked.Increment(ref _hubReadyFallbackSkippedTotal);
+
+                            lock (hubReadyFallbackLock)
+                            {
+                                if (generation == hubReadyFallbackGeneration)
+                                {
+                                    hubReadyFallbackGeneration++;
+                                    hubReadyFallbackHubId = null;
+                                    hubReadyFallbackCharacterId = null;
+                                }
+                            }
+
+                            _logger.Log(new
+                            {
+                                ts = RequestLogger.UtcNowIso(),
+                                type = "hub-ready-fallback",
+                                peer = peer,
+                                status = activated ? "triggered" : "skipped",
+                                reason = "fallback-delay",
+                                hubId = pendingHubId,
+                                characterId = pendingCharacterId,
+                                total = total,
+                            });
+                        });
+                    };
 
                     // Track simple story progression locally so DirectStart missions don't loop forever.
                     // Keyed by map name (e.g., "1_010_Prologue").
@@ -2458,6 +3792,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     const ushort missionCommandCommunicationObjectTypeId = 10;
 
                     // Authoritative simulation session (created per mission) used to safely skip AI turns.
+                    RegisterHubPeerStream(peer, stream);
 
                     while (!stopEvent.WaitOne(0))
                     {
@@ -2665,6 +4000,196 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     payloadCount = payloadStrings.Count,
                                     payloadPreview = payloadPreview,
                                 });
+
+                                if (shared.Value.FieldId == 1 || shared.Value.FieldId == 2)
+                                {
+                                    var hubPos = 0;
+                                    string movedCharacterId;
+                                    if (TryReadUtf16LengthPrefixedString(shared.Value.Data, ref hubPos, out movedCharacterId))
+                                    {
+                                        int rawX;
+                                        int rawY;
+                                        if (TryReadInt32LE(shared.Value.Data, ref hubPos, out rawX)
+                                            && TryReadInt32LE(shared.Value.Data, ref hubPos, out rawY))
+                                        {
+                                            var movedX = BitConverter.ToSingle(BitConverter.GetBytes(rawX), 0);
+                                            var movedY = BitConverter.ToSingle(BitConverter.GetBytes(rawY), 0);
+
+                                            if (shared.Value.FieldId == 1)
+                                            {
+                                                _hubPresenceRegistry.UpdatePosition(peer, movedX, movedY);
+
+                                                string movementHubId;
+                                                if (!_hubPresenceRegistry.TryGetHubIdForPeer(peer, out movementHubId))
+                                                {
+                                                    movementHubId = currentHubInstanceId;
+                                                }
+
+                                                HubPresenceRegistry.Participant movementParticipant;
+                                                _hubPresenceRegistry.TryGetParticipantForPeer(peer, out movementParticipant);
+
+                                                if (!IsHubMoveOwnershipValid(peer, activeIdentityGuid, movedCharacterId, movementParticipant))
+                                                {
+                                                    continue;
+                                                }
+
+                                                if (movementParticipant != null
+                                                    && !IsNullOrWhiteSpace(movedCharacterId)
+                                                    && !string.Equals(movementParticipant.CharacterId, movedCharacterId, StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    var updatedHubId = !IsNullOrWhiteSpace(movementParticipant.HubId)
+                                                        ? movementParticipant.HubId
+                                                        : movementHubId;
+
+                                                    RegisterOrUpdateHubPresenceWithDuplicateRetire(
+                                                        peer,
+                                                        movementParticipant.AccountId,
+                                                        movementParticipant.IdentityHash,
+                                                        movementParticipant.CareerIndex,
+                                                        movedCharacterId,
+                                                        movementParticipant.CharacterName,
+                                                        updatedHubId,
+                                                        movedX,
+                                                        movedY,
+                                                        "hub-move-character-shift");
+
+                                                    if (!IsNullOrWhiteSpace(updatedHubId) && !IsNullOrWhiteSpace(movementParticipant.CharacterId))
+                                                    {
+                                                        BroadcastHubStateRemove(updatedHubId, peer, movementParticipant.CharacterId);
+                                                    }
+
+                                                    HubPresenceRegistry.Participant shiftedParticipant;
+                                                    _hubPresenceRegistry.TryGetParticipantForPeer(peer, out shiftedParticipant);
+                                                    if (shiftedParticipant != null && !IsNullOrWhiteSpace(shiftedParticipant.HubId))
+                                                    {
+                                                        ClearHubAnnouncementForAllPeers(shiftedParticipant.HubId, shiftedParticipant.CharacterId);
+                                                        BroadcastHubStateAddToReadyPeers(shiftedParticipant.HubId, peer, shiftedParticipant, "character-shift");
+                                                    }
+
+                                                    _logger.Log(new
+                                                    {
+                                                        ts = RequestLogger.UtcNowIso(),
+                                                        type = "hub-characterid-shift",
+                                                        peer = peer,
+                                                        oldCharacterId = movementParticipant.CharacterId ?? string.Empty,
+                                                        newCharacterId = movedCharacterId,
+                                                        hubId = updatedHubId ?? string.Empty,
+                                                    });
+
+                                                    movementHubId = updatedHubId;
+                                                    movementParticipant = shiftedParticipant;
+                                                }
+
+                                                var movementCharacterId = movedCharacterId;
+                                                if (IsNullOrWhiteSpace(movementCharacterId))
+                                                {
+                                                    if (movementParticipant != null)
+                                                    {
+                                                        movementCharacterId = movementParticipant.CharacterId;
+                                                    }
+                                                }
+
+                                                var firstMoveReadyActivated = TryActivateHubReadiness(peer, movementHubId, "first-move");
+                                                if (firstMoveReadyActivated)
+                                                {
+                                                    cancelHubReadyFallback("first-move");
+                                                }
+
+                                                BroadcastHubMovement(movementHubId, peer, movementCharacterId, movedX, movedY);
+                                            }
+                                            else
+                                            {
+                                                HubPresenceRegistry.Participant previousParticipant;
+                                                _hubPresenceRegistry.TryGetParticipantForPeer(peer, out previousParticipant);
+
+                                                var hubIdForPresence = currentHubInstanceId;
+                                                if (IsNullOrWhiteSpace(hubIdForPresence))
+                                                {
+                                                    _hubPresenceRegistry.TryGetHubIdForPeer(peer, out hubIdForPresence);
+                                                }
+                                                if (IsNullOrWhiteSpace(hubIdForPresence) && _userStore != null && !IsNullOrWhiteSpace(activeIdentityHash))
+                                                {
+                                                    try
+                                                    {
+                                                        var slot = _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false);
+                                                        if (slot != null && !IsNullOrWhiteSpace(slot.HubId))
+                                                        {
+                                                            hubIdForPresence = slot.HubId;
+                                                        }
+                                                    }
+                                                    catch
+                                                    {
+                                                    }
+                                                }
+
+                                                var characterIdForPresence = !IsNullOrWhiteSpace(movedCharacterId)
+                                                    ? movedCharacterId
+                                                    : ResolveHubCharacterIdentifier(null, activeIdentityGuid, activeCareerIndex, previousParticipant != null ? previousParticipant.CharacterId : null);
+
+                                                RegisterOrUpdateHubPresenceWithDuplicateRetire(
+                                                    peer,
+                                                    activeIdentityGuid,
+                                                    activeIdentityHash,
+                                                    activeCareerIndex,
+                                                    characterIdForPresence,
+                                                    activeCharacterName,
+                                                    hubIdForPresence,
+                                                    movedX,
+                                                    movedY,
+                                                    "hub-enter-field-2");
+
+                                                if (!IsNullOrWhiteSpace(hubIdForPresence))
+                                                {
+                                                    currentHubInstanceId = hubIdForPresence;
+                                                }
+
+                                                HubPresenceRegistry.Participant currentParticipant;
+                                                _hubPresenceRegistry.TryGetParticipantForPeer(peer, out currentParticipant);
+
+                                                if (previousParticipant != null
+                                                    && !IsNullOrWhiteSpace(previousParticipant.HubId)
+                                                    && !IsNullOrWhiteSpace(previousParticipant.CharacterId)
+                                                    && !string.Equals(previousParticipant.HubId, hubIdForPresence, StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    BroadcastHubStateRemove(previousParticipant.HubId, peer, previousParticipant.CharacterId);
+                                                }
+
+                                                if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipant.HubId))
+                                                {
+                                                    var shouldBroadcastAdd = previousParticipant == null
+                                                        || !string.Equals(previousParticipant.HubId, currentParticipant.HubId, StringComparison.OrdinalIgnoreCase)
+                                                        || !string.Equals(previousParticipant.CharacterId, currentParticipant.CharacterId, StringComparison.OrdinalIgnoreCase);
+
+                                                    if (shouldBroadcastAdd)
+                                                    {
+                                                        ClearHubAnnouncementsForPeerHub(peer, currentParticipant.HubId);
+                                                    }
+
+                                                    _logger.Log(new
+                                                    {
+                                                        ts = RequestLogger.UtcNowIso(),
+                                                        type = "hub-enter",
+                                                        peer = peer,
+                                                        hubId = currentParticipant.HubId,
+                                                        characterId = currentParticipant.CharacterId ?? string.Empty,
+                                                        x = movedX,
+                                                        y = movedY,
+                                                        previousHubId = previousParticipant != null ? (previousParticipant.HubId ?? string.Empty) : string.Empty,
+                                                        previousCharacterId = previousParticipant != null ? (previousParticipant.CharacterId ?? string.Empty) : string.Empty,
+                                                        hubChanged = previousParticipant == null || !string.Equals(previousParticipant.HubId, currentParticipant.HubId, StringComparison.OrdinalIgnoreCase),
+                                                    });
+
+                                                    armHubReadyFallback(currentParticipant.HubId, currentParticipant.CharacterId, "hub-enter-field-2");
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                else if (shared.Value.FieldId == 3)
+                                {
+                                    cancelHubReadyFallback("hub-leave-field-3");
+                                    RemoveHubPresenceWithBroadcast(peer);
+                                }
                             }
 
                             var isRegularConnect = shared.Value.ApMsgId == 1
@@ -2947,7 +4472,20 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 var hubId = slot != null && !IsNullOrWhiteSpace(slot.HubId) ? slot.HubId : DefaultHubId;
 
                                 var hubStatePayload = BuildMetaHubPushPayload(4, SerializeHubStateOrFallback(hubId, characterIdentifier, characterName, slot));
+                                currentHubInstanceId = hubId;
                                 cachedHubStatePayload = hubStatePayload;
+                                RegisterOrUpdateHubPresenceWithDuplicateRetire(
+                                    peer,
+                                    activeIdentityGuid,
+                                    activeIdentityHash,
+                                    activeCareerIndex,
+                                    characterIdentifier,
+                                    activeCharacterName,
+                                    currentHubInstanceId,
+                                    0f,
+                                    0f,
+                                    "career-enter-bootstrap");
+                                armHubReadyFallback(currentHubInstanceId, characterIdentifier, "career-enter-bootstrap");
                                 // IMPORTANT: Don't push the hub instance unsolicited here.
                                 // The client can receive it before the metagameplay UI exists and/or before a hub request
                                 // is queued; in that case LocalHubInstanceController will ignore it. Instead we respond to
@@ -3007,6 +4545,10 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                             if (isLeaveCurrentCareer)
                             {
+                                cancelHubReadyFallback("leave-current-career");
+                                RemoveHubPresenceWithBroadcast(peer);
+                                currentHubInstanceId = null;
+
                                 // Minimal behavior: acknowledge by re-sending current career summaries.
                                 // This keeps the client UI in sync without needing a full career-state machine.
                                 var msgNoBase = direct.Value.MsgNo + 20;
@@ -4634,6 +6176,133 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 && shared.Value.FieldId == 2;
                             if (isMetaGameplayRequestStoryHubFor && cachedHubStatePayload != null)
                             {
+                                string requestedHostCharacterId;
+                                Guid requestedHostAccountId;
+                                string routedHubId = null;
+                                string routedHubSource = string.Empty;
+                                CareerSlot routedSlot = null;
+
+                                if (_userStore != null && !IsNullOrWhiteSpace(activeIdentityHash))
+                                {
+                                    try
+                                    {
+                                        routedSlot = _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false);
+                                    }
+                                    catch
+                                    {
+                                        routedSlot = null;
+                                    }
+                                }
+
+                                if (TryParseRequestStoryHubForPayload(shared.Value.Data, out requestedHostCharacterId, out requestedHostAccountId))
+                                {
+                                    if (requestedHostAccountId != Guid.Empty && requestedHostAccountId == activeIdentityGuid)
+                                    {
+                                        routedHubId = routedSlot != null && !IsNullOrWhiteSpace(routedSlot.HubId)
+                                            ? routedSlot.HubId
+                                            : DefaultHubId;
+                                        routedHubSource = "self-career";
+                                    }
+                                    else if (requestedHostAccountId != Guid.Empty && _hubPresenceRegistry.TryGetHubIdForAccount(requestedHostAccountId, out routedHubId))
+                                    {
+                                        routedHubSource = "host-account";
+                                    }
+                                    else if (!IsNullOrWhiteSpace(requestedHostCharacterId) && _hubPresenceRegistry.TryGetHubIdForCharacter(requestedHostCharacterId, out routedHubId))
+                                    {
+                                        routedHubSource = "host-character";
+                                    }
+                                }
+
+                                if (IsNullOrWhiteSpace(routedHubId) && !IsNullOrWhiteSpace(currentHubInstanceId))
+                                {
+                                    routedHubId = currentHubInstanceId;
+                                    routedHubSource = "current-peer";
+                                }
+
+                                if (!IsNullOrWhiteSpace(routedHubId))
+                                {
+                                    HubPresenceRegistry.Participant previousParticipant;
+                                    _hubPresenceRegistry.TryGetParticipantForPeer(peer, out previousParticipant);
+
+                                    var routedCharacterIdentifier = ResolveHubCharacterIdentifier(
+                                        routedSlot,
+                                        activeIdentityGuid,
+                                        activeCareerIndex,
+                                        previousParticipant != null ? previousParticipant.CharacterId : null);
+                                    var routedCharacterName = routedSlot != null && !IsNullOrWhiteSpace(routedSlot.CharacterName)
+                                        ? routedSlot.CharacterName
+                                        : activeCharacterName;
+
+                                    var routedX = previousParticipant != null ? previousParticipant.X : 0f;
+                                    var routedY = previousParticipant != null ? previousParticipant.Y : 0f;
+
+                                    RegisterOrUpdateHubPresenceWithDuplicateRetire(
+                                        peer,
+                                        activeIdentityGuid,
+                                        activeIdentityHash,
+                                        activeCareerIndex,
+                                        routedCharacterIdentifier,
+                                        routedCharacterName,
+                                        routedHubId,
+                                        routedX,
+                                        routedY,
+                                        "request-story-hub-for");
+
+                                    HubPresenceRegistry.Participant currentParticipant;
+                                    _hubPresenceRegistry.TryGetParticipantForPeer(peer, out currentParticipant);
+
+                                    var shouldBroadcastAdd = previousParticipant == null
+                                        || !string.Equals(previousParticipant.HubId, routedHubId, StringComparison.OrdinalIgnoreCase)
+                                        || !string.Equals(previousParticipant.CharacterId, routedCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
+
+                                    if (previousParticipant != null
+                                        && !IsNullOrWhiteSpace(previousParticipant.HubId)
+                                        && !IsNullOrWhiteSpace(previousParticipant.CharacterId)
+                                        && !string.Equals(previousParticipant.HubId, routedHubId, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        BroadcastHubStateRemove(previousParticipant.HubId, peer, previousParticipant.CharacterId);
+                                    }
+
+                                    if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipant.HubId))
+                                    {
+                                        if (shouldBroadcastAdd)
+                                        {
+                                            ClearHubAnnouncementsForPeerHub(peer, currentParticipant.HubId);
+                                        }
+
+                                        armHubReadyFallback(currentParticipant.HubId, currentParticipant.CharacterId, "request-story-hub-for");
+
+                                    }
+
+                                    _logger.Log(new
+                                    {
+                                        ts = RequestLogger.UtcNowIso(),
+                                        type = "hub-join-eval",
+                                        path = "RequestStoryHubFor",
+                                        peer = peer,
+                                        previousHubId = previousParticipant != null ? (previousParticipant.HubId ?? string.Empty) : string.Empty,
+                                        previousCharacterId = previousParticipant != null ? (previousParticipant.CharacterId ?? string.Empty) : string.Empty,
+                                        currentHubId = currentParticipant != null ? (currentParticipant.HubId ?? string.Empty) : string.Empty,
+                                        currentCharacterId = currentParticipant != null ? (currentParticipant.CharacterId ?? string.Empty) : string.Empty,
+                                        shouldBroadcastAdd = shouldBroadcastAdd,
+                                    });
+
+                                    var serializedSharedHubState = BuildSerializedSharedHubStateOrFallback(routedHubId, routedCharacterIdentifier, routedCharacterName, routedSlot);
+                                    cachedHubStatePayload = BuildMetaHubPushPayload(HubEntityId, serializedSharedHubState);
+                                    currentHubInstanceId = routedHubId;
+
+                                    _logger.Log(new
+                                    {
+                                        ts = RequestLogger.UtcNowIso(),
+                                        type = "hub-route-storyhubfor",
+                                        peer = peer,
+                                        hostCharacterId = requestedHostCharacterId ?? string.Empty,
+                                        hostAccountId = requestedHostAccountId != Guid.Empty ? requestedHostAccountId.ToString() : string.Empty,
+                                        routedHubId = routedHubId,
+                                        routeSource = routedHubSource,
+                                    });
+                                }
+
                                 var requestMsgNoBase = direct.Value.MsgNo + 111;
 
                                 try
@@ -4662,6 +6331,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     {
                                     }
                                 }
+
                             }
 
                             if (isMetaGameplayMessage)
@@ -4731,6 +6401,109 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     && rawMessage.IndexOf("RequestCurrentStorylineHubMessage", StringComparison.Ordinal) >= 0
                                     && cachedHubStatePayload != null)
                                 {
+                                    if (!IsNullOrWhiteSpace(currentHubInstanceId))
+                                    {
+                                        HubPresenceRegistry.Participant previousParticipant;
+                                        _hubPresenceRegistry.TryGetParticipantForPeer(peer, out previousParticipant);
+
+                                        CareerSlot currentSlot = null;
+                                        if (_userStore != null && !IsNullOrWhiteSpace(activeIdentityHash))
+                                        {
+                                            try
+                                            {
+                                                currentSlot = _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false);
+                                            }
+                                            catch
+                                            {
+                                                currentSlot = null;
+                                            }
+                                        }
+
+                                        var currentCharacterIdentifier = ResolveHubCharacterIdentifier(
+                                            currentSlot,
+                                            activeIdentityGuid,
+                                            activeCareerIndex,
+                                            previousParticipant != null ? previousParticipant.CharacterId : null);
+                                        var currentCharacterName = currentSlot != null && !IsNullOrWhiteSpace(currentSlot.CharacterName)
+                                            ? currentSlot.CharacterName
+                                            : activeCharacterName;
+
+                                        var effectiveHubId = currentHubInstanceId;
+                                        Guid followHostAccountId;
+                                        string followHostHubId;
+                                        if (PartyHubFollowRegistry.TryGetHostForMember(activeIdentityGuid, out followHostAccountId)
+                                            && followHostAccountId != Guid.Empty
+                                            && followHostAccountId != activeIdentityGuid
+                                            && _hubPresenceRegistry.TryGetHubIdForAccount(followHostAccountId, out followHostHubId)
+                                            && !IsNullOrWhiteSpace(followHostHubId))
+                                        {
+                                            effectiveHubId = followHostHubId;
+                                        }
+                                        else if (currentSlot != null && !IsNullOrWhiteSpace(currentSlot.HubId))
+                                        {
+                                            effectiveHubId = currentSlot.HubId;
+                                        }
+
+                                        currentHubInstanceId = effectiveHubId;
+
+                                        var currentX = previousParticipant != null ? previousParticipant.X : 0f;
+                                        var currentY = previousParticipant != null ? previousParticipant.Y : 0f;
+
+                                        RegisterOrUpdateHubPresenceWithDuplicateRetire(
+                                            peer,
+                                            activeIdentityGuid,
+                                            activeIdentityHash,
+                                            activeCareerIndex,
+                                            currentCharacterIdentifier,
+                                            currentCharacterName,
+                                            effectiveHubId,
+                                            currentX,
+                                            currentY,
+                                            "request-current-storyline-hub");
+
+                                        HubPresenceRegistry.Participant currentParticipant;
+                                        _hubPresenceRegistry.TryGetParticipantForPeer(peer, out currentParticipant);
+
+                                        var shouldBroadcastAdd = previousParticipant == null
+                                            || !string.Equals(previousParticipant.HubId, effectiveHubId, StringComparison.OrdinalIgnoreCase)
+                                            || !string.Equals(previousParticipant.CharacterId, currentCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
+
+                                        if (previousParticipant != null
+                                            && !IsNullOrWhiteSpace(previousParticipant.HubId)
+                                            && !IsNullOrWhiteSpace(previousParticipant.CharacterId)
+                                            && !string.Equals(previousParticipant.HubId, effectiveHubId, StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            BroadcastHubStateRemove(previousParticipant.HubId, peer, previousParticipant.CharacterId);
+                                        }
+
+                                        if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipant.HubId))
+                                        {
+                                            if (shouldBroadcastAdd)
+                                            {
+                                                ClearHubAnnouncementsForPeerHub(peer, currentParticipant.HubId);
+                                            }
+
+                                            armHubReadyFallback(currentParticipant.HubId, currentParticipant.CharacterId, "request-current-storyline-hub");
+
+                                        }
+
+                                        _logger.Log(new
+                                        {
+                                            ts = RequestLogger.UtcNowIso(),
+                                            type = "hub-join-eval",
+                                            path = "RequestCurrentStorylineHubMessage",
+                                            peer = peer,
+                                            previousHubId = previousParticipant != null ? (previousParticipant.HubId ?? string.Empty) : string.Empty,
+                                            previousCharacterId = previousParticipant != null ? (previousParticipant.CharacterId ?? string.Empty) : string.Empty,
+                                            currentHubId = currentParticipant != null ? (currentParticipant.HubId ?? string.Empty) : string.Empty,
+                                            currentCharacterId = currentParticipant != null ? (currentParticipant.CharacterId ?? string.Empty) : string.Empty,
+                                            shouldBroadcastAdd = shouldBroadcastAdd,
+                                        });
+
+                                        var serializedSharedHubState = BuildSerializedSharedHubStateOrFallback(effectiveHubId, currentCharacterIdentifier, currentCharacterName, currentSlot);
+                                        cachedHubStatePayload = BuildMetaHubPushPayload(HubEntityId, serializedSharedHubState);
+                                    }
+
                                     var requestMsgNoBase = direct.Value.MsgNo + 110;
 
                                     if (!ShouldSuppressDuplicateHubPush(peer, false, cachedHubStatePayload))
@@ -4747,6 +6520,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             SendRawFrame(stream, peer, PrefixLength(creationInfoCore), "sent MetaGameplayCommunicationObject CreationInfoChanged in response to RequestCurrentStorylineHubMessage");
                                         }
                                     }
+
                                 }
 
                                 // Character creation / customization sends a CharacterChangeCollection that includes
@@ -6485,7 +8259,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 MissionRuntimeRegistry.MarkSoloMissionEnded(peer);
                             }
 
+                            cancelHubReadyFallback("socket-closed");
                             connectionClosed.Set();
+                            RemoveHubPresenceWithBroadcast(peer);
                             _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "aplay-conn", peer = peer, note = "socket closed" });
                             break;
                         }
@@ -6497,6 +8273,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                         UnregisterCoopMissionParticipant(currentCoopGroupName, peer);
                     }
+
+                    cancelHubReadyFallback("connection-teardown");
+                    RemoveHubPresenceWithBroadcast(peer);
+                    UnregisterHubPeerStream(peer, stream);
                 }
             }
         }
@@ -7624,6 +9404,18 @@ namespace Shadowrun.LocalService.Core.Protocols
             public readonly NetworkStream Stream;
 
             public CoopMissionParticipant(string peer, NetworkStream stream)
+            {
+                Peer = peer;
+                Stream = stream;
+            }
+        }
+
+        private sealed class HubPeerTarget
+        {
+            public readonly string Peer;
+            public readonly NetworkStream Stream;
+
+            public HubPeerTarget(string peer, NetworkStream stream)
             {
                 Peer = peer;
                 Stream = stream;
