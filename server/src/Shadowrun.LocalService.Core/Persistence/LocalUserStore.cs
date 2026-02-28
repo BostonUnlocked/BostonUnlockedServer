@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Web.Script.Serialization;
@@ -99,6 +100,10 @@ namespace Shadowrun.LocalService.Core.Persistence
                 var identity = GetString(account, "IdentityHash");
                 if (IsGuidish(identity))
                 {
+                    if (EnsureDisplayNameIsAnonymized(account, "OfflineRunner"))
+                    {
+                        SaveAccountNoThrow(account);
+                    }
                     return NormalizeGuidish(identity);
                 }
 
@@ -106,7 +111,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 account["IdentityHash"] = created;
                 if (IsNullOrWhiteSpace(GetString(account, "DisplayName")))
                 {
-                    account["DisplayName"] = "OfflineRunner";
+                    account["DisplayName"] = BuildAnonymizedDisplayName("OfflineRunner");
                 }
                 if (account["Careers"] == null)
                 {
@@ -128,7 +133,8 @@ namespace Shadowrun.LocalService.Core.Persistence
             lock (_lock)
             {
                 var steamKey = steamId64.ToString(CultureInfo.InvariantCulture);
-                var steamDisplayName = "Steam:" + steamKey;
+                var steamDisplayNameSource = "Steam:" + steamKey;
+                var steamDisplayName = BuildAnonymizedDisplayName(steamDisplayNameSource);
 
                 // Store mapping at the account-store root so multiple identities can coexist.
                 var store = LoadAccountStoreNoThrow(true);
@@ -158,6 +164,8 @@ namespace Shadowrun.LocalService.Core.Persistence
                         {
                             existingAccount["DisplayName"] = steamDisplayName;
                         }
+
+                        EnsureDisplayNameIsAnonymized(existingAccount, steamDisplayNameSource);
                     }
 
                     SaveAccountStoreNoThrow(store);
@@ -191,6 +199,8 @@ namespace Shadowrun.LocalService.Core.Persistence
                                     {
                                         acct["DisplayName"] = steamDisplayName;
                                     }
+
+                                    EnsureDisplayNameIsAnonymized(acct, steamDisplayNameSource);
                                 }
 
                                 SaveAccountStoreNoThrow(store);
@@ -220,6 +230,448 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        public bool TryRegisterCliffhangerCredentials(string email, string password, string tag, out string identityHash, out string message)
+        {
+            identityHash = null;
+            message = null;
+
+            var normalizedEmail = NormalizeCredentialEmail(email);
+            if (IsNullOrWhiteSpace(normalizedEmail))
+            {
+                message = "InvalidEmail";
+                return false;
+            }
+
+            if (IsNullOrWhiteSpace(password))
+            {
+                message = "InvalidPassword";
+                return false;
+            }
+
+            lock (_lock)
+            {
+                var store = LoadAccountStoreNoThrow(true);
+                var accounts = GetOrCreateDict(store, AccountStoreAccountsKey);
+                var credentialIdentities = GetOrCreateDict(store, AccountStoreCredentialIdentitiesKey);
+
+                var mapped = GetString(credentialIdentities, normalizedEmail);
+                if (IsGuidish(mapped))
+                {
+                    var normalizedMapped = NormalizeGuidish(mapped);
+                    var existingAccount = GetDict(accounts, normalizedMapped);
+                    if (existingAccount != null)
+                    {
+                        message = "EmailAlreadyRegistered";
+                        return false;
+                    }
+                }
+
+                foreach (DictionaryEntry entry in accounts)
+                {
+                    var existingIdentity = entry.Key as string;
+                    var existingAccount = entry.Value as IDictionary;
+                    if (!IsGuidish(existingIdentity) || existingAccount == null)
+                    {
+                        continue;
+                    }
+
+                    var existingEmail = NormalizeCredentialEmail(GetString(existingAccount, AccountCredentialEmailKey));
+                    if (IsNullOrWhiteSpace(existingEmail) || !string.Equals(existingEmail, normalizedEmail, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    credentialIdentities[normalizedEmail] = NormalizeGuidish(existingIdentity);
+                    SaveAccountStoreNoThrow(store);
+                    message = "EmailAlreadyRegistered";
+                    return false;
+                }
+
+                var createdIdentity = NormalizeGuidish(Guid.NewGuid().ToString());
+                var createdAccount = BuildFreshAccountForIdentity(createdIdentity);
+                createdAccount["Careers"] = BuildDefaultCareers(createdIdentity);
+
+                var normalizedTag = NormalizeDisplayNameTag(tag);
+                var displayNameSource = !IsNullOrWhiteSpace(normalizedTag) ? normalizedTag : normalizedEmail;
+                createdAccount["DisplayName"] = BuildAnonymizedDisplayName(displayNameSource);
+
+                string hash;
+                string salt;
+                var iterations = 100000;
+                CreatePasswordDigest(password, iterations, out hash, out salt);
+
+                createdAccount[AccountCredentialEmailKey] = normalizedEmail;
+                createdAccount[AccountCredentialPasswordHashKey] = hash;
+                createdAccount[AccountCredentialPasswordSaltKey] = salt;
+                createdAccount[AccountCredentialPasswordIterationsKey] = iterations;
+                createdAccount[AccountCredentialHashAlgorithmKey] = "PBKDF2-SHA1";
+
+                accounts[createdIdentity] = createdAccount;
+                credentialIdentities[normalizedEmail] = createdIdentity;
+
+                SaveAccountStoreNoThrow(store);
+
+                identityHash = createdIdentity;
+                message = "OK";
+                return true;
+            }
+        }
+
+        public bool TryAuthenticateCliffhangerCredentials(string email, string password, out string identityHash, out bool isVerified, out string message)
+        {
+            identityHash = null;
+            isVerified = false;
+            message = null;
+
+            var normalizedEmail = NormalizeCredentialEmail(email);
+            if (IsNullOrWhiteSpace(normalizedEmail) || IsNullOrWhiteSpace(password))
+            {
+                message = "InvalidCredentials";
+                return false;
+            }
+
+            lock (_lock)
+            {
+                var store = LoadAccountStoreNoThrow(true);
+                var accounts = GetOrCreateDict(store, AccountStoreAccountsKey);
+                var credentialIdentities = GetOrCreateDict(store, AccountStoreCredentialIdentitiesKey);
+
+                string identity = null;
+                var mapped = GetString(credentialIdentities, normalizedEmail);
+                if (IsGuidish(mapped))
+                {
+                    identity = NormalizeGuidish(mapped);
+                }
+
+                IDictionary account = null;
+                if (IsGuidish(identity))
+                {
+                    account = GetDict(accounts, identity);
+                }
+
+                if (account == null)
+                {
+                    foreach (DictionaryEntry entry in accounts)
+                    {
+                        var candidateIdentity = entry.Key as string;
+                        var candidateAccount = entry.Value as IDictionary;
+                        if (!IsGuidish(candidateIdentity) || candidateAccount == null)
+                        {
+                            continue;
+                        }
+
+                        var candidateEmail = NormalizeCredentialEmail(GetString(candidateAccount, AccountCredentialEmailKey));
+                        if (IsNullOrWhiteSpace(candidateEmail) || !string.Equals(candidateEmail, normalizedEmail, StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        identity = NormalizeGuidish(candidateIdentity);
+                        account = candidateAccount;
+                        credentialIdentities[normalizedEmail] = identity;
+                        SaveAccountStoreNoThrow(store);
+                        break;
+                    }
+                }
+
+                if (account == null || !IsGuidish(identity))
+                {
+                    message = "InvalidCredentials";
+                    return false;
+                }
+
+                var storedHash = GetString(account, AccountCredentialPasswordHashKey);
+                var storedSalt = GetString(account, AccountCredentialPasswordSaltKey);
+                var iterations = GetInt(account, AccountCredentialPasswordIterationsKey, 100000);
+
+                if (IsNullOrWhiteSpace(storedHash) || IsNullOrWhiteSpace(storedSalt) || iterations <= 0)
+                {
+                    message = "InvalidCredentials";
+                    return false;
+                }
+
+                if (!VerifyPasswordDigest(password, iterations, storedHash, storedSalt))
+                {
+                    message = "IncorrectPassword";
+                    return false;
+                }
+
+                identityHash = identity;
+                isVerified = true;
+                message = "OK";
+                return true;
+            }
+        }
+
+        private static string NormalizeCredentialEmail(string email)
+        {
+            if (IsNullOrWhiteSpace(email))
+            {
+                return null;
+            }
+
+            var trimmed = email.Trim();
+            var atIndex = trimmed.IndexOf('@');
+            if (atIndex <= 0 || atIndex >= trimmed.Length - 1)
+            {
+                return null;
+            }
+
+            return trimmed.ToLowerInvariant();
+        }
+
+        private static string NormalizeDisplayNameTag(string tag)
+        {
+            if (IsNullOrWhiteSpace(tag))
+            {
+                return null;
+            }
+
+            return tag.Trim();
+        }
+
+        private static string BuildAnonymizedDisplayName(string source)
+        {
+            var basis = IsNullOrWhiteSpace(source) ? "OfflineRunner" : source.Trim();
+            var bytes = Encoding.UTF8.GetBytes(basis);
+            var sha = SHA256.Create();
+            var hash = sha.ComputeHash(bytes);
+            var base64 = Convert.ToBase64String(hash);
+            return base64.Length <= 8 ? base64 : base64.Substring(0, 8);
+        }
+
+        private static bool IsAnonymizedDisplayName(string value)
+        {
+            if (IsNullOrWhiteSpace(value) || value.Length != 8)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < value.Length; i++)
+            {
+                var ch = value[i];
+                var isAlphaNum = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9');
+                if (!isAlphaNum && ch != '+' && ch != '/')
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool EnsureDisplayNameIsAnonymized(IDictionary account, string fallbackSource)
+        {
+            if (account == null)
+            {
+                return false;
+            }
+
+            var current = GetString(account, "DisplayName");
+            if (IsAnonymizedDisplayName(current))
+            {
+                return false;
+            }
+
+            var source = !IsNullOrWhiteSpace(current) ? current : fallbackSource;
+            account["DisplayName"] = BuildAnonymizedDisplayName(source);
+            return true;
+        }
+
+        public void RunDisplayNameFormatMigrationOnStartup()
+        {
+            lock (_lock)
+            {
+                var accountsUpdated = 0;
+                var playerInfoUpdated = 0;
+
+                var accountsChanged = MigrateAccountDisplayNamesNoLock(ref accountsUpdated);
+                var playerInfoChanged = MigratePlayerInfoDisplayNamesNoLock(ref playerInfoUpdated);
+
+                try
+                {
+                    if (_logger != null)
+                    {
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "startup-migration",
+                            migration = "display-name-format",
+                            accountEntriesUpdated = accountsUpdated,
+                            playerInfoEntriesUpdated = playerInfoUpdated,
+                            changed = accountsChanged || playerInfoChanged,
+                        });
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private bool MigrateAccountDisplayNamesNoLock(ref int updatedCount)
+        {
+            var changed = false;
+            var store = LoadAccountStoreNoThrow(true);
+            var accounts = GetOrCreateDict(store, AccountStoreAccountsKey);
+
+            foreach (DictionaryEntry entry in accounts)
+            {
+                var account = entry.Value as IDictionary;
+                if (account == null)
+                {
+                    continue;
+                }
+
+                if (EnsureDisplayNameIsAnonymized(account, "OfflineRunner"))
+                {
+                    updatedCount++;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                SaveAccountStoreNoThrow(store);
+            }
+
+            return changed;
+        }
+
+        private bool MigratePlayerInfoDisplayNamesNoLock(ref int updatedCount)
+        {
+            var changed = false;
+            var root = LoadPlayerInfoNoThrow();
+            if (root == null)
+            {
+                return false;
+            }
+
+            foreach (DictionaryEntry identityEntry in root)
+            {
+                var byIdentity = identityEntry.Value as IDictionary;
+                if (byIdentity == null)
+                {
+                    continue;
+                }
+
+                foreach (DictionaryEntry gameEntry in byIdentity)
+                {
+                    var byGame = gameEntry.Value as IDictionary;
+                    if (byGame == null)
+                    {
+                        continue;
+                    }
+
+                    if (MigratePlayerInfoDisplayNamesForGameNoLock(byGame, ref updatedCount))
+                    {
+                        changed = true;
+                    }
+                }
+            }
+
+            if (changed)
+            {
+                SavePlayerInfoNoThrow(root);
+            }
+
+            return changed;
+        }
+
+        private static bool MigratePlayerInfoDisplayNamesForGameNoLock(IDictionary byGame, ref int updatedCount)
+        {
+            if (byGame == null)
+            {
+                return false;
+            }
+
+            var changed = false;
+
+            var launcherDisplayName = GetString(byGame, "LauncherDisplayName");
+            if (!IsNullOrWhiteSpace(launcherDisplayName) && !IsAnonymizedDisplayName(launcherDisplayName))
+            {
+                byGame["LauncherDisplayName"] = BuildAnonymizedDisplayName(launcherDisplayName);
+                updatedCount++;
+                changed = true;
+            }
+
+            var displayName = GetString(byGame, "DisplayName");
+            if (IsNullOrWhiteSpace(displayName))
+            {
+                return changed;
+            }
+
+            var semi = displayName.IndexOf(';');
+            var accountPart = semi >= 0 ? displayName.Substring(0, semi) : displayName;
+            if (IsAnonymizedDisplayName(accountPart))
+            {
+                return changed;
+            }
+
+            var anonymized = BuildAnonymizedDisplayName(accountPart);
+            if (semi >= 0)
+            {
+                var suffix = semi + 1 < displayName.Length ? displayName.Substring(semi + 1) : string.Empty;
+                byGame["DisplayName"] = anonymized + ";" + suffix;
+            }
+            else
+            {
+                byGame["DisplayName"] = anonymized;
+            }
+
+            updatedCount++;
+            return true;
+        }
+
+        private static void CreatePasswordDigest(string password, int iterations, out string hashBase64, out string saltBase64)
+        {
+            var salt = new byte[16];
+            var rng = new RNGCryptoServiceProvider();
+            rng.GetBytes(salt);
+
+            byte[] hash;
+            var derive = new Rfc2898DeriveBytes(password, salt, iterations);
+            hash = derive.GetBytes(32);
+
+            hashBase64 = Convert.ToBase64String(hash);
+            saltBase64 = Convert.ToBase64String(salt);
+        }
+
+        private static bool VerifyPasswordDigest(string password, int iterations, string expectedHashBase64, string saltBase64)
+        {
+            try
+            {
+                var salt = Convert.FromBase64String(saltBase64);
+                var expected = Convert.FromBase64String(expectedHashBase64);
+
+                byte[] actual;
+                var derive = new Rfc2898DeriveBytes(password, salt, iterations);
+                actual = derive.GetBytes(expected.Length);
+
+                return ConstantTimeEquals(expected, actual);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool ConstantTimeEquals(byte[] expected, byte[] actual)
+        {
+            if (expected == null || actual == null || expected.Length != actual.Length)
+            {
+                return false;
+            }
+
+            var diff = 0;
+            for (var i = 0; i < expected.Length; i++)
+            {
+                diff |= expected[i] ^ actual[i];
+            }
+
+            return diff == 0;
+        }
+
         public string GetDisplayName()
         {
             return GetDisplayName(GetOrCreateIdentityHash());
@@ -230,11 +682,10 @@ namespace Shadowrun.LocalService.Core.Persistence
             lock (_lock)
             {
                 var account = LoadAccountForIdentityNoThrow(identityHash, true) ?? LoadAccountNoThrow();
+                var changed = EnsureDisplayNameIsAnonymized(account, "OfflineRunner");
                 var displayName = GetString(account, "DisplayName");
-                if (IsNullOrWhiteSpace(displayName))
+                if (changed)
                 {
-                    displayName = "OfflineRunner";
-                    account["DisplayName"] = displayName;
                     SaveAccountNoThrow(account);
                 }
                 return displayName;

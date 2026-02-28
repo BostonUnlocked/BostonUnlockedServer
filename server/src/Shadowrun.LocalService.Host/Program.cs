@@ -66,6 +66,7 @@ namespace Shadowrun.LocalService.Host
 			};
 
 			var userStore = new LocalUserStore(options, logger);
+			userStore.RunDisplayNameFormatMigrationOnStartup();
 			var sessionIdentityMap = new ExpiringSessionIdentityMap();
 			var characterStatePushBroker = new CharacterStatePushBroker();
 			var httpServer = new HttpStubServer(options, logger, userStore, sessionIdentityMap, null);

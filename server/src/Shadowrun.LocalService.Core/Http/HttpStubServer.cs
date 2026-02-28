@@ -150,7 +150,7 @@ namespace Shadowrun.LocalService.Core.Http
                         userAgent = request.UserAgent,
                         contentType = request.ContentType,
                         contentLength = request.BodyBytes != null ? request.BodyBytes.Length : 0,
-                        body = request.BodyBytes != null ? Encoding.UTF8.GetString(request.BodyBytes) : string.Empty,
+                        body = BuildSafeRequestBodyForLog(request.Path, request.BodyBytes),
                     });
 
                     var response = RouteRequest(request);
@@ -305,6 +305,52 @@ namespace Shadowrun.LocalService.Core.Http
             var json = Encoding.UTF8.GetString(bodyBytes);
             var obj = Json.DeserializeObject(json);
             return obj as IDictionary;
+        }
+
+        private static string BuildSafeRequestBodyForLog(string path, byte[] bodyBytes)
+        {
+            if (bodyBytes == null || bodyBytes.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            var raw = Encoding.UTF8.GetString(bodyBytes);
+            if (!ShouldRedactSensitiveBody(path))
+            {
+                return raw;
+            }
+
+            try
+            {
+                var parsed = Json.DeserializeObject(raw) as IDictionary;
+                if (parsed == null)
+                {
+                    return raw;
+                }
+
+                if (parsed.Contains("Password"))
+                {
+                    parsed["Password"] = "***";
+                }
+
+                return Json.Serialize(parsed);
+            }
+            catch
+            {
+                return raw;
+            }
+        }
+
+        private static bool ShouldRedactSensitiveBody(string path)
+        {
+            if (IsNullOrWhiteSpace(path))
+            {
+                return false;
+            }
+
+            return EndsWith(path, "/Accounts/Cliffhanger/Authenticate")
+                || EndsWith(path, "/Accounts/Cliffhanger/Register")
+                || EndsWith(path, "/Accounts/Cliffhanger/ChangePassword");
         }
 
         private static string GetString(IDictionary dict, string key)

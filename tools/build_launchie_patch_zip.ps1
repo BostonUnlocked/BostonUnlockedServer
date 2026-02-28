@@ -13,7 +13,8 @@ param(
 
     [string[]]$ExcludeRegex = @(
         '(^|/)output_log\.txt$',
-        '(^|/)[^/]+\.bak$'
+        '(^|/)[^/]+\.bak$',
+        '(^|/)steam_api\.dll$'
     ),
 
     [switch]$WriteVersions,
