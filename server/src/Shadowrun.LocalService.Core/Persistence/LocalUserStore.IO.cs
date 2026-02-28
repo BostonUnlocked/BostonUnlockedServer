@@ -17,6 +17,13 @@ namespace Shadowrun.LocalService.Core.Persistence
         private const string AccountStoreSteamIdentitiesKey = "SteamIdentities";
         private const string AccountStoreSteamId64Key = "SteamId64";
         private const string AccountStoreLegacyIdentityHashKey = "IdentityHash";
+        private const string AccountStoreCredentialIdentitiesKey = "CredentialIdentities";
+
+        private const string AccountCredentialEmailKey = "CredentialEmail";
+        private const string AccountCredentialPasswordHashKey = "CredentialPasswordHash";
+        private const string AccountCredentialPasswordSaltKey = "CredentialPasswordSalt";
+        private const string AccountCredentialPasswordIterationsKey = "CredentialPasswordIterations";
+        private const string AccountCredentialHashAlgorithmKey = "CredentialHashAlgorithm";
 
         private static void PruneAccountStoreRootIdentityKeysNoThrow(IDictionary store)
         {
@@ -71,7 +78,7 @@ namespace Shadowrun.LocalService.Core.Persistence
         {
             var fresh = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
             fresh["IdentityHash"] = IsGuidish(identityHash) ? NormalizeGuidish(identityHash) : null;
-            fresh["DisplayName"] = "OfflineRunner";
+            fresh["DisplayName"] = BuildAnonymizedDisplayName("OfflineRunner");
             fresh["Careers"] = null;
             fresh["LastCareerIndex"] = 0;
             return fresh;

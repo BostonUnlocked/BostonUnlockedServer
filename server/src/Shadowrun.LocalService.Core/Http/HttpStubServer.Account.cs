@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Shadowrun.LocalService.Core.Http
@@ -50,7 +51,7 @@ namespace Shadowrun.LocalService.Core.Http
 
                 if (steamId == 0 || IsNullOrWhiteSpace(identity))
                 {
-                    return JsonResponse(200, new Dictionary<string, object>
+                    return JsonResponse(401, new Dictionary<string, object>
                     {
                         { "Code", 1 },
                         { "Message", "SteamError" },
@@ -83,6 +84,111 @@ namespace Shadowrun.LocalService.Core.Http
                 });
             }
 
+            if (EndsWith(path, "/Accounts/Cliffhanger/Authenticate"))
+            {
+                string email = null;
+                string password = null;
+                try
+                {
+                    var dict = TryParseJsonDictionary(bodyBytes);
+                    email = GetString(dict, "Email");
+                    password = GetString(dict, "Password");
+                }
+                catch
+                {
+                }
+
+                string identity = null;
+                bool isVerified = false;
+                string authMessage = null;
+                var ok = _userStore != null
+                    && _userStore.TryAuthenticateCliffhangerCredentials(email, password, out identity, out isVerified, out authMessage)
+                    && !IsNullOrWhiteSpace(identity);
+
+                if (!ok)
+                {
+                    var loginMessage = IsNullOrWhiteSpace(authMessage) ? "IncorrectPassword" : authMessage;
+                    if (string.Equals(loginMessage, "InvalidCredentials", StringComparison.OrdinalIgnoreCase))
+                    {
+                        loginMessage = "IncorrectPassword";
+                    }
+
+                    var loginStatusCode = GetAuthFailureStatusCode(loginMessage, 500);
+
+                    return JsonResponse(loginStatusCode, new Dictionary<string, object>
+                    {
+                        { "Code", 1 },
+                        { "Message", loginMessage },
+                        { "SessionHash", Guid.Empty.ToString() },
+                        { "IsVerified", false },
+                    });
+                }
+
+                var session = Guid.NewGuid();
+                try { _sessionIdentityMap.SetIdentityForSession(session.ToString(), identity); } catch { }
+
+                return JsonResponse(200, new Dictionary<string, object>
+                {
+                    { "Code", 0 },
+                    { "Message", "OK" },
+                    { "SessionHash", session.ToString() },
+                    { "IsVerified", isVerified },
+                });
+            }
+
+            if (EndsWith(path, "/Accounts/Cliffhanger/Register"))
+            {
+                string email = null;
+                string password = null;
+                string tag = null;
+                try
+                {
+                    var dict = TryParseJsonDictionary(bodyBytes);
+                    email = GetString(dict, "Email");
+                    password = GetString(dict, "Password");
+                    tag = GetString(dict, "Tag");
+                }
+                catch
+                {
+                }
+
+                string identity = null;
+                string registerMessage = null;
+                var ok = _userStore != null
+                    && _userStore.TryRegisterCliffhangerCredentials(email, password, tag, out identity, out registerMessage);
+
+                var registerMessageNormalized = ok ? "OK" : (IsNullOrWhiteSpace(registerMessage) ? "RegisterFailed" : registerMessage);
+                var registerStatusCode = ok ? 200 : GetAuthFailureStatusCode(registerMessageNormalized, 500);
+
+                return JsonResponse(registerStatusCode, new Dictionary<string, object>
+                {
+                    { "Code", ok ? 0 : 1 },
+                    { "Message", registerMessageNormalized },
+                    { "Success", ok },
+                });
+            }
+
+            if (EndsWith(path, "/Accounts/Cliffhanger/Verify"))
+            {
+                return JsonResponse(401, new Dictionary<string, object>
+                {
+                    { "Code", 1 },
+                    { "Message", "IncorrectPassword" },
+                    { "SessionHash", Guid.Empty.ToString() },
+                    { "IsVerified", false },
+                });
+            }
+
+            if (EndsWith(path, "/Accounts/Cliffhanger/RequestPasswordReset"))
+            {
+                return JsonResponse(501, new Dictionary<string, object>
+                {
+                    { "Code", 1 },
+                    { "Message", "NotSupported" },
+                    { "Success", false },
+                });
+            }
+
             if (EndsWith(path, "/Accounts/GetAccountForHash"))
             {
                 string identity = null;
@@ -110,7 +216,7 @@ namespace Shadowrun.LocalService.Core.Http
 
                 if (IsNullOrWhiteSpace(sessionHash) || IsNullOrWhiteSpace(identity))
                 {
-                    return JsonResponse(200, new Dictionary<string, object>
+                    return JsonResponse(401, new Dictionary<string, object>
                     {
                         { "IdentityHash", Guid.Empty.ToString() },
                         { "ApplicationKeyName", "SRO-GAME-KEY" },
@@ -183,6 +289,7 @@ namespace Shadowrun.LocalService.Core.Http
                     }
 
                     var stored = _playerInfoRepository.Get(identityHash, requestedGameName);
+                    SanitizeStoredDisplayNames(stored);
                     if (stored != null && _userStore != null && !stored.ContainsKey("LauncherDisplayName"))
                     {
                         stored["LauncherDisplayName"] = _userStore.GetDisplayName(identityHash);
@@ -253,6 +360,7 @@ namespace Shadowrun.LocalService.Core.Http
                 }
 
                 var playerInfoUpdates = ParsePlayerInfoUpdates(dict);
+                SanitizePlayerInfoUpdates(playerInfoUpdates);
                 TryValidatePlayerCharacterBlob(identityHash, gameName, playerInfoUpdates);
 
                 string displayName;
@@ -308,7 +416,54 @@ namespace Shadowrun.LocalService.Core.Http
                 return TextResponse(200, "true", "application/json; charset=utf-8");
             }
 
-            return JsonResponse(200, new Dictionary<string, object> { { "ok", true }, { "offlineStub", true }, { "path", path } });
+            return JsonResponse(500, new Dictionary<string, object>
+            {
+                { "Code", 1 },
+                { "Message", "UnhandledAccountPath" },
+                { "ok", false },
+                { "offlineStub", true },
+                { "path", path },
+            });
+        }
+
+        private static int GetAuthFailureStatusCode(string message, int fallback)
+        {
+            if (IsNullOrWhiteSpace(message))
+            {
+                return fallback;
+            }
+
+            if (string.Equals(message, "IncorrectPassword", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "WrongPassword", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "InvalidCredentials", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "AccountNotFound", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "IdentityNotFound", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "SteamError", StringComparison.OrdinalIgnoreCase))
+            {
+                return 401;
+            }
+
+            if (string.Equals(message, "EmailAlreadyRegistered", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "NotUnique", StringComparison.OrdinalIgnoreCase))
+            {
+                return 409;
+            }
+
+            if (string.Equals(message, "InvalidEmail", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "InvalidPassword", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "InvalidRequest", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "CodeInvalid", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "InvalidResetCode", StringComparison.OrdinalIgnoreCase))
+            {
+                return 400;
+            }
+
+            if (string.Equals(message, "NotSupported", StringComparison.OrdinalIgnoreCase))
+            {
+                return 501;
+            }
+
+            return fallback;
         }
 
         private static string ParseRequestedGameName(byte[] bodyBytes)
@@ -371,6 +526,8 @@ namespace Shadowrun.LocalService.Core.Http
                 stored = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             }
 
+            SanitizeStoredDisplayNames(stored);
+
             if (!stored.ContainsKey("LauncherDisplayName"))
             {
                 stored["LauncherDisplayName"] = "OfflineRunner";
@@ -416,6 +573,64 @@ namespace Shadowrun.LocalService.Core.Http
             }
 
             return items.ToArray();
+        }
+
+        private static void SanitizePlayerInfoUpdates(Dictionary<string, string> updates)
+        {
+            if (updates == null)
+            {
+                return;
+            }
+
+            string displayName;
+            if (updates.TryGetValue("DisplayName", out displayName) && !IsNullOrWhiteSpace(displayName))
+            {
+                var semi = displayName.IndexOf(';');
+                var accountPart = semi >= 0 ? displayName.Substring(0, semi) : displayName;
+                var characterPart = semi >= 0 && semi + 1 < displayName.Length ? displayName.Substring(semi + 1) : null;
+                var anonymized = AnonymizeDisplayName(accountPart);
+                updates["DisplayName"] = semi >= 0 ? (anonymized + ";" + (characterPart ?? string.Empty)) : anonymized;
+            }
+
+            string launcherDisplayName;
+            if (updates.TryGetValue("LauncherDisplayName", out launcherDisplayName) && !IsNullOrWhiteSpace(launcherDisplayName))
+            {
+                updates["LauncherDisplayName"] = AnonymizeDisplayName(launcherDisplayName);
+            }
+        }
+
+        private static void SanitizeStoredDisplayNames(Dictionary<string, string> stored)
+        {
+            if (stored == null)
+            {
+                return;
+            }
+
+            string launcherDisplayName;
+            if (stored.TryGetValue("LauncherDisplayName", out launcherDisplayName) && !IsNullOrWhiteSpace(launcherDisplayName))
+            {
+                stored["LauncherDisplayName"] = AnonymizeDisplayName(launcherDisplayName);
+            }
+
+            string displayName;
+            if (stored.TryGetValue("DisplayName", out displayName) && !IsNullOrWhiteSpace(displayName))
+            {
+                var semi = displayName.IndexOf(';');
+                var accountPart = semi >= 0 ? displayName.Substring(0, semi) : displayName;
+                var characterPart = semi >= 0 && semi + 1 < displayName.Length ? displayName.Substring(semi + 1) : null;
+                var anonymized = AnonymizeDisplayName(accountPart);
+                stored["DisplayName"] = semi >= 0 ? (anonymized + ";" + (characterPart ?? string.Empty)) : anonymized;
+            }
+        }
+
+        private static string AnonymizeDisplayName(string source)
+        {
+            var basis = IsNullOrWhiteSpace(source) ? "OfflineRunner" : source.Trim();
+            var bytes = Encoding.UTF8.GetBytes(basis);
+            var sha = SHA256.Create();
+            var hash = sha.ComputeHash(bytes);
+            var base64 = Convert.ToBase64String(hash);
+            return base64.Length <= 8 ? base64 : base64.Substring(0, 8);
         }
 
         private static Dictionary<string, string> ParsePlayerInfoUpdates(IDictionary requestDict)

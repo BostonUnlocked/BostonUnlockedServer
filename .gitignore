@@ -43,3 +43,4 @@
 #Config files served from http. Checked in versions always provide localhost loopback.
 /server/config/config.xml
 /server/config/LauncherConfig.xml
+/server/config/patches/

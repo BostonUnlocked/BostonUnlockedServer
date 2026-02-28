@@ -5,6 +5,7 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Globalization;
@@ -15,6 +16,7 @@ namespace Shadowrun.LocalService.Core.Http
     public sealed partial class HttpStubServer
     {
         private static readonly JavaScriptSerializer Json = CreateSerializer();
+        private const string PatchesLivePrefix = "/Patches/SRO/StandaloneWindows/live";
 
         private readonly LocalServiceOptions _options;
         private readonly RequestLogger _logger;
@@ -148,11 +150,12 @@ namespace Shadowrun.LocalService.Core.Http
                         userAgent = request.UserAgent,
                         contentType = request.ContentType,
                         contentLength = request.BodyBytes != null ? request.BodyBytes.Length : 0,
-                        body = request.BodyBytes != null ? Encoding.UTF8.GetString(request.BodyBytes) : string.Empty,
+                        body = BuildSafeRequestBodyForLog(request.Path, request.BodyBytes),
                     });
 
                     var response = RouteRequest(request);
-                    WriteResponse(stream, response);
+                    var suppressBody = string.Equals(request.Method, "HEAD", StringComparison.OrdinalIgnoreCase);
+                    WriteResponse(stream, response, suppressBody);
                 }
             }
         }
@@ -201,16 +204,22 @@ namespace Shadowrun.LocalService.Core.Http
         private HttpResponse TryServeStatic(string path)
         {
             string filePath = null;
+            string explicitContentType = null;
+            var patchPathRequest = false;
 
-            if (string.Equals(path, "/SRO/configs/SRO_23.3/SteamWindows/LauncherConfig.xml", StringComparison.OrdinalIgnoreCase))
+            if (EndsWith(path, "/LauncherConfig.xml"))
             {
                 filePath = Path.Combine(_options.ConfigDir, "LauncherConfig.xml");
             }
-            else if (string.Equals(path, "/SRO/configs/SRO_23.3/SteamWindows/config.xml", StringComparison.OrdinalIgnoreCase))
+            else if (EndsWith(path, "/config.xml"))
             {
                 filePath = Path.Combine(_options.ConfigDir, "config.xml");
             }
-            else if (string.Equals(path, "/Patches/SRO/StandaloneWindows/live", StringComparison.OrdinalIgnoreCase))
+            else if (TryResolvePatchPath(path, out filePath, out explicitContentType))
+            {
+                patchPathRequest = true;
+            }
+            else if (string.Equals(path, PatchesLivePrefix, StringComparison.OrdinalIgnoreCase))
             {
                 filePath = Path.Combine(_options.ConfigDir, "patches_live.txt");
             }
@@ -222,12 +231,68 @@ namespace Shadowrun.LocalService.Core.Http
 
             if (!File.Exists(filePath))
             {
+                if (patchPathRequest)
+                {
+                    return TextResponse(404, "Patch asset not found", "text/plain; charset=utf-8");
+                }
                 return TextResponse(500, "Missing local file: " + filePath, "text/plain; charset=utf-8");
             }
 
-            var bytes = File.ReadAllBytes(filePath);
-            var contentType = EndsWith(filePath, ".xml") ? "application/xml; charset=utf-8" : "text/plain; charset=utf-8";
-            return BytesResponse(200, bytes, contentType);
+            var contentType = !IsNullOrWhiteSpace(explicitContentType)
+                ? explicitContentType
+                : (EndsWith(filePath, ".xml") ? "application/xml; charset=utf-8" : "text/plain; charset=utf-8");
+            return FileResponse(200, filePath, contentType);
+        }
+
+        private bool TryResolvePatchPath(string path, out string filePath, out string contentType)
+        {
+            filePath = null;
+            contentType = null;
+
+            if (IsNullOrWhiteSpace(path) || !StartsWith(path, PatchesLivePrefix + "/"))
+            {
+                return false;
+            }
+
+            var relative = path.Substring(PatchesLivePrefix.Length + 1);
+            if (IsNullOrWhiteSpace(relative))
+            {
+                return false;
+            }
+
+            var patchRoot = Path.Combine(_options.ConfigDir, "patches");
+
+            if (string.Equals(relative, "versions.txt", StringComparison.OrdinalIgnoreCase))
+            {
+                var versionsPath = Path.Combine(patchRoot, "versions.txt");
+                filePath = File.Exists(versionsPath)
+                    ? versionsPath
+                    : Path.Combine(_options.ConfigDir, "patches_live.txt");
+                contentType = "text/plain; charset=utf-8";
+                return true;
+            }
+
+            if (string.Equals(relative, "config.json", StringComparison.OrdinalIgnoreCase))
+            {
+                filePath = Path.Combine(patchRoot, "config.json");
+                contentType = "application/json; charset=utf-8";
+                return true;
+            }
+
+            if (EndsWith(relative, "/patch.zip"))
+            {
+                var chunks = relative.Split('/');
+                if (chunks.Length == 2
+                    && string.Equals(chunks[1], "patch.zip", StringComparison.OrdinalIgnoreCase)
+                    && Regex.IsMatch(chunks[0], "^[A-Za-z0-9_.-]+_[A-Za-z0-9_.-]+$"))
+                {
+                    filePath = Path.Combine(Path.Combine(patchRoot, chunks[0]), "patch.zip");
+                    contentType = "application/zip";
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static IDictionary TryParseJsonDictionary(byte[] bodyBytes)
@@ -240,6 +305,52 @@ namespace Shadowrun.LocalService.Core.Http
             var json = Encoding.UTF8.GetString(bodyBytes);
             var obj = Json.DeserializeObject(json);
             return obj as IDictionary;
+        }
+
+        private static string BuildSafeRequestBodyForLog(string path, byte[] bodyBytes)
+        {
+            if (bodyBytes == null || bodyBytes.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            var raw = Encoding.UTF8.GetString(bodyBytes);
+            if (!ShouldRedactSensitiveBody(path))
+            {
+                return raw;
+            }
+
+            try
+            {
+                var parsed = Json.DeserializeObject(raw) as IDictionary;
+                if (parsed == null)
+                {
+                    return raw;
+                }
+
+                if (parsed.Contains("Password"))
+                {
+                    parsed["Password"] = "***";
+                }
+
+                return Json.Serialize(parsed);
+            }
+            catch
+            {
+                return raw;
+            }
+        }
+
+        private static bool ShouldRedactSensitiveBody(string path)
+        {
+            if (IsNullOrWhiteSpace(path))
+            {
+                return false;
+            }
+
+            return EndsWith(path, "/Accounts/Cliffhanger/Authenticate")
+                || EndsWith(path, "/Accounts/Cliffhanger/Register")
+                || EndsWith(path, "/Accounts/Cliffhanger/ChangePassword");
         }
 
         private static string GetString(IDictionary dict, string key)
@@ -317,6 +428,17 @@ namespace Shadowrun.LocalService.Core.Http
                 ReasonPhrase = statusCode == 200 ? "OK" : (statusCode == 404 ? "Not Found" : "Error"),
                 ContentType = contentType,
                 BodyBytes = bytes,
+            };
+        }
+
+        private static HttpResponse FileResponse(int statusCode, string filePath, string contentType)
+        {
+            return new HttpResponse
+            {
+                StatusCode = statusCode,
+                ReasonPhrase = statusCode == 200 ? "OK" : (statusCode == 404 ? "Not Found" : "Error"),
+                ContentType = contentType,
+                BodyFilePath = filePath,
             };
         }
 
