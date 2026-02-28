@@ -132,7 +132,9 @@
     <Compile Include="Protocols\APlayTcpStub.cs" />
     <Compile Include="Protocols\APlayTcpStub.StaticData.cs" />
     <Compile Include="Protocols\CoopGroupHostRegistry.cs" />
+    <Compile Include="Protocols\HubPresenceRegistry.cs" />
     <Compile Include="Protocols\MissionRuntimeRegistry.cs" />
+    <Compile Include="Protocols\PartyHubFollowRegistry.cs" />
     <Compile Include="Protocols\PhotonProxyTcpStub.cs" />
     <Compile Include="Protocols\PhotonProxyTcpStub.ChatAndFriendsState.cs" />
     <Compile Include="Protocols\PhotonProxyTcpStub.Operations.cs" />
