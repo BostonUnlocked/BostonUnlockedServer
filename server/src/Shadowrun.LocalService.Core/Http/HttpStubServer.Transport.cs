@@ -156,7 +156,7 @@ namespace Shadowrun.LocalService.Core.Http
             return false;
         }
 
-        private static void WriteResponse(NetworkStream stream, HttpResponse response)
+        private static void WriteResponse(NetworkStream stream, HttpResponse response, bool suppressBody)
         {
             if (response == null)
             {
@@ -164,11 +164,19 @@ namespace Shadowrun.LocalService.Core.Http
             }
 
             var body = response.BodyBytes ?? new byte[0];
+            var filePath = response.BodyFilePath;
+            long contentLength = body.LongLength;
+
+            if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
+            {
+                contentLength = new FileInfo(filePath).Length;
+            }
+
             var statusLine = string.Format("HTTP/1.1 {0} {1}\r\n", response.StatusCode, response.ReasonPhrase ?? "OK");
             var headers = new StringBuilder();
             headers.Append("Server: shadowrun-localservice\r\n");
             headers.Append("Connection: close\r\n");
-            headers.Append("Content-Length: ").Append(body.Length).Append("\r\n");
+            headers.Append("Content-Length: ").Append(contentLength).Append("\r\n");
             if (!string.IsNullOrEmpty(response.ContentType))
             {
                 headers.Append("Content-Type: ").Append(response.ContentType).Append("\r\n");
@@ -177,6 +185,31 @@ namespace Shadowrun.LocalService.Core.Http
 
             var headerBytes = Encoding.ASCII.GetBytes(statusLine + headers);
             stream.Write(headerBytes, 0, headerBytes.Length);
+
+            if (suppressBody)
+            {
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
+            {
+                using (var file = File.OpenRead(filePath))
+                {
+                    var chunk = new byte[64 * 1024];
+                    while (true)
+                    {
+                        var read = file.Read(chunk, 0, chunk.Length);
+                        if (read <= 0)
+                        {
+                            break;
+                        }
+
+                        stream.Write(chunk, 0, read);
+                    }
+                }
+                return;
+            }
+
             if (body.Length > 0)
             {
                 stream.Write(body, 0, body.Length);
@@ -200,6 +233,7 @@ namespace Shadowrun.LocalService.Core.Http
             public string ReasonPhrase;
             public string ContentType;
             public byte[] BodyBytes;
+            public string BodyFilePath;
         }
     }
 }

@@ -1,3 +1,1 @@
-# localservice placeholder
-# Launcher currently has DisablePatching=true in LauncherConfig.
-# This endpoint exists only to avoid immediate HTTP errors if queried.
+
