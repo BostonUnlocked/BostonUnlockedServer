@@ -51,7 +51,7 @@ namespace Shadowrun.LocalService.Core.Http
 
                 if (steamId == 0 || IsNullOrWhiteSpace(identity))
                 {
-                    return JsonResponse(200, new Dictionary<string, object>
+                    return JsonResponse(401, new Dictionary<string, object>
                     {
                         { "Code", 1 },
                         { "Message", "SteamError" },
@@ -107,10 +107,18 @@ namespace Shadowrun.LocalService.Core.Http
 
                 if (!ok)
                 {
-                    return JsonResponse(200, new Dictionary<string, object>
+                    var loginMessage = IsNullOrWhiteSpace(authMessage) ? "IncorrectPassword" : authMessage;
+                    if (string.Equals(loginMessage, "InvalidCredentials", StringComparison.OrdinalIgnoreCase))
+                    {
+                        loginMessage = "IncorrectPassword";
+                    }
+
+                    var loginStatusCode = GetAuthFailureStatusCode(loginMessage, 500);
+
+                    return JsonResponse(loginStatusCode, new Dictionary<string, object>
                     {
                         { "Code", 1 },
-                        { "Message", IsNullOrWhiteSpace(authMessage) ? "InvalidCredentials" : authMessage },
+                        { "Message", loginMessage },
                         { "SessionHash", Guid.Empty.ToString() },
                         { "IsVerified", false },
                     });
@@ -149,17 +157,31 @@ namespace Shadowrun.LocalService.Core.Http
                 var ok = _userStore != null
                     && _userStore.TryRegisterCliffhangerCredentials(email, password, tag, out identity, out registerMessage);
 
-                return JsonResponse(200, new Dictionary<string, object>
+                var registerMessageNormalized = ok ? "OK" : (IsNullOrWhiteSpace(registerMessage) ? "RegisterFailed" : registerMessage);
+                var registerStatusCode = ok ? 200 : GetAuthFailureStatusCode(registerMessageNormalized, 500);
+
+                return JsonResponse(registerStatusCode, new Dictionary<string, object>
                 {
                     { "Code", ok ? 0 : 1 },
-                    { "Message", ok ? "OK" : (IsNullOrWhiteSpace(registerMessage) ? "RegisterFailed" : registerMessage) },
+                    { "Message", registerMessageNormalized },
                     { "Success", ok },
+                });
+            }
+
+            if (EndsWith(path, "/Accounts/Cliffhanger/Verify"))
+            {
+                return JsonResponse(401, new Dictionary<string, object>
+                {
+                    { "Code", 1 },
+                    { "Message", "IncorrectPassword" },
+                    { "SessionHash", Guid.Empty.ToString() },
+                    { "IsVerified", false },
                 });
             }
 
             if (EndsWith(path, "/Accounts/Cliffhanger/RequestPasswordReset"))
             {
-                return JsonResponse(200, new Dictionary<string, object>
+                return JsonResponse(501, new Dictionary<string, object>
                 {
                     { "Code", 1 },
                     { "Message", "NotSupported" },
@@ -194,7 +216,7 @@ namespace Shadowrun.LocalService.Core.Http
 
                 if (IsNullOrWhiteSpace(sessionHash) || IsNullOrWhiteSpace(identity))
                 {
-                    return JsonResponse(200, new Dictionary<string, object>
+                    return JsonResponse(401, new Dictionary<string, object>
                     {
                         { "IdentityHash", Guid.Empty.ToString() },
                         { "ApplicationKeyName", "SRO-GAME-KEY" },
@@ -394,7 +416,54 @@ namespace Shadowrun.LocalService.Core.Http
                 return TextResponse(200, "true", "application/json; charset=utf-8");
             }
 
-            return JsonResponse(200, new Dictionary<string, object> { { "ok", true }, { "offlineStub", true }, { "path", path } });
+            return JsonResponse(500, new Dictionary<string, object>
+            {
+                { "Code", 1 },
+                { "Message", "UnhandledAccountPath" },
+                { "ok", false },
+                { "offlineStub", true },
+                { "path", path },
+            });
+        }
+
+        private static int GetAuthFailureStatusCode(string message, int fallback)
+        {
+            if (IsNullOrWhiteSpace(message))
+            {
+                return fallback;
+            }
+
+            if (string.Equals(message, "IncorrectPassword", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "WrongPassword", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "InvalidCredentials", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "AccountNotFound", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "IdentityNotFound", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "SteamError", StringComparison.OrdinalIgnoreCase))
+            {
+                return 401;
+            }
+
+            if (string.Equals(message, "EmailAlreadyRegistered", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "NotUnique", StringComparison.OrdinalIgnoreCase))
+            {
+                return 409;
+            }
+
+            if (string.Equals(message, "InvalidEmail", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "InvalidPassword", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "InvalidRequest", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "CodeInvalid", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(message, "InvalidResetCode", StringComparison.OrdinalIgnoreCase))
+            {
+                return 400;
+            }
+
+            if (string.Equals(message, "NotSupported", StringComparison.OrdinalIgnoreCase))
+            {
+                return 501;
+            }
+
+            return fallback;
         }
 
         private static string ParseRequestedGameName(byte[] bodyBytes)
