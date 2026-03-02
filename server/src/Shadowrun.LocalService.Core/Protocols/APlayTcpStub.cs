@@ -8645,7 +8645,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             var sb = new StringBuilder();
             sb.Append("[");
-            for (var idx = 0; idx < 3; idx++)
+            for (var idx = 0; idx < 6; idx++)
             {
                 CareerSlot s;
                 if (!slots.TryGetValue(idx, out s) || s == null)
