@@ -19,22 +19,13 @@ Copy and claim these one by one in the launcher to activate the corresponding DL
     SRO-ITEM-HAREBRAINED
     SRO-ITEM-LAGISSUES1
     SRO-ITEM-PAX-18
-    SRO-ITEM-PAX-20
     SRO-ITEM-PEGASUS
     SRO-ITEM-STARTER-GEAR
-    SRO-ITEM-WAFFENQUARTETT
-    SRO-KS-APPRENTICE
     SRO-KS-AWAKENED
     SRO-KS-COOP
-    SRO-KS-DECKER
-    SRO-KS-LIEUTENANT
     SRO-KS-MASTER
-    SRO-KS-VETERAN
-    SRO-KS-WHIZ
     SRO-ReflexRecorder
     SRO-STEAM-DLC-DELUXE
-    SRO-STEAM-DLC-DELUXE-RPG
-    SRO-STEAM-DLC-FOUNDERS
 
 ## Major AddOns
 
@@ -105,10 +96,6 @@ These include exclusive backer rewards previously unavailable to most players.
 
 * Automatics_Exclusive_Mag5Mg_Tier_01
 
-### SRO-ITEM-PAX-20
-
-* Automatics_Exclusive_Mag5Mg_Tier_01
-
 ### SRO-ITEM-PEGASUS
 
 * Pistol_Exclusive_Haemmerli620s_Tier_01
@@ -122,25 +109,6 @@ These include exclusive backer rewards previously unavailable to most players.
 * Item_ElementalEssenceSpray1
 * Item_PolymerCoating2
 
-### SRO-ITEM-WAFFENQUARTETT
-
-* Automatics_Exclusive_Mag5Mg_Tier_01
-
-### SRO-KS-APPRENTICE
-
-* Item_BackerTalisman
-* Item_CertifiedCredstickStandard
-* Item_Consumable_DocWagonCardBasic x2
-* Item_Consumable_FragGrenade x2
-* Item_Consumable_RocketLauncher x2
-* Item_Consumable_SmokeGrenade x2
-* Item_Cyberware_Wired_Reflexes_1_Beta
-* Item_DoubleDragon1Neon
-* Item_DragonHead1Neon
-* Item_ElementalEssenceSpray1
-* Item_Pack2BackerShirt
-* Item_PolymerCoating2
-
 ### SRO-KS-AWAKENED
 
 * Item_BackerTalisman
@@ -150,73 +118,7 @@ These include exclusive backer rewards previously unavailable to most players.
 
 * Item_Pack2BackerShirt
 
-### SRO-KS-DECKER
-
-* Item_BackerTalisman
-* Item_CertifiedCredstickStandard
-* Item_Consumable_DocWagonCardBasic x2
-* Item_Consumable_FragGrenade x2
-* Item_Consumable_RocketLauncher x2
-* Item_Consumable_SmokeGrenade x2
-* Item_Cyberware_Cultural_Bioware_Reflex_Recorder_1_Alpha
-* Item_Cyberware_Wired_Reflexes_1_Beta
-* Item_DoubleDragon1Neon
-* Item_DragonHead1Neon
-* Item_ElementalEssenceSpray1
-* Item_Pack2BackerShirt
-* Item_PolymerCoating2
-
-### SRO-KS-LIEUTENANT
-
-* Item_BackerTalisman
-* Item_CertifiedCredstickStandard
-* Item_Consumable_DocWagonCardBasic x2
-* Item_Consumable_FragGrenade x2
-* Item_Consumable_RocketLauncher x2
-* Item_Consumable_SmokeGrenade x2
-* Item_Cyberware_Cultural_Bioware_Reflex_Recorder_1_Alpha
-* Item_Cyberware_Wired_Reflexes_1_Beta
-* Item_DoubleDragon1Neon
-* Item_DragonHead1Neon
-* Item_ElementalEssenceSpray1
-* Item_Pack2BackerShirt
-* Item_PolymerCoating2
-
 ### SRO-KS-MASTER
-
-* Item_BackerTalisman
-* Item_CertifiedCredstickStandard
-* Item_Consumable_DocWagonCardBasic x2
-* Item_Consumable_FragGrenade x2
-* Item_Consumable_RocketLauncher x2
-* Item_Consumable_SmokeGrenade x2
-* Item_Cyberware_Cultural_Bioware_Reflex_Recorder_1_Alpha
-* Item_Cyberware_Wired_Reflexes_1_Beta
-* Item_DoubleDragon1Neon
-* Item_DragonHead1Neon
-* Item_ElementalEssenceSpray1
-* Item_Pack2BackerShirt
-* Item_Pack4_HoloDragon
-* Item_PolymerCoating2
-
-### SRO-KS-VETERAN
-
-* Item_BackerTalisman
-* Item_CertifiedCredstickStandard
-* Item_Consumable_DocWagonCardBasic x2
-* Item_Consumable_FragGrenade x2
-* Item_Consumable_RocketLauncher x2
-* Item_Consumable_SmokeGrenade x2
-* Item_Cyberware_Cultural_Bioware_Reflex_Recorder_1_Alpha
-* Item_Cyberware_Wired_Reflexes_1_Beta
-* Item_DoubleDragon1Neon
-* Item_DragonHead1Neon
-* Item_ElementalEssenceSpray1
-* Item_Pack2BackerShirt
-* Item_Pack4_HoloDragon
-* Item_PolymerCoating2
-
-### SRO-KS-WHIZ
 
 * Item_BackerTalisman
 * Item_CertifiedCredstickStandard
@@ -238,24 +140,6 @@ These include exclusive backer rewards previously unavailable to most players.
 * Item_Cyberware_Cultural_Bioware_Reflex_Recorder_1_Alpha
 
 ### SRO-STEAM-DLC-DELUXE
-
-* Item_Consumable_DocWagonCardBasic x2
-* Item_Consumable_FragGrenade x2
-* Item_Consumable_RocketLauncher x2
-* Item_Cyberware_Wired_Reflexes_1_Beta
-* Item_ElementalEssenceSpray1
-* Item_PolymerCoating2
-
-### SRO-STEAM-DLC-DELUXE-RPG
-
-* Item_Consumable_DocWagonCardBasic x2
-* Item_Consumable_FragGrenade x2
-* Item_Consumable_RocketLauncher x2
-* Item_Cyberware_Wired_Reflexes_1_Beta
-* Item_ElementalEssenceSpray1
-* Item_PolymerCoating2
-
-### SRO-STEAM-DLC-FOUNDERS
 
 * Item_Consumable_DocWagonCardBasic x2
 * Item_Consumable_FragGrenade x2

@@ -128,6 +128,7 @@
     <Compile Include="Http\HttpStubServer.Coupon.cs" />
     <Compile Include="Http\HttpStubServer.Repositories.cs" />
     <Compile Include="Http\HttpStubServer.Transport.cs" />
+    <Compile Include="Coupons\HonoredCouponCodes.cs" />
     <Compile Include="LocalServiceOptions.cs" />
     <Compile Include="Protocols\APlayTcpStub.cs" />
     <Compile Include="Protocols\APlayTcpStub.StaticData.cs" />

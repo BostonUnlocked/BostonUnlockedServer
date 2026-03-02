@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Web.Script.Serialization;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay;
+using Shadowrun.LocalService.Core.Coupons;
 
 namespace Shadowrun.LocalService.Core.Persistence
 {
@@ -993,6 +994,7 @@ namespace Shadowrun.LocalService.Core.Persistence
 
                 if (markOccupied)
                 {
+                    var becameOccupied = !slotObj.IsOccupied;
                     if (!slotObj.IsOccupied)
                     {
                         slotObj.IsOccupied = true;
@@ -1036,6 +1038,12 @@ namespace Shadowrun.LocalService.Core.Persistence
                     {
                         SeedStarterHairAndBeardOptions(slotObj);
                         SeedAllHairAndBeardOptions(slotObj);
+                    }
+
+                    if (becameOccupied)
+                    {
+                        var entitled = GetCouponItemPackageEntitlementsForIdentityNoLock(identity);
+                        EnsureAllCouponEntitlementItemsPresentNoLock(slotObj, entitled);
                     }
                 }
 
@@ -1562,14 +1570,15 @@ namespace Shadowrun.LocalService.Core.Persistence
 
             // Starting inventory request: one "worst" item of each type.
             // These are item-definition IDs (LogicWeaponItemDefinition.Id) in static-data/metagameplay.json.
-            OwnItem(slot, "Automatics_IngramSmartgun_Tier_01");      // Used Ingram Smartgun
-            OwnItem(slot, "Spellcasting_PowerFocus_Tier_01");        // Lesser Topaz Focus (closest match)
-            OwnItem(slot, "Shotgun_RemingtonSportsman_Tier_01");     // Used Remington Sportsman
+            OwnItem(slot, "Automatics_IngramSmartgun_Tier_00");      // Used Ingram Smartgun
+            OwnItem(slot, "Spellcasting_PowerFocus_Tier_00");        // Lesser Topaz Focus (closest match)
+            OwnItem(slot, "Shotgun_RemingtonSportsman_Tier_00");     // Used Remington Sportsman
             OwnItem(slot, "Club_NailBoard_Tier_00");                 // Old Nailboard
-            OwnItem(slot, "Pistol_AresLightfire_Tier_01");           // Ares Lightfire 60
-            OwnItem(slot, "Hacking_Mcd1Deck_Tier_01");               // Used Erika MCD-1
-            OwnItem(slot, "Conjuring_Summoning_Focus_Tier_07");       // Lesser Summoning Focus
-            OwnItem(slot, "Rigging_ControlRigInterface_Tier_01");    // Used Radio Shack Remote (closest match)
+            OwnItem(slot, "Blade_Cleaver_Tier_00");                  // Basic cleaver
+            OwnItem(slot, "Pistol_AresLightfire_Tier_00");           // Ares Lightfire 60
+            OwnItem(slot, "Hacking_Mcd1Deck_Tier_00");               // Used Erika MCD-1
+            OwnItem(slot, "Conjuring_ConjuringFocus_Tier_00");       // Lesser Summoning Focus
+            OwnItem(slot, "Rigging_ControlRigInterface_Tier_00");    // Used Radio Shack Remote (closest match)
         }
 
         private static void SeedStarterCosmetics(CareerSlot slot)
@@ -1856,6 +1865,11 @@ namespace Shadowrun.LocalService.Core.Persistence
                 return false;
             }
 
+            if (!HonoredCouponCodes.IsHonored(code))
+            {
+                return false;
+            }
+
             var packages = GetOrLoadCouponItemPackagesByTechnicalName();
             if (packages == null || packages.Count <= 0)
             {
@@ -1906,6 +1920,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 }
 
                 var anyChanged = false;
+                var entitled = GetCouponItemPackageEntitlementsForIdentityNoLock(identity);
                 for (var i = 0; i < careersList.Count; i++)
                 {
                     var dict = careersList[i] as IDictionary;
@@ -1920,7 +1935,18 @@ namespace Shadowrun.LocalService.Core.Persistence
                         continue;
                     }
 
-                    if (!ApplyCouponItemPackageToCareerNoLock(slot, packageTechnicalName))
+                    var slotChanged = false;
+                    if (ApplyCouponItemPackageToCareerNoLock(slot, packageTechnicalName))
+                    {
+                        slotChanged = true;
+                    }
+
+                    if (EnsureAllCouponEntitlementItemsPresentNoLock(slot, entitled))
+                    {
+                        slotChanged = true;
+                    }
+
+                    if (!slotChanged)
                     {
                         continue;
                     }
@@ -1962,6 +1988,86 @@ namespace Shadowrun.LocalService.Core.Persistence
                 {
                     changed = true;
                 }
+            }
+
+            return changed;
+        }
+
+        private bool EnsureAllCouponEntitlementItemsPresentNoLock(CareerSlot slot, List<string> entitledPackages)
+        {
+            if (slot == null || !slot.IsOccupied || entitledPackages == null || entitledPackages.Count <= 0)
+            {
+                return false;
+            }
+
+            var packages = GetOrLoadCouponItemPackagesByTechnicalName();
+            if (packages == null || packages.Count <= 0)
+            {
+                return false;
+            }
+
+            if (slot.ItemPossessions == null)
+            {
+                slot.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var requiredByItem = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < entitledPackages.Count; i++)
+            {
+                var packageName = entitledPackages[i];
+                if (IsNullOrWhiteSpace(packageName))
+                {
+                    continue;
+                }
+
+                List<string> items;
+                if (!packages.TryGetValue(packageName, out items) || items == null || items.Count <= 0)
+                {
+                    continue;
+                }
+
+                for (var itemIndex = 0; itemIndex < items.Count; itemIndex++)
+                {
+                    var itemId = items[itemIndex];
+                    if (IsNullOrWhiteSpace(itemId))
+                    {
+                        continue;
+                    }
+
+                    int required;
+                    if (!requiredByItem.TryGetValue(itemId, out required) || required < 0)
+                    {
+                        required = 0;
+                    }
+
+                    if (required < int.MaxValue)
+                    {
+                        required++;
+                    }
+
+                    requiredByItem[itemId] = required;
+                }
+            }
+
+            var changed = false;
+            foreach (var kvp in requiredByItem)
+            {
+                var possessionKey = kvp.Key + "|0|-1";
+                var required = kvp.Value;
+                int existing;
+                if (!slot.ItemPossessions.TryGetValue(possessionKey, out existing) || existing < 0)
+                {
+                    existing = 0;
+                }
+
+                if (existing >= required)
+                {
+                    continue;
+                }
+
+                var missing = required - existing;
+                AddOwnedItemAmount(slot, kvp.Key, missing);
+                changed = true;
             }
 
             return changed;
@@ -2096,7 +2202,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             for (var i = 0; i < split.Length; i++)
             {
                 var s = split[i] != null ? split[i].Trim() : null;
-                if (IsNullOrWhiteSpace(s) || seen.ContainsKey(s))
+                if (IsNullOrWhiteSpace(s) || seen.ContainsKey(s) || !HonoredCouponCodes.IsHonored(s))
                 {
                     continue;
                 }
