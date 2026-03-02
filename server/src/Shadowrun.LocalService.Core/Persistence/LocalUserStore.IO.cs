@@ -514,7 +514,7 @@ namespace Shadowrun.LocalService.Core.Persistence
         private static ArrayList BuildDefaultCareers(string identityHash)
         {
             var list = new ArrayList();
-            for (var i = 0; i < 3; i++)
+            for (var i = 0; i < 6; i++)
             {
                 var slot = new CareerSlot();
                 slot.Index = i;
