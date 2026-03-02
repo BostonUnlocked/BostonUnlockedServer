@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Text;
 using System.Globalization;
+using Shadowrun.LocalService.Core.Coupons;
 
 namespace Shadowrun.LocalService.Core.Http
 {
@@ -55,6 +56,11 @@ namespace Shadowrun.LocalService.Core.Http
             if (!IsGuidish(accountId) || IsNullOrWhiteSpace(code))
             {
                 return JsonResponse(200, BuildRedeemCouponResult(1, "InvalidRequest", null, null));
+            }
+
+            if (!HonoredCouponCodes.IsHonored(code))
+            {
+                return JsonResponse(200, BuildRedeemCouponResult(2, "InvalidCoupon", null, null));
             }
 
             string unlockTechnicalName;
