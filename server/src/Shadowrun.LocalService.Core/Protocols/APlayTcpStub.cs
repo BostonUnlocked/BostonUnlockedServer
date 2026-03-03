@@ -3257,6 +3257,41 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
+        private bool IsMissionCompletedForCareer(string identityHash, int careerIndex, string missionName, HashSet<string> fallbackCompletedMissions)
+        {
+            if (IsNullOrWhiteSpace(missionName))
+            {
+                return false;
+            }
+
+            try
+            {
+                if (_userStore != null && !IsNullOrWhiteSpace(identityHash))
+                {
+                    var slot = _userStore.GetOrCreateCareer(identityHash, careerIndex, false);
+                    if (slot != null && slot.MainCampaignMissionStates != null)
+                    {
+                        string raw;
+                        if (slot.MainCampaignMissionStates.TryGetValue(missionName, out raw) && !IsNullOrWhiteSpace(raw))
+                        {
+                            var state = ParseStoryMissionStateOrDefault(raw, StoryMissionstate.Available);
+                            if (state >= StoryMissionstate.ReadyToReceiveRewards)
+                            {
+                                return true;
+                            }
+                        }
+
+                        return false;
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            return fallbackCompletedMissions != null && fallbackCompletedMissions.Contains(missionName);
+        }
+
         private bool TryMarkCurrentChapterDialogNpcsAsInteracted(CareerSlot slot, string storylineName)
         {
             var npcIds = GetCurrentChapterDialogNpcIds(slot, storylineName);
@@ -5024,7 +5059,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         // Only cancel for completed maps when we'd have to create a brand-new coop session.
                                         // If a session already exists, late/jittered duplicate starts should reuse it instead
                                         // of kicking one player back to hub.
-                                        if (completedStoryMissions.Contains(mapName))
+                                        if (IsMissionCompletedForCareer(activeIdentityHash, activeCareerIndex, mapName, completedStoryMissions))
                                         {
                                             cancelCompletedCoopStart = true;
                                         }
@@ -7119,7 +7154,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                     currentMissionMapName = mapName;
 
-                                    if (completedStoryMissions.Contains(mapName))
+                                    if (IsMissionCompletedForCareer(activeIdentityHash, activeCareerIndex, mapName, completedStoryMissions))
                                     {
                                         _logger.Log(new
                                         {
