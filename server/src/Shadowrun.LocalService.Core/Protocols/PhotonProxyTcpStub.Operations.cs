@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net.Sockets;
 using System.Text;
 using System.Web.Script.Serialization;
+using Cliffhanger.SRO.ServerClientCommons.Metagameplay;
 using PhotonProxy.ChatAndFriends.Client.DTOs;
 using PhotonProxy.Common.ServiceCommunication;
 using Shadowrun.LocalService.Core.Persistence;
@@ -17,6 +18,9 @@ namespace Shadowrun.LocalService.Core.Protocols
     private static readonly object ItemValidationDataLock = new object();
     private static ItemValidationData _itemValidationData;
     private static string _itemValidationDataSourceDir;
+    private static readonly object MainCampaignStorylineLock = new object();
+    private static MainCampaignStoryline _mainCampaignStoryline;
+    private static string _mainCampaignStorylineSourceDir;
 
         private static ServiceEnvelopeRequest ParseServiceEnvelopeRequest(byte[] payload)
         {
@@ -1258,10 +1262,401 @@ namespace Shadowrun.LocalService.Core.Protocols
             RegisterChatCommand(map, new HelpChatCommand());
             RegisterChatCommand(map, new AnnounceChatCommand());
             RegisterChatCommand(map, new ActiveMissionsChatCommand());
+            RegisterChatCommand(map, new SetAvailableMissionCommand());
             RegisterChatCommand(map, new SetBalanceCommand("setkarma", true));
             RegisterChatCommand(map, new SetBalanceCommand("setnuyen", false));
             RegisterChatCommand(map, new AddItemCommand());
             return map;
+        }
+
+        private bool TrySetAvailableMissionForCareer(ChatCommandContext context, string missionId, StoryMissionstate targetState, out string message)
+        {
+            message = "Command failed.";
+
+            if (context == null || IsNullOrEmpty(context.SenderIdentityHash) || _userStore == null)
+            {
+                message = "Unable to resolve active character.";
+                return false;
+            }
+
+            if (IsNullOrEmpty(missionId))
+            {
+                message = "Mission id is required.";
+                return false;
+            }
+
+            MainCampaignMissionPlan plan;
+            string resolveError;
+            if (!TryResolveMainCampaignMissionPlan(missionId.Trim(), targetState, out plan, out resolveError) || plan == null)
+            {
+                message = IsNullOrEmpty(resolveError) ? ("Unknown mission '" + missionId + "'.") : resolveError;
+                return false;
+            }
+
+            CareerSlot slot;
+            try
+            {
+                slot = _userStore.GetOrCreateCareer(context.SenderIdentityHash, context.ActiveCareerIndex, false);
+            }
+            catch
+            {
+                slot = null;
+            }
+
+            if (slot == null)
+            {
+                message = "Unable to resolve active character.";
+                return false;
+            }
+
+            slot.MainCampaignCurrentChapter = plan.TargetChapterIndex;
+            slot.MainCampaignMissionStates = new Dictionary<string, string>(plan.MissionStates, StringComparer.OrdinalIgnoreCase);
+            slot.MainCampaignInteractedNpcs = new List<string>();
+            if (!IsNullOrEmpty(plan.TargetHub))
+            {
+                slot.HubId = plan.TargetHub;
+            }
+
+            _userStore.UpsertCareer(context.SenderIdentityHash, slot);
+            context.ActiveCareerSlot = slot;
+
+            if (_characterStatePushBroker != null)
+            {
+                _characterStatePushBroker.Enqueue(
+                    context.SenderAccountId,
+                    CharacterStatePushPaths.MetaSnapshot | CharacterStatePushPaths.CareerSummaries);
+            }
+
+            message = "Set mission '" + plan.TargetMissionId + "' to " + plan.TargetMissionState
+                + " for career slot " + context.ActiveCareerIndex.ToString()
+                + " (completed prior missions: " + plan.CompletedBeforeCount.ToString() + ", cleared later missions: " + plan.ClearedAfterCount.ToString() + ").";
+            return true;
+        }
+
+        private bool TryResolveMainCampaignMissionPlan(string missionId, StoryMissionstate targetState, out MainCampaignMissionPlan plan, out string error)
+        {
+            plan = null;
+            error = null;
+
+            if (IsNullOrEmpty(missionId))
+            {
+                error = "Mission id is required.";
+                return false;
+            }
+
+            var storyline = GetOrLoadMainCampaignStoryline();
+            if (storyline == null || storyline.Chapters == null || storyline.Chapters.Count == 0 || storyline.OrderedMissionIds == null || storyline.OrderedMissionIds.Count == 0)
+            {
+                error = "Main campaign mission data is unavailable (static-data).";
+                return false;
+            }
+
+            var missionKey = missionId.Trim();
+            int targetOrderedIndex;
+            if (!storyline.OrderedIndexByMissionId.TryGetValue(missionKey, out targetOrderedIndex) || targetOrderedIndex < 0)
+            {
+                var suggestions = new List<string>();
+                for (var i = 0; i < storyline.OrderedMissionIds.Count; i++)
+                {
+                    var candidate = storyline.OrderedMissionIds[i];
+                    if (IsNullOrEmpty(candidate))
+                    {
+                        continue;
+                    }
+                    if (candidate.IndexOf(missionKey, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        suggestions.Add(candidate);
+                        if (suggestions.Count >= 5)
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                if (suggestions.Count > 0)
+                {
+                    error = "Unknown mission '" + missionId + "'. Similar: " + string.Join(", ", suggestions.ToArray()) + ".";
+                }
+                else
+                {
+                    error = "Unknown mission '" + missionId + "'.";
+                }
+                return false;
+            }
+
+            int targetChapterIndex;
+            if (!storyline.ChapterIndexByMissionId.TryGetValue(missionKey, out targetChapterIndex) || targetChapterIndex < 0 || targetChapterIndex >= storyline.Chapters.Count)
+            {
+                error = "Unable to resolve chapter for mission '" + missionId + "'.";
+                return false;
+            }
+
+            var missionStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < storyline.OrderedMissionIds.Count; i++)
+            {
+                var currentMission = storyline.OrderedMissionIds[i];
+                if (IsNullOrEmpty(currentMission))
+                {
+                    continue;
+                }
+
+                if (i < targetOrderedIndex)
+                {
+                    missionStates[currentMission] = StoryMissionstate.Completed.ToString();
+                    continue;
+                }
+
+                if (i == targetOrderedIndex)
+                {
+                    missionStates[currentMission] = targetState.ToString();
+                    break;
+                }
+
+                break;
+            }
+
+            var targetHub = storyline.Chapters[targetChapterIndex] != null ? storyline.Chapters[targetChapterIndex].Hub : null;
+            var completedBefore = targetOrderedIndex;
+            var clearedAfter = storyline.OrderedMissionIds.Count - targetOrderedIndex - 1;
+            if (clearedAfter < 0)
+            {
+                clearedAfter = 0;
+            }
+
+            plan = new MainCampaignMissionPlan();
+            plan.TargetMissionId = missionKey;
+            plan.TargetMissionState = targetState.ToString();
+            plan.TargetChapterIndex = targetChapterIndex;
+            plan.TargetHub = targetHub;
+            plan.CompletedBeforeCount = completedBefore;
+            plan.ClearedAfterCount = clearedAfter;
+            plan.MissionStates = missionStates;
+            return true;
+        }
+
+        private MainCampaignStoryline GetOrLoadMainCampaignStoryline()
+        {
+            var staticDataDir = _options != null ? _options.StaticDataDir : null;
+            if (IsNullOrEmpty(staticDataDir) || !Directory.Exists(staticDataDir))
+            {
+                return null;
+            }
+
+            lock (MainCampaignStorylineLock)
+            {
+                if (_mainCampaignStoryline != null && string.Equals(_mainCampaignStorylineSourceDir, staticDataDir, StringComparison.OrdinalIgnoreCase))
+                {
+                    return _mainCampaignStoryline;
+                }
+
+                _mainCampaignStoryline = LoadMainCampaignStoryline(staticDataDir);
+                _mainCampaignStorylineSourceDir = staticDataDir;
+                return _mainCampaignStoryline;
+            }
+        }
+
+        private static MainCampaignStoryline LoadMainCampaignStoryline(string staticDataDir)
+        {
+            if (IsNullOrEmpty(staticDataDir) || !Directory.Exists(staticDataDir))
+            {
+                return null;
+            }
+
+            var metagameplayPath = Path.Combine(staticDataDir, "metagameplay.json");
+            if (!File.Exists(metagameplayPath))
+            {
+                return null;
+            }
+
+            string json;
+            try
+            {
+                json = File.ReadAllText(metagameplayPath);
+            }
+            catch
+            {
+                return null;
+            }
+
+            if (IsNullOrEmpty(json))
+            {
+                return null;
+            }
+
+            object root;
+            try
+            {
+                var serializer = new JavaScriptSerializer();
+                serializer.MaxJsonLength = int.MaxValue;
+                serializer.RecursionLimit = 100;
+                root = serializer.DeserializeObject(json);
+            }
+            catch
+            {
+                return null;
+            }
+
+            var components = CoerceObjectArray(root);
+            if (components == null || components.Length == 0)
+            {
+                return null;
+            }
+
+            for (var i = 0; i < components.Length; i++)
+            {
+                var comp = components[i] as IDictionary;
+                if (comp == null)
+                {
+                    continue;
+                }
+
+                if (!comp.Contains("Storylines") || comp["Storylines"] == null)
+                {
+                    continue;
+                }
+
+                var storylines = CoerceObjectArray(comp["Storylines"]);
+                if (storylines == null || storylines.Length == 0)
+                {
+                    continue;
+                }
+
+                for (var s = 0; s < storylines.Length; s++)
+                {
+                    var storylineDict = storylines[s] as IDictionary;
+                    if (storylineDict == null)
+                    {
+                        continue;
+                    }
+
+                    var technicalName = storylineDict.Contains("TechnicalName") ? (storylineDict["TechnicalName"] as string) : null;
+                    if (!string.Equals(technicalName, "Main Campaign", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var result = new MainCampaignStoryline();
+                    var chapters = CoerceObjectArray(storylineDict.Contains("Chapters") ? storylineDict["Chapters"] : null);
+                    if (chapters == null)
+                    {
+                        chapters = new object[0];
+                    }
+
+                    for (var c = 0; c < chapters.Length; c++)
+                    {
+                        var chapterDict = chapters[c] as IDictionary;
+                        if (chapterDict == null)
+                        {
+                            continue;
+                        }
+
+                        var chapter = new MainCampaignChapter();
+                        chapter.Index = c;
+                        chapter.Hub = chapterDict.Contains("Hub") ? (chapterDict["Hub"] as string) : null;
+
+                        var missionRefs = CoerceObjectArray(chapterDict.Contains("RequiredMissionsForNextChapter") ? chapterDict["RequiredMissionsForNextChapter"] : null);
+                        if (missionRefs != null)
+                        {
+                            for (var m = 0; m < missionRefs.Length; m++)
+                            {
+                                var missionRef = missionRefs[m] as IDictionary;
+                                if (missionRef == null)
+                                {
+                                    continue;
+                                }
+
+                                var missionId = missionRef.Contains("Mission") ? (missionRef["Mission"] as string) : null;
+                                if (IsNullOrEmpty(missionId))
+                                {
+                                    continue;
+                                }
+
+                                if (!chapter.RequiredMissionIds.Contains(missionId))
+                                {
+                                    chapter.RequiredMissionIds.Add(missionId);
+                                }
+
+                                if (!result.ChapterIndexByMissionId.ContainsKey(missionId))
+                                {
+                                    result.ChapterIndexByMissionId[missionId] = c;
+                                }
+
+                                if (!result.OrderedIndexByMissionId.ContainsKey(missionId))
+                                {
+                                    result.OrderedIndexByMissionId[missionId] = result.OrderedMissionIds.Count;
+                                    result.OrderedMissionIds.Add(missionId);
+                                }
+                            }
+                        }
+
+                        var sideMissionRefs = CoerceObjectArray(chapterDict.Contains("SideMissions") ? chapterDict["SideMissions"] : null);
+                        if (sideMissionRefs != null)
+                        {
+                            for (var sm = 0; sm < sideMissionRefs.Length; sm++)
+                            {
+                                var sideMissionRef = sideMissionRefs[sm] as IDictionary;
+                                if (sideMissionRef == null)
+                                {
+                                    continue;
+                                }
+
+                                var sideMissionId = sideMissionRef.Contains("Mission") ? (sideMissionRef["Mission"] as string) : null;
+                                if (IsNullOrEmpty(sideMissionId))
+                                {
+                                    continue;
+                                }
+
+                                if (!result.ChapterIndexByMissionId.ContainsKey(sideMissionId))
+                                {
+                                    result.ChapterIndexByMissionId[sideMissionId] = c;
+                                }
+
+                                if (!result.OrderedIndexByMissionId.ContainsKey(sideMissionId))
+                                {
+                                    result.OrderedIndexByMissionId[sideMissionId] = result.OrderedMissionIds.Count;
+                                    result.OrderedMissionIds.Add(sideMissionId);
+                                }
+                            }
+                        }
+
+                        result.Chapters.Add(chapter);
+                    }
+
+                    return result;
+                }
+            }
+
+            return null;
+        }
+
+        private static object[] CoerceObjectArray(object raw)
+        {
+            if (raw == null)
+            {
+                return null;
+            }
+
+            var rootDict = raw as IDictionary;
+            if (rootDict != null && rootDict.Contains("Components") && rootDict["Components"] != null)
+            {
+                raw = rootDict["Components"];
+            }
+
+            var arr = raw as object[];
+            if (arr != null)
+            {
+                return arr;
+            }
+
+            var list = raw as ArrayList;
+            if (list == null)
+            {
+                return null;
+            }
+
+            var copy = new object[list.Count];
+            list.CopyTo(copy);
+            return copy;
         }
 
         private static void RegisterChatCommand(Dictionary<string, IChatCommand> map, IChatCommand command)
@@ -1526,7 +1921,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 var isAdmin = owner.IsChatCommandAuthorized(context.SenderAccountId);
                 if (isAdmin)
                 {
-                    return ChatCommandResult.Ok("Commands: /help, /announce {message}, /activemissions, /setkarma {X}, /setnuyen {X}, /additem {ItemCode} [Variant]");
+                    return ChatCommandResult.Ok("Commands: /help, /announce {message}, /activemissions, /setavailablemission {MissionId} [Available], /setkarma {X}, /setnuyen {X}, /additem {ItemCode} [Variant]");
                 }
 
                 return ChatCommandResult.Ok("Commands: /help");
@@ -1587,6 +1982,74 @@ namespace Shadowrun.LocalService.Core.Protocols
             {
                 var count = MissionRuntimeRegistry.GetActiveMissionCount();
                 return ChatCommandResult.Ok("Active missions in progress: " + count.ToString());
+            }
+        }
+
+        private sealed class SetAvailableMissionCommand : IChatCommand
+        {
+            public string Name { get { return "setavailablemission"; } }
+            public bool RequiresAdmin { get { return true; } }
+
+            public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
+            {
+                if (owner == null || context == null)
+                {
+                    return ChatCommandResult.Fail("Invalid command context.");
+                }
+
+                if (args == null || args.Length < 1 || args.Length > 2)
+                {
+                    return ChatCommandResult.Fail("Usage: /setavailablemission {MissionId} [Available]");
+                }
+
+                var missionId = args[0] != null ? args[0].Trim() : string.Empty;
+                if (IsNullOrEmpty(missionId))
+                {
+                    return ChatCommandResult.Fail("Mission id is required.");
+                }
+
+                var desiredState = StoryMissionstate.ReadyToPlay;
+                if (args.Length == 2)
+                {
+                    var stateText = args[1] != null ? args[1].Trim() : string.Empty;
+                    if (IsNullOrEmpty(stateText))
+                    {
+                        return ChatCommandResult.Fail("Usage: /setavailablemission {MissionId} [Available]");
+                    }
+
+                    if (string.Equals(stateText, "Available", StringComparison.OrdinalIgnoreCase))
+                    {
+                        desiredState = StoryMissionstate.Available;
+                    }
+                    else if (string.Equals(stateText, "ReadyToPlay", StringComparison.OrdinalIgnoreCase))
+                    {
+                        desiredState = StoryMissionstate.ReadyToPlay;
+                    }
+                    else
+                    {
+                        return ChatCommandResult.Fail("Optional state must be 'Available' (or omit to default to ReadyToPlay).");
+                    }
+                }
+
+                string resultMessage;
+                if (!owner.TrySetAvailableMissionForCareer(context, missionId, desiredState, out resultMessage))
+                {
+                    return ChatCommandResult.Fail(resultMessage);
+                }
+
+                owner.LogAdminEvent(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "chat-command",
+                    action = "set-available-mission",
+                    senderAccountId = context.SenderAccountId,
+                    senderIdentity = context.SenderIdentityHash ?? string.Empty,
+                    careerIndex = context.ActiveCareerIndex,
+                    mission = missionId,
+                    state = desiredState.ToString(),
+                });
+
+                return ChatCommandResult.Ok(resultMessage);
             }
         }
 
@@ -1789,6 +2252,32 @@ namespace Shadowrun.LocalService.Core.Protocols
             public readonly HashSet<string> ValidItemCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             public readonly Dictionary<string, int> ItemCategoryByCode = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             public readonly Dictionary<int, HashSet<int>> VariantCompatibleCategories = new Dictionary<int, HashSet<int>>();
+        }
+
+        private sealed class MainCampaignStoryline
+        {
+            public readonly List<MainCampaignChapter> Chapters = new List<MainCampaignChapter>();
+            public readonly List<string> OrderedMissionIds = new List<string>();
+            public readonly Dictionary<string, int> OrderedIndexByMissionId = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            public readonly Dictionary<string, int> ChapterIndexByMissionId = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private sealed class MainCampaignChapter
+        {
+            public int Index;
+            public string Hub;
+            public readonly List<string> RequiredMissionIds = new List<string>();
+        }
+
+        private sealed class MainCampaignMissionPlan
+        {
+            public string TargetMissionId;
+            public string TargetMissionState;
+            public int TargetChapterIndex;
+            public string TargetHub;
+            public int CompletedBeforeCount;
+            public int ClearedAfterCount;
+            public Dictionary<string, string> MissionStates;
         }
     }
 }
