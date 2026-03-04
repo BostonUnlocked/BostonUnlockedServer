@@ -3616,7 +3616,44 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                 ThreadPool.QueueUserWorkItem(delegate (object state)
                 {
-                    HandleClient((TcpClient)state, stopEvent);
+                    try
+                    {
+                        HandleClient((TcpClient)state, stopEvent);
+                    }
+                    catch (Exception ex)
+                    {
+                        string workerPeer = "unknown";
+                        try
+                        {
+                            var workerClient = state as TcpClient;
+                            if (workerClient != null && workerClient.Client != null && workerClient.Client.RemoteEndPoint != null)
+                            {
+                                workerPeer = workerClient.Client.RemoteEndPoint.ToString();
+                            }
+                        }
+                        catch
+                        {
+                        }
+
+                        try
+                        {
+                            Console.Error.WriteLine("[{0}] [aplay-client-worker-fault] peer={1} exception={2}", RequestLogger.UtcNowIso(), workerPeer, ex.Message);
+                            Console.Error.WriteLine(ex.ToString());
+                        }
+                        catch
+                        {
+                        }
+
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "aplay-client-worker-fault",
+                            peer = workerPeer,
+                            exception = ex.GetType().FullName,
+                            message = ex.Message,
+                            stack = ex.ToString(),
+                        });
+                    }
                 }, client);
             }
         }
@@ -8516,9 +8553,59 @@ namespace Shadowrun.LocalService.Core.Protocols
         private void SendRawFrame(NetworkStream stream, string peer, byte[] decoded, string note)
         {
             var frameBytes = Encoding.ASCII.GetBytes(Convert.ToBase64String(decoded) + "\0");
-            lock (stream)
+            try
             {
-                stream.Write(frameBytes, 0, frameBytes.Length);
+                lock (stream)
+                {
+                    stream.Write(frameBytes, 0, frameBytes.Length);
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                _logger.LogLow(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "aplay-frame-send-disconnected",
+                    peer = peer,
+                    note = note,
+                    reason = "stream-disposed",
+                });
+                return;
+            }
+            catch (IOException ioex)
+            {
+                var socketErrorCode = string.Empty;
+                var socketEx = ioex.InnerException as SocketException;
+                if (socketEx != null)
+                {
+                    socketErrorCode = socketEx.SocketErrorCode.ToString();
+                }
+
+                _logger.LogLow(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "aplay-frame-send-disconnected",
+                    peer = peer,
+                    note = note,
+                    reason = "io-exception",
+                    message = ioex.Message,
+                    socketErrorCode = socketErrorCode,
+                });
+                return;
+            }
+            catch (SocketException sex)
+            {
+                _logger.LogLow(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "aplay-frame-send-disconnected",
+                    peer = peer,
+                    note = note,
+                    reason = "socket-exception",
+                    message = sex.Message,
+                    socketErrorCode = sex.SocketErrorCode.ToString(),
+                });
+                return;
             }
 
             var payload = new
