@@ -7,7 +7,7 @@
     <OutputType>Library</OutputType>
     <RootNamespace>Shadowrun.LocalService.Core</RootNamespace>
     <AssemblyName>Shadowrun.LocalService.Core</AssemblyName>
-    <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
   </PropertyGroup>
 

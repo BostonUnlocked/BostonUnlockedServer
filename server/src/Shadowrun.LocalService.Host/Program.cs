@@ -36,7 +36,7 @@ namespace Shadowrun.LocalService.Host
 				port = options.Port,
 				aplayPort = options.APlayPort,
 				photonPort = options.PhotonPort,
-				runtime = ".NET Framework 3.5",
+					runtime = ".NET Framework 4.8",
 			});
 
 			Console.WriteLine("[localservice-cs] listening on http://{0}:{1}", options.Host, options.Port);
