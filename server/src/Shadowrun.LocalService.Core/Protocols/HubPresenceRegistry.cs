@@ -82,30 +82,9 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
-        public bool TryGetHubIdForPeer(string peer, out string hubId)
+        public bool TryGetCharacterIdForAccount(Guid accountId, out string characterId)
         {
-            hubId = null;
-            if (IsNullOrWhiteSpace(peer))
-            {
-                return false;
-            }
-
-            lock (_lock)
-            {
-                Participant p;
-                if (!_byPeer.TryGetValue(peer, out p) || p == null || IsNullOrWhiteSpace(p.HubId))
-                {
-                    return false;
-                }
-
-                hubId = p.HubId;
-                return true;
-            }
-        }
-
-        public bool TryGetHubIdForAccount(Guid accountId, out string hubId)
-        {
-            hubId = null;
+            characterId = null;
             if (accountId == Guid.Empty)
             {
                 return false;
@@ -122,38 +101,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                 foreach (var peer in peers)
                 {
                     Participant p;
-                    if (_byPeer.TryGetValue(peer, out p) && p != null && !IsNullOrWhiteSpace(p.HubId))
+                    if (_byPeer.TryGetValue(peer, out p) && p != null && !IsNullOrWhiteSpace(p.CharacterId))
                     {
-                        hubId = p.HubId;
+                        characterId = p.CharacterId;
                         return true;
                     }
-                }
-            }
-
-            return false;
-        }
-
-        public bool TryGetHubIdForCharacter(string characterId, out string hubId)
-        {
-            hubId = null;
-            if (IsNullOrWhiteSpace(characterId))
-            {
-                return false;
-            }
-
-            lock (_lock)
-            {
-                string peer;
-                if (!_peerByCharacterId.TryGetValue(characterId, out peer) || IsNullOrWhiteSpace(peer))
-                {
-                    return false;
-                }
-
-                Participant p;
-                if (_byPeer.TryGetValue(peer, out p) && p != null && !IsNullOrWhiteSpace(p.HubId))
-                {
-                    hubId = p.HubId;
-                    return true;
                 }
             }
 

@@ -1373,6 +1373,60 @@ namespace Shadowrun.LocalService.Core.Protocols
             return _hubPresenceRegistry.TryGetParticipantForPeer(peer, out participant) && participant != null;
         }
 
+        private bool TryResolveHubIdForCharacter(string characterId, out string hubId)
+        {
+            hubId = null;
+            if (_portedHubInstanceManager == null || IsNullOrWhiteSpace(characterId))
+            {
+                return false;
+            }
+
+            var hubInstance = _portedHubInstanceManager.RequestHubInstance(characterId);
+            if (hubInstance == null || IsNullOrWhiteSpace(hubInstance.HubId))
+            {
+                return false;
+            }
+
+            hubId = hubInstance.HubId;
+            return true;
+        }
+
+        private bool TryResolveHubIdForAccount(Guid accountId, out string hubId)
+        {
+            hubId = null;
+            if (accountId == Guid.Empty)
+            {
+                return false;
+            }
+
+            string characterId;
+            if (!_hubPresenceRegistry.TryGetCharacterIdForAccount(accountId, out characterId))
+            {
+                return false;
+            }
+
+            return TryResolveHubIdForCharacter(characterId, out hubId);
+        }
+
+        private string ResolveParticipantHubId(HubPresenceRegistry.Participant participant, string fallbackHubId)
+        {
+            if (participant != null && !IsNullOrWhiteSpace(participant.CharacterId))
+            {
+                string authoritativeHubId;
+                if (TryResolveHubIdForCharacter(participant.CharacterId, out authoritativeHubId))
+                {
+                    return authoritativeHubId;
+                }
+            }
+
+            if (participant != null && !IsNullOrWhiteSpace(participant.HubId))
+            {
+                return participant.HubId;
+            }
+
+            return fallbackHubId;
+        }
+
         private static HubPresenceRegistry.Participant CreateSyntheticParticipant(string hubId, string characterId, HubPlayerCharacter hubPlayerCharacter)
         {
             return new HubPresenceRegistry.Participant
@@ -2037,9 +2091,14 @@ namespace Shadowrun.LocalService.Core.Protocols
             HubPresenceRegistry.Participant participant;
             if (!_hubPresenceRegistry.TryGetParticipantForPeer(peer, out participant)
                 || participant == null
-                || IsNullOrWhiteSpace(participant.HubId)
-                || !string.Equals(participant.HubId, hubId, StringComparison.OrdinalIgnoreCase)
                 || IsNullOrWhiteSpace(participant.CharacterId))
+            {
+                return false;
+            }
+
+            var participantHubId = ResolveParticipantHubId(participant, null);
+            if (IsNullOrWhiteSpace(participantHubId)
+                || !string.Equals(participantHubId, hubId, StringComparison.OrdinalIgnoreCase))
             {
                 return false;
             }
@@ -3824,14 +3883,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             {
                                                 _hubPresenceRegistry.UpdatePosition(peer, movedX, movedY);
 
-                                                string movementHubId;
-                                                if (!_hubPresenceRegistry.TryGetHubIdForPeer(peer, out movementHubId))
-                                                {
-                                                    movementHubId = currentHubInstanceId;
-                                                }
-
                                                 HubPresenceRegistry.Participant movementParticipant;
                                                 _hubPresenceRegistry.TryGetParticipantForPeer(peer, out movementParticipant);
+                                                var movementHubId = ResolveParticipantHubId(movementParticipant, currentHubInstanceId);
 
                                                 if (!IsHubMoveOwnershipValid(peer, activeIdentityGuid, movedCharacterId, movementParticipant))
                                                 {
@@ -3843,9 +3897,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                     && !string.Equals(movementParticipant.CharacterId, movedCharacterId, StringComparison.OrdinalIgnoreCase))
                                                 {
                                                     var previousCharacterId = movementParticipant.CharacterId;
-                                                    var updatedHubId = !IsNullOrWhiteSpace(movementParticipant.HubId)
-                                                        ? movementParticipant.HubId
-                                                        : movementHubId;
+                                                    var updatedHubId = ResolveParticipantHubId(movementParticipant, movementHubId);
 
                                                     RegisterOrUpdateHubPresenceWithDuplicateRetire(
                                                         peer,
@@ -3866,10 +3918,11 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                                     HubPresenceRegistry.Participant shiftedParticipant;
                                                     _hubPresenceRegistry.TryGetParticipantForPeer(peer, out shiftedParticipant);
-                                                    if (shiftedParticipant != null && !IsNullOrWhiteSpace(shiftedParticipant.HubId))
+                                                    var shiftedHubId = ResolveParticipantHubId(shiftedParticipant, updatedHubId);
+                                                    if (shiftedParticipant != null && !IsNullOrWhiteSpace(shiftedHubId))
                                                     {
-                                                        ClearHubAnnouncementForAllPeers(shiftedParticipant.HubId, shiftedParticipant.CharacterId);
-                                                        BroadcastHubStateAddToReadyPeers(shiftedParticipant.HubId, peer, shiftedParticipant, "character-shift");
+                                                        ClearHubAnnouncementForAllPeers(shiftedHubId, shiftedParticipant.CharacterId);
+                                                        BroadcastHubStateAddToReadyPeers(shiftedHubId, peer, shiftedParticipant, "character-shift");
                                                     }
 
                                                     _logger.Log(new
@@ -3949,7 +4002,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 var hubIdForPresence = currentHubInstanceId;
                                                 if (IsNullOrWhiteSpace(hubIdForPresence))
                                                 {
-                                                    _hubPresenceRegistry.TryGetHubIdForPeer(peer, out hubIdForPresence);
+                                                    hubIdForPresence = ResolveParticipantHubId(previousParticipant, null);
                                                 }
                                                 if (IsNullOrWhiteSpace(hubIdForPresence) && _userStore != null && !IsNullOrWhiteSpace(activeIdentityHash))
                                                 {
@@ -3993,24 +4046,26 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                                 HubPresenceRegistry.Participant currentParticipant;
                                                 _hubPresenceRegistry.TryGetParticipantForPeer(peer, out currentParticipant);
+                                                var previousHubId = ResolveParticipantHubId(previousParticipant, null);
+                                                var currentParticipantHubId = ResolveParticipantHubId(currentParticipant, hubIdForPresence);
 
                                                 if (previousParticipant != null
-                                                    && !IsNullOrWhiteSpace(previousParticipant.HubId)
+                                                    && !IsNullOrWhiteSpace(previousHubId)
                                                     && !IsNullOrWhiteSpace(previousParticipant.CharacterId)
-                                                    && !string.Equals(previousParticipant.HubId, hubIdForPresence, StringComparison.OrdinalIgnoreCase))
+                                                    && !string.Equals(previousHubId, hubIdForPresence, StringComparison.OrdinalIgnoreCase))
                                                 {
-                                                    BroadcastHubStateRemove(previousParticipant.HubId, peer, previousParticipant.CharacterId);
+                                                    BroadcastHubStateRemove(previousHubId, peer, previousParticipant.CharacterId);
                                                 }
 
-                                                if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipant.HubId))
+                                                if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipantHubId))
                                                 {
                                                     var shouldBroadcastAdd = previousParticipant == null
-                                                        || !string.Equals(previousParticipant.HubId, currentParticipant.HubId, StringComparison.OrdinalIgnoreCase)
+                                                        || !string.Equals(previousHubId, currentParticipantHubId, StringComparison.OrdinalIgnoreCase)
                                                         || !string.Equals(previousParticipant.CharacterId, currentParticipant.CharacterId, StringComparison.OrdinalIgnoreCase);
 
                                                     if (shouldBroadcastAdd)
                                                     {
-                                                        ClearHubAnnouncementsForPeerHub(peer, currentParticipant.HubId);
+                                                        ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
                                                     }
 
                                                     _logger.Log(new
@@ -4018,16 +4073,16 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                         ts = RequestLogger.UtcNowIso(),
                                                         type = "hub-enter",
                                                         peer = peer,
-                                                        hubId = currentParticipant.HubId,
+                                                        hubId = currentParticipantHubId,
                                                         characterId = currentParticipant.CharacterId ?? string.Empty,
                                                         x = movedX,
                                                         y = movedY,
-                                                        previousHubId = previousParticipant != null ? (previousParticipant.HubId ?? string.Empty) : string.Empty,
+                                                        previousHubId = previousHubId ?? string.Empty,
                                                         previousCharacterId = previousParticipant != null ? (previousParticipant.CharacterId ?? string.Empty) : string.Empty,
-                                                        hubChanged = previousParticipant == null || !string.Equals(previousParticipant.HubId, currentParticipant.HubId, StringComparison.OrdinalIgnoreCase),
+                                                        hubChanged = previousParticipant == null || !string.Equals(previousHubId, currentParticipantHubId, StringComparison.OrdinalIgnoreCase),
                                                     });
 
-                                                    armHubReadyFallback(currentParticipant.HubId, currentParticipant.CharacterId, "hub-enter-field-2");
+                                                    armHubReadyFallback(currentParticipantHubId, currentParticipant.CharacterId, "hub-enter-field-2");
                                                 }
                                             }
                                         }
@@ -5799,11 +5854,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             : DefaultHubId;
                                         routedHubSource = "self-career";
                                     }
-                                    else if (requestedHostAccountId != Guid.Empty && _hubPresenceRegistry.TryGetHubIdForAccount(requestedHostAccountId, out routedHubId))
+                                    else if (requestedHostAccountId != Guid.Empty && TryResolveHubIdForAccount(requestedHostAccountId, out routedHubId))
                                     {
                                         routedHubSource = "host-account";
                                     }
-                                    else if (!IsNullOrWhiteSpace(requestedHostCharacterId) && _hubPresenceRegistry.TryGetHubIdForCharacter(requestedHostCharacterId, out routedHubId))
+                                    else if (!IsNullOrWhiteSpace(requestedHostCharacterId) && TryResolveHubIdForCharacter(requestedHostCharacterId, out routedHubId))
                                     {
                                         routedHubSource = "host-character";
                                     }
@@ -5859,27 +5914,29 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                     HubPresenceRegistry.Participant currentParticipant;
                                     _hubPresenceRegistry.TryGetParticipantForPeer(peer, out currentParticipant);
+                                    var previousHubId = ResolveParticipantHubId(previousParticipant, null);
+                                    var currentParticipantHubId = ResolveParticipantHubId(currentParticipant, routedHubId);
 
                                     var shouldBroadcastAdd = previousParticipant == null
-                                        || !string.Equals(previousParticipant.HubId, routedHubId, StringComparison.OrdinalIgnoreCase)
+                                        || !string.Equals(previousHubId, routedHubId, StringComparison.OrdinalIgnoreCase)
                                         || !string.Equals(previousParticipant.CharacterId, routedCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
 
                                     if (previousParticipant != null
-                                        && !IsNullOrWhiteSpace(previousParticipant.HubId)
+                                        && !IsNullOrWhiteSpace(previousHubId)
                                         && !IsNullOrWhiteSpace(previousParticipant.CharacterId)
-                                        && !string.Equals(previousParticipant.HubId, routedHubId, StringComparison.OrdinalIgnoreCase))
+                                        && !string.Equals(previousHubId, routedHubId, StringComparison.OrdinalIgnoreCase))
                                     {
-                                        BroadcastHubStateRemove(previousParticipant.HubId, peer, previousParticipant.CharacterId);
+                                        BroadcastHubStateRemove(previousHubId, peer, previousParticipant.CharacterId);
                                     }
 
-                                    if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipant.HubId))
+                                    if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipantHubId))
                                     {
                                         if (shouldBroadcastAdd)
                                         {
-                                            ClearHubAnnouncementsForPeerHub(peer, currentParticipant.HubId);
+                                            ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
                                         }
 
-                                        armHubReadyFallback(currentParticipant.HubId, currentParticipant.CharacterId, "request-story-hub-for");
+                                        armHubReadyFallback(currentParticipantHubId, currentParticipant.CharacterId, "request-story-hub-for");
 
                                     }
 
@@ -5889,9 +5946,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         type = "hub-join-eval",
                                         path = "RequestStoryHubFor",
                                         peer = peer,
-                                        previousHubId = previousParticipant != null ? (previousParticipant.HubId ?? string.Empty) : string.Empty,
+                                        previousHubId = previousHubId ?? string.Empty,
                                         previousCharacterId = previousParticipant != null ? (previousParticipant.CharacterId ?? string.Empty) : string.Empty,
-                                        currentHubId = currentParticipant != null ? (currentParticipant.HubId ?? string.Empty) : string.Empty,
+                                        currentHubId = currentParticipantHubId ?? string.Empty,
                                         currentCharacterId = currentParticipant != null ? (currentParticipant.CharacterId ?? string.Empty) : string.Empty,
                                         shouldBroadcastAdd = shouldBroadcastAdd,
                                     });
@@ -6045,7 +6102,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         if (PartyHubFollowRegistry.TryGetHostForMember(activeIdentityGuid, out followHostAccountId)
                                             && followHostAccountId != Guid.Empty
                                             && followHostAccountId != activeIdentityGuid
-                                            && _hubPresenceRegistry.TryGetHubIdForAccount(followHostAccountId, out followHostHubId)
+                                            && TryResolveHubIdForAccount(followHostAccountId, out followHostHubId)
                                             && !IsNullOrWhiteSpace(followHostHubId))
                                         {
                                             effectiveHubId = followHostHubId;
@@ -6087,27 +6144,29 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                         HubPresenceRegistry.Participant currentParticipant;
                                         _hubPresenceRegistry.TryGetParticipantForPeer(peer, out currentParticipant);
+                                        var previousHubId = ResolveParticipantHubId(previousParticipant, null);
+                                        var currentParticipantHubId = ResolveParticipantHubId(currentParticipant, effectiveHubId);
 
                                         var shouldBroadcastAdd = previousParticipant == null
-                                            || !string.Equals(previousParticipant.HubId, effectiveHubId, StringComparison.OrdinalIgnoreCase)
+                                            || !string.Equals(previousHubId, effectiveHubId, StringComparison.OrdinalIgnoreCase)
                                             || !string.Equals(previousParticipant.CharacterId, currentCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
 
                                         if (previousParticipant != null
-                                            && !IsNullOrWhiteSpace(previousParticipant.HubId)
+                                            && !IsNullOrWhiteSpace(previousHubId)
                                             && !IsNullOrWhiteSpace(previousParticipant.CharacterId)
-                                            && !string.Equals(previousParticipant.HubId, effectiveHubId, StringComparison.OrdinalIgnoreCase))
+                                            && !string.Equals(previousHubId, effectiveHubId, StringComparison.OrdinalIgnoreCase))
                                         {
-                                            BroadcastHubStateRemove(previousParticipant.HubId, peer, previousParticipant.CharacterId);
+                                            BroadcastHubStateRemove(previousHubId, peer, previousParticipant.CharacterId);
                                         }
 
-                                        if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipant.HubId))
+                                        if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipantHubId))
                                         {
                                             if (shouldBroadcastAdd)
                                             {
-                                                ClearHubAnnouncementsForPeerHub(peer, currentParticipant.HubId);
+                                                ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
                                             }
 
-                                            armHubReadyFallback(currentParticipant.HubId, currentParticipant.CharacterId, "request-current-storyline-hub");
+                                            armHubReadyFallback(currentParticipantHubId, currentParticipant.CharacterId, "request-current-storyline-hub");
 
                                         }
 
@@ -6117,9 +6176,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             type = "hub-join-eval",
                                             path = "RequestCurrentStorylineHubMessage",
                                             peer = peer,
-                                            previousHubId = previousParticipant != null ? (previousParticipant.HubId ?? string.Empty) : string.Empty,
+                                            previousHubId = previousHubId ?? string.Empty,
                                             previousCharacterId = previousParticipant != null ? (previousParticipant.CharacterId ?? string.Empty) : string.Empty,
-                                            currentHubId = currentParticipant != null ? (currentParticipant.HubId ?? string.Empty) : string.Empty,
+                                            currentHubId = currentParticipantHubId ?? string.Empty,
                                             currentCharacterId = currentParticipant != null ? (currentParticipant.CharacterId ?? string.Empty) : string.Empty,
                                             shouldBroadcastAdd = shouldBroadcastAdd,
                                         });
