@@ -136,6 +136,9 @@
     <Compile Include="Persistence\FriendsStore.cs" />
     <Compile Include="Persistence\ISessionIdentityMap.cs" />
     <Compile Include="Persistence\ExpiringSessionIdentityMap.cs" />
+    <Compile Include="Metagameplay\MetagameplayStaticDataIndex.cs" />
+    <Compile Include="Metagameplay\PortedShopInventoryService.cs" />
+    <Compile Include="Metagameplay\PortedSkillPurchaseService.cs" />
     <Compile Include="Http\HttpStubServer.Account.cs" />
     <Compile Include="Http\HttpStubServer.cs" />
     <Compile Include="Http\HttpStubServer.Coupon.cs" />

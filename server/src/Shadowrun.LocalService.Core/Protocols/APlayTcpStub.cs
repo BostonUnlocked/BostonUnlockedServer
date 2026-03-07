@@ -20,6 +20,7 @@ using SRO.Core.Compatibility.Math;
 using SRO.Core.Compatibility.Utilities;
 using Shadowrun.LocalService.Core.Simulation;
 using Shadowrun.LocalService.Core.Career;
+using Shadowrun.LocalService.Core.Metagameplay;
 using Shadowrun.LocalService.Core.Persistence;
 
 namespace Shadowrun.LocalService.Core.Protocols
@@ -2833,6 +2834,8 @@ namespace Shadowrun.LocalService.Core.Protocols
         private readonly CareerInfoGenerator _careerInfoGenerator;
         private readonly MatchConfigurationGenerator _matchConfigurationGenerator;
         private readonly CharacterStatePushBroker _characterStatePushBroker;
+        private readonly PortedSkillPurchaseService _skillPurchaseService;
+        private readonly PortedShopInventoryService _shopInventoryService;
 
         // APlay DirectSystem messages include an 8-byte message number the client may use for ordering/dedup.
         // For MetaGameplay pushes we must keep these monotonic even if the client repeats a request with a lower MsgNo.
@@ -2954,6 +2957,8 @@ namespace Shadowrun.LocalService.Core.Protocols
             _careerInfoGenerator = new CareerInfoGenerator(logger, _userStore);
             _matchConfigurationGenerator = new MatchConfigurationGenerator(logger);
             _characterStatePushBroker = characterStatePushBroker ?? CharacterStatePushBroker.Shared;
+            _skillPurchaseService = new PortedSkillPurchaseService(_options);
+            _shopInventoryService = new PortedShopInventoryService(_options);
         }
 
         private ulong AllocateGameClientEntityId()
@@ -5253,72 +5258,20 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         || rawMessage.IndexOf("SkillTreeTechnichalName", StringComparison.Ordinal) >= 0
                                         || rawMessage.IndexOf("SkillTechnichalName", StringComparison.Ordinal) >= 0))
                                 {
-                                    var parsed = TryDeserializeJsonDict(rawMessage);
-
-                                    // The client sends SkillLevel=0 in purchases; it expects the server to respond with a valid level.
-                                    // If we echo SkillLevel=0 back, some client builds throw IndexOutOfRangeException in onSkillTreeChanged.
-                                    var skillTreeChangedJson = rawMessage;
-                                    var inferredSkillLevels = 0;
+                                    SkillTreeChanges requestedChanges = null;
                                     try
                                     {
-                                        var typed = JsonFxSerializerProvider.Current.Deserialize<SkillTreeChanges>(rawMessage);
-                                        if (typed != null && typed.Purchases != null && typed.Purchases.Length > 0)
-                                        {
-                                            for (var i = 0; i < typed.Purchases.Length; i++)
-                                            {
-                                                var p = typed.Purchases[i];
-                                                if (p == null)
-                                                {
-                                                    continue;
-                                                }
-
-                                                if (p.SkillLevel > 0)
-                                                {
-                                                    continue;
-                                                }
-
-                                                int inferred;
-                                                if (TryInferSkillLevelFromTechnicalName(p.SkillTechnichalName, out inferred) && inferred > 0)
-                                                {
-                                                    p.SkillLevel = inferred;
-                                                    inferredSkillLevels++;
-                                                }
-                                            }
-
-                                            if (inferredSkillLevels > 0)
-                                            {
-                                                skillTreeChangedJson = JsonFxSerializerProvider.Current.Serialize<SkillTreeChanges>(typed);
-                                            }
-                                        }
+                                        requestedChanges = JsonFxSerializerProvider.Current.Deserialize<SkillTreeChanges>(rawMessage);
                                     }
                                     catch
                                     {
-                                        // If inference fails for any reason, fall back to the raw payload.
-                                        skillTreeChangedJson = rawMessage;
-                                        inferredSkillLevels = 0;
+                                        requestedChanges = null;
                                     }
 
-                                    var applyReset = false;
-                                    try
+                                    if (requestedChanges == null)
                                     {
-                                        if (parsed != null && parsed.Contains("ApplyReset") && parsed["ApplyReset"] != null)
-                                        {
-                                            if (parsed["ApplyReset"] is bool)
-                                            {
-                                                applyReset = (bool)parsed["ApplyReset"];
-                                            }
-                                            else
-                                            {
-                                                applyReset = Convert.ToBoolean(parsed["ApplyReset"], CultureInfo.InvariantCulture);
-                                            }
-                                        }
+                                        continue;
                                     }
-                                    catch
-                                    {
-                                        applyReset = false;
-                                    }
-
-                                    var purchases = parsed != null ? GetArrayValue(parsed, "Purchases") : null;
 
                                     var slotIndex = activeCareerIndex;
                                     if (slotIndex < 0)
@@ -5329,126 +5282,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     var slot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, slotIndex, false) : null;
                                     if (slot != null)
                                     {
-                                        if (slot.SkillTreeDefinitions == null)
+                                        var appliedSkillChanges = _skillPurchaseService.Apply(slot, requestedChanges);
+
+                                        if (appliedSkillChanges.Persisted)
                                         {
-                                            slot.SkillTreeDefinitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
-                                        }
-
-                                        var changed = false;
-                                        var appliedCount = 0;
-                                        var karmaBefore = slot.Karma;
-                                        var karmaCostApplied = 0;
-                                        var karmaCostMissing = 0;
-
-                                        if (applyReset)
-                                        {
-                                            if (slot.SkillTreeDefinitions.Count > 0)
-                                            {
-                                                slot.SkillTreeDefinitions.Clear();
-                                                changed = true;
-                                            }
-                                        }
-
-                                        if (purchases != null && purchases.Length > 0)
-                                        {
-                                            for (var i = 0; i < purchases.Length; i++)
-                                            {
-                                                var entry = purchases[i] as IDictionary;
-                                                if (entry == null)
-                                                {
-                                                    continue;
-                                                }
-
-                                                var tree = GetStringValue(entry, "SkillTreeTechnichalName");
-                                                var skill = GetStringValue(entry, "SkillTechnichalName");
-                                                if (IsNullOrWhiteSpace(tree) || IsNullOrWhiteSpace(skill))
-                                                {
-                                                    continue;
-                                                }
-
-                                                string[] existing;
-                                                if (!slot.SkillTreeDefinitions.TryGetValue(tree, out existing) || existing == null)
-                                                {
-                                                    slot.SkillTreeDefinitions[tree] = new string[] { skill };
-                                                    changed = true;
-                                                    appliedCount++;
-
-                                                    int cost;
-                                                    if (TryResolveSkillKarmaCost(skill, out cost) && cost > 0)
-                                                    {
-                                                        karmaCostApplied += cost;
-                                                    }
-                                                    else
-                                                    {
-                                                        karmaCostMissing++;
-                                                    }
-                                                    continue;
-                                                }
-
-                                                var already = false;
-                                                for (var j = 0; j < existing.Length; j++)
-                                                {
-                                                    if (string.Equals(existing[j], skill, StringComparison.Ordinal))
-                                                    {
-                                                        already = true;
-                                                        break;
-                                                    }
-                                                }
-                                                if (already)
-                                                {
-                                                    continue;
-                                                }
-
-                                                var updated = new string[existing.Length + 1];
-                                                for (var j = 0; j < existing.Length; j++)
-                                                {
-                                                    updated[j] = existing[j];
-                                                }
-                                                updated[existing.Length] = skill;
-                                                slot.SkillTreeDefinitions[tree] = updated;
-                                                changed = true;
-                                                appliedCount++;
-
-                                                int cost2;
-                                                if (TryResolveSkillKarmaCost(skill, out cost2) && cost2 > 0)
-                                                {
-                                                    karmaCostApplied += cost2;
-                                                }
-                                                else
-                                                {
-                                                    karmaCostMissing++;
-                                                }
-                                            }
-                                        }
-
-                                        if (changed)
-                                        {
-                                            // Deduct karma for new purchases (best-effort). Never go negative.
-                                            if (!applyReset && karmaCostApplied > 0)
-                                            {
-                                                var spendApplied = karmaCostApplied;
-                                                if (spendApplied > slot.Karma)
-                                                {
-                                                    spendApplied = slot.Karma;
-                                                }
-                                                if (spendApplied < 0)
-                                                {
-                                                    spendApplied = 0;
-                                                }
-                                                slot.Karma = slot.Karma - spendApplied;
-                                                try
-                                                {
-                                                    checked
-                                                    {
-                                                        slot.SpentKarma = slot.SpentKarma + spendApplied;
-                                                    }
-                                                }
-                                                catch
-                                                {
-                                                    slot.SpentKarma = int.MaxValue;
-                                                }
-                                            }
-
                                             try { _userStore.UpsertCareer(activeIdentityHash, slot); } catch { }
                                         }
 
@@ -5458,27 +5295,29 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             type = "skilltree-change",
                                             peer = peer,
                                             careerIndex = slotIndex,
-                                            applyReset = applyReset,
-                                            purchases = purchases != null ? purchases.Length : 0,
-                                            applied = appliedCount,
-                                            persisted = changed,
-                                            inferredSkillLevels = inferredSkillLevels,
-                                            karmaBefore = karmaBefore,
-                                            karmaCostApplied = karmaCostApplied,
+                                            applyReset = appliedSkillChanges.ApplyReset,
+                                            purchases = requestedChanges.Purchases != null ? requestedChanges.Purchases.Length : 0,
+                                            applied = appliedSkillChanges.AppliedCount,
+                                            persisted = appliedSkillChanges.Persisted,
+                                            karmaBefore = appliedSkillChanges.KarmaBefore,
+                                            karmaRefunded = appliedSkillChanges.KarmaRefunded,
+                                            karmaCostApplied = appliedSkillChanges.KarmaSpent,
                                             karmaAfter = slot.Karma,
-                                            karmaCostMissing = karmaCostMissing,
                                         });
 
-                                        // Notify the client so it commits the purchase into its runtime snapshot.
-                                        try
+                                        if (appliedSkillChanges.ShouldNotifyClient)
                                         {
-                                            var msgNoBase = direct.Value.MsgNo + 2;
-                                            var skillChangedPayload = BuildUtf16StringPayload(skillTreeChangedJson);
-                                            var skillChangedCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 34, skillChangedPayload), msgNoBase);
-                                            SendRawFrame(stream, peer, PrefixLength(skillChangedCore), "sent MetaGameplayCommunicationObject SkillTreeChanged in response to ChangeSkillTrees");
-                                        }
-                                        catch
-                                        {
+                                            try
+                                            {
+                                                var msgNoBase = direct.Value.MsgNo + 2;
+                                                var skillTreeChangedJson = JsonFxSerializerProvider.Current.Serialize<SkillTreeChanges>(appliedSkillChanges.AppliedChanges);
+                                                var skillChangedPayload = BuildUtf16StringPayload(skillTreeChangedJson);
+                                                var skillChangedCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 34, skillChangedPayload), msgNoBase);
+                                                SendRawFrame(stream, peer, PrefixLength(skillChangedCore), "sent MetaGameplayCommunicationObject SkillTreeChanged in response to ChangeSkillTrees");
+                                            }
+                                            catch
+                                            {
+                                            }
                                         }
                                     }
                                 }
@@ -5490,9 +5329,20 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 if (!IsNullOrWhiteSpace(rawMessage)
                                     && rawMessage.IndexOf("ItemPossessionChanges", StringComparison.Ordinal) >= 0)
                                 {
-                                    var parsed = TryDeserializeJsonDict(rawMessage);
-                                    var shopKeeper = parsed != null ? GetStringValue(parsed, "ShopKeeper") : null;
-                                    var changes = parsed != null ? GetArrayValue(parsed, "ItemChanges") : null;
+                                    ItemPossessionChanges requestedChanges = null;
+                                    try
+                                    {
+                                        requestedChanges = JsonFxSerializerProvider.Current.Deserialize<ItemPossessionChanges>(rawMessage);
+                                    }
+                                    catch
+                                    {
+                                        requestedChanges = null;
+                                    }
+
+                                    if (requestedChanges == null)
+                                    {
+                                        continue;
+                                    }
 
                                     var slotIndex = activeCareerIndex;
                                     if (slotIndex < 0)
@@ -5503,121 +5353,12 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     var slot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, slotIndex, false) : null;
                                     if (slot != null)
                                     {
-                                        if (slot.ItemPossessions == null)
+                                        var appliedShopChanges = _shopInventoryService.Apply(slot, requestedChanges);
+
+                                        if (appliedShopChanges.Persisted)
                                         {
-                                            slot.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                                            try { _userStore.UpsertCareer(activeIdentityHash, slot); } catch { }
                                         }
-
-                                        var totalCost = 0;
-                                        var totalRefund = 0;
-                                        var applied = 0;
-                                        var appliedItemChanges = new List<ItemChange>();
-
-                                        if (changes != null && changes.Length > 0)
-                                        {
-                                            for (var i = 0; i < changes.Length; i++)
-                                            {
-                                                var entry = changes[i] as IDictionary;
-                                                if (entry == null)
-                                                {
-                                                    continue;
-                                                }
-
-                                                var itemId = GetStringValue(entry, "ItemDefintionId");
-                                                var delta = GetInt32Value(entry, "Delta", 0);
-                                                var quality = GetInt32Value(entry, "Quality", 0);
-                                                var flavour = GetInt32Value(entry, "Flavour", -1);
-                                                if (IsNullOrWhiteSpace(itemId) || delta == 0)
-                                                {
-                                                    continue;
-                                                }
-
-                                                try
-                                                {
-                                                    appliedItemChanges.Add(new ItemChange(itemId, delta)
-                                                    {
-                                                        Quality = quality,
-                                                        Flavour = flavour,
-                                                    });
-                                                }
-                                                catch
-                                                {
-                                                }
-
-                                                var packedKey = itemId + "|" + quality.ToString(CultureInfo.InvariantCulture) + "|" + flavour.ToString(CultureInfo.InvariantCulture);
-                                                int existing;
-                                                if (!slot.ItemPossessions.TryGetValue(packedKey, out existing))
-                                                {
-                                                    existing = 0;
-                                                }
-
-                                                var next = existing + delta;
-                                                if (next <= 0)
-                                                {
-                                                    if (slot.ItemPossessions.ContainsKey(packedKey))
-                                                    {
-                                                        slot.ItemPossessions.Remove(packedKey);
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    slot.ItemPossessions[packedKey] = next;
-                                                }
-
-                                                int price;
-                                                if (delta > 0)
-                                                {
-                                                    if (TryResolveShopPrice(shopKeeper, itemId, out price) && price > 0)
-                                                    {
-                                                        try { totalCost = checked(totalCost + checked(price * delta)); } catch { totalCost = int.MaxValue; }
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    // Conservative sell/refund heuristic if we know shop price.
-                                                    if (TryResolveShopPrice(shopKeeper, itemId, out price) && price > 0)
-                                                    {
-                                                        var qty = -delta;
-                                                        var refundEach = price / 2;
-                                                        if (refundEach > 0)
-                                                        {
-                                                            try { totalRefund = checked(totalRefund + checked(refundEach * qty)); } catch { totalRefund = int.MaxValue; }
-                                                        }
-                                                    }
-                                                }
-
-                                                applied++;
-                                            }
-                                        }
-
-                                        if (totalCost > 0)
-                                        {
-                                            try
-                                            {
-                                                slot.Nuyen = slot.Nuyen - totalCost;
-                                            }
-                                            catch
-                                            {
-                                                slot.Nuyen = 0;
-                                            }
-                                        }
-                                        if (totalRefund > 0)
-                                        {
-                                            try
-                                            {
-                                                slot.Nuyen = slot.Nuyen + totalRefund;
-                                            }
-                                            catch
-                                            {
-                                                slot.Nuyen = int.MaxValue;
-                                            }
-                                        }
-                                        if (slot.Nuyen < 0)
-                                        {
-                                            slot.Nuyen = 0;
-                                        }
-
-                                        try { _userStore.UpsertCareer(activeIdentityHash, slot); } catch { }
 
                                         _logger.Log(new
                                         {
@@ -5625,11 +5366,12 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             type = "item-possession-change",
                                             peer = peer,
                                             careerIndex = slotIndex,
-                                            shopKeeper = shopKeeper,
-                                            itemChanges = changes != null ? changes.Length : 0,
-                                            applied = applied,
-                                            cost = totalCost,
-                                            refund = totalRefund,
+                                            shopKeeper = requestedChanges.ShopKeeper,
+                                            itemChanges = requestedChanges.ItemChanges != null ? requestedChanges.ItemChanges.Length : 0,
+                                            applied = appliedShopChanges.ShopChanges != null && appliedShopChanges.ShopChanges.AppliedChanges != null ? appliedShopChanges.ShopChanges.AppliedChanges.Length : 0,
+                                            failed = appliedShopChanges.ShopChanges != null && appliedShopChanges.ShopChanges.Failed,
+                                            nuyenBefore = appliedShopChanges.NuyenBefore,
+                                            totalNuyenChange = appliedShopChanges.ShopChanges != null ? appliedShopChanges.ShopChanges.TotalNuyenChange : 0,
                                             nuyen = slot.Nuyen,
                                         });
 
@@ -5641,17 +5383,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         {
                                             var msgNoBase = direct.Value.MsgNo + 20;
                                             var serializedInventory = SerializeInventoryFromSlot(slot);
-
-                                            // Client expects *compressed* shop changes (InventorySerializer.DeserializeShopItemChanges)
-                                            // not the raw JSON request payload.
-                                            var shopItemChanges = new ShopItemChanges
-                                            {
-                                                Failed = false,
-                                                TotalNuyenChange = (totalRefund > 0 ? totalRefund : 0) - (totalCost > 0 ? totalCost : 0),
-                                                AppliedChanges = appliedItemChanges.ToArray(),
-                                                NotAppliedChanges = new ItemChange[0],
-                                            };
-                                            var serializedShopChanges = InventorySerializer.SerializeShopItemChanges(shopItemChanges);
+                                            var serializedShopChanges = InventorySerializer.SerializeShopItemChanges(appliedShopChanges.ShopChanges);
 
                                             var inventoryChangedPayload = BuildUtf16StringPayload(serializedInventory, serializedShopChanges);
                                             var inventoryChangedCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 31, inventoryChangedPayload), msgNoBase + 1);
