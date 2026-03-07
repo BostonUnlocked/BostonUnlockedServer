@@ -102,7 +102,7 @@ namespace Shadowrun.LocalService.Core.Simulation
             }
 
             var activatableMembers = _turnObserver.CurrentActivatableMembers;
-            var agent = activatableMembers[0];
+            var fallbackAgent = activatableMembers[0];
             var hasCombatEligibleAgent = false;
             string inactiveSpawnManagerTag = null;
             for (var memberIndex = 0; memberIndex < activatableMembers.Length; memberIndex++)
@@ -111,7 +111,7 @@ namespace Shadowrun.LocalService.Core.Simulation
                 string candidateSpawnManagerTag;
                 if (IsAgentEligibleForCombatAction(candidate, out candidateSpawnManagerTag))
                 {
-                    agent = candidate;
+                    fallbackAgent = candidate;
                     hasCombatEligibleAgent = true;
                     inactiveSpawnManagerTag = null;
                     break;
@@ -121,7 +121,7 @@ namespace Shadowrun.LocalService.Core.Simulation
                     && _encounterActivationTracker != null
                     && _encounterActivationTracker.TryEngageSpawnTagFromCurrentPlayerVisibility(candidateSpawnManagerTag))
                 {
-                    agent = candidate;
+                    fallbackAgent = candidate;
                     hasCombatEligibleAgent = true;
                     inactiveSpawnManagerTag = null;
                     break;
@@ -170,285 +170,23 @@ namespace Shadowrun.LocalService.Core.Simulation
                 });
             }
 
-            var targetPos = TryGetAgentGridPositionOrDefault(agent);
-            var commandName = "AI.EndTeamTurn";
-
-            ulong desiredSkill = 0UL;
-            int desiredWeaponIndex = 0;
-            int desiredSkillIndex = 0;
-            string decisionNote = null;
-            string debugStage = null;
-            string debugRotationType = null;
-            int? debugRotationCount = null;
-            ulong debugRawSelection = 0UL;
-            ulong debugResolvedActivityId = 0UL;
-            bool? debugHasAiConfig = null;
-            bool? debugHasLoadout = null;
-            int? debugSelectedWeaponIndex = null;
-            int? debugSelectedWeaponSkillCount = null;
-            int? debugPreferredEnemyId = null;
-            int? debugChosenEnemyId = null;
-            int? debugChosenEnemyTeamId = null;
-            bool? debugChosenEnemyTeamAi = null;
-            ulong? debugChosenEnemyControlPlayerId = null;
-            bool? debugChosenEnemyControlAi = null;
-            bool? debugChosenEnemyIsPlayersPlayerCharacter = null;
-            bool? debugChosenEnemyInteractiveObject = null;
-            string debugEnemyPick = null;
-            string debugEnemyReason = null;
-            int? debugEnemyX = null;
-            int? debugEnemyY = null;
-            int? debugEnemyCandidateCount = null;
-            int? debugReachableCellCount = null;
-            int? debugReducingCellCount = null;
-            bool? debugAvoidedImmediateBacktrack = null;
-            int? debugCurrentDistToEnemy = null;
-            int? debugChosenMoveDistToEnemy = null;
-            float? debugChosenMoveDefensiveCover = null;
-            float? debugChosenMoveTargetCover = null;
-            float? debugChosenMoveScore = null;
-            float? debugChosenMoveChanceToHit = null;
-            bool? debugChosenMoveWithinWalkRange = null;
-            int? debugProfileRange = null;
-            int? debugShotDistanceToTarget = null;
-            float? debugShotChanceToHit = null;
-            if (forceEndTurnForInactiveGroup)
+            var plan = _aiPlanner != null
+                ? _aiPlanner.Plan(fallbackAgent, activatableMembers, forceEndTurnForInactiveGroup)
+                : null;
+            if (plan == null || plan.Agent == null)
             {
-                decisionNote = "inactive-group";
-                debugStage = "inactive-group";
+                return false;
             }
-            else if (_enableAiLogic && _aiDecisionEngine != null)
-            {
-                var foundActionableDecision = false;
 
-                for (var memberIndex = 0; memberIndex < activatableMembers.Length; memberIndex++)
-                {
-                    var candidate = activatableMembers[memberIndex];
-                    string candidateSpawnManagerTag;
-                    var candidateEligible = IsAgentEligibleForCombatAction(candidate, out candidateSpawnManagerTag);
-                    if (!candidateEligible)
-                    {
-                        if (string.IsNullOrEmpty(candidateSpawnManagerTag)
-                            || _encounterActivationTracker == null
-                            || !_encounterActivationTracker.TryEngageSpawnTagFromCurrentPlayerVisibility(candidateSpawnManagerTag))
-                        {
-                            continue;
-                        }
-                    }
-
-                    agent = candidate;
-
-                    try
-                    {
-                        var decision = _aiDecisionEngine.Decide(agent, _gameworld);
-                        if (decision != null && decision.HasAction && decision.IsMove)
-                        {
-                            commandName = "AI.Move";
-                            decisionNote = "move";
-                            targetPos = decision.MoveTargetPosition;
-
-                            debugStage = decision.DebugStage;
-                            debugRotationType = decision.DebugRotationType;
-                            debugRotationCount = decision.DebugRotationCount;
-                            debugRawSelection = decision.DebugRawSelection;
-                            debugResolvedActivityId = decision.DebugResolvedActivityId;
-                            debugHasAiConfig = decision.DebugHasAiConfig;
-                            debugHasLoadout = decision.DebugHasLoadout;
-                            debugSelectedWeaponIndex = decision.DebugSelectedWeaponIndex;
-                            debugSelectedWeaponSkillCount = decision.DebugSelectedWeaponSkillCount;
-
-                            debugPreferredEnemyId = decision.DebugPreferredEnemyId;
-                            debugChosenEnemyId = decision.DebugChosenEnemyId;
-                            debugChosenEnemyTeamId = decision.DebugChosenEnemyTeamId;
-                            debugChosenEnemyTeamAi = decision.DebugChosenEnemyTeamAi;
-                            debugChosenEnemyControlPlayerId = decision.DebugChosenEnemyControlPlayerId;
-                            debugChosenEnemyControlAi = decision.DebugChosenEnemyControlAi;
-                            debugChosenEnemyIsPlayersPlayerCharacter = decision.DebugChosenEnemyIsPlayersPlayerCharacter;
-                            debugChosenEnemyInteractiveObject = decision.DebugChosenEnemyInteractiveObject;
-                            debugEnemyPick = decision.DebugEnemyPick;
-                            debugEnemyReason = decision.DebugEnemyReason;
-                            debugEnemyX = decision.DebugEnemyX;
-                            debugEnemyY = decision.DebugEnemyY;
-                            debugEnemyCandidateCount = decision.DebugEnemyCandidateCount;
-                            debugReachableCellCount = decision.DebugReachableCellCount;
-                            debugReducingCellCount = decision.DebugReducingCellCount;
-                            debugAvoidedImmediateBacktrack = decision.DebugAvoidedImmediateBacktrack;
-                            debugCurrentDistToEnemy = decision.DebugCurrentDistToEnemy;
-                            debugChosenMoveDistToEnemy = decision.DebugChosenMoveDistToEnemy;
-                            debugChosenMoveDefensiveCover = decision.DebugChosenMoveDefensiveCover;
-                            debugChosenMoveTargetCover = decision.DebugChosenMoveTargetCover;
-                            debugChosenMoveScore = decision.DebugChosenMoveScore;
-                            debugChosenMoveChanceToHit = decision.DebugChosenMoveChanceToHit;
-                            debugChosenMoveWithinWalkRange = decision.DebugChosenMoveWithinWalkRange;
-                            debugProfileRange = decision.DebugProfileRange;
-                            debugShotDistanceToTarget = decision.DebugShotDistanceToTarget;
-                            debugShotChanceToHit = decision.DebugShotChanceToHit;
-
-                            foundActionableDecision = true;
-                            break;
-                        }
-
-                        if (decision != null && decision.HasAction && decision.SkillId != 0UL)
-                        {
-                            desiredSkill = decision.SkillId;
-                            commandName = "AI.Decision";
-                            decisionNote = "ok";
-
-                            if (decision.WeaponIndex.HasValue)
-                            {
-                                desiredWeaponIndex = decision.WeaponIndex.Value;
-                            }
-                            if (decision.SkillIndex.HasValue)
-                            {
-                                desiredSkillIndex = decision.SkillIndex.Value;
-                            }
-
-                            debugStage = decision.DebugStage;
-                            debugRotationType = decision.DebugRotationType;
-                            debugRotationCount = decision.DebugRotationCount;
-                            debugRawSelection = decision.DebugRawSelection;
-                            debugResolvedActivityId = decision.DebugResolvedActivityId;
-                            debugHasAiConfig = decision.DebugHasAiConfig;
-                            debugHasLoadout = decision.DebugHasLoadout;
-                            debugSelectedWeaponIndex = decision.DebugSelectedWeaponIndex;
-                            debugSelectedWeaponSkillCount = decision.DebugSelectedWeaponSkillCount;
-
-                            debugPreferredEnemyId = decision.DebugPreferredEnemyId;
-                            debugChosenEnemyId = decision.DebugChosenEnemyId;
-                            debugChosenEnemyTeamId = decision.DebugChosenEnemyTeamId;
-                            debugChosenEnemyTeamAi = decision.DebugChosenEnemyTeamAi;
-                            debugChosenEnemyControlPlayerId = decision.DebugChosenEnemyControlPlayerId;
-                            debugChosenEnemyControlAi = decision.DebugChosenEnemyControlAi;
-                            debugChosenEnemyIsPlayersPlayerCharacter = decision.DebugChosenEnemyIsPlayersPlayerCharacter;
-                            debugChosenEnemyInteractiveObject = decision.DebugChosenEnemyInteractiveObject;
-                            debugEnemyPick = decision.DebugEnemyPick;
-                            debugEnemyReason = decision.DebugEnemyReason;
-                            debugEnemyX = decision.DebugEnemyX;
-                            debugEnemyY = decision.DebugEnemyY;
-                            debugEnemyCandidateCount = decision.DebugEnemyCandidateCount;
-                            debugReachableCellCount = decision.DebugReachableCellCount;
-                            debugReducingCellCount = decision.DebugReducingCellCount;
-                            debugAvoidedImmediateBacktrack = decision.DebugAvoidedImmediateBacktrack;
-                            debugCurrentDistToEnemy = decision.DebugCurrentDistToEnemy;
-                            debugChosenMoveDistToEnemy = decision.DebugChosenMoveDistToEnemy;
-                            debugChosenMoveDefensiveCover = decision.DebugChosenMoveDefensiveCover;
-                            debugChosenMoveTargetCover = decision.DebugChosenMoveTargetCover;
-                            debugChosenMoveScore = decision.DebugChosenMoveScore;
-                            debugChosenMoveChanceToHit = decision.DebugChosenMoveChanceToHit;
-                            debugChosenMoveWithinWalkRange = decision.DebugChosenMoveWithinWalkRange;
-                            debugProfileRange = decision.DebugProfileRange;
-                            debugShotDistanceToTarget = decision.DebugShotDistanceToTarget;
-                            debugShotChanceToHit = decision.DebugShotChanceToHit;
-
-                            if (decision.TargetEntity != null)
-                            {
-                                targetPos = TryGetAgentGridPositionOrDefault(decision.TargetEntity);
-                            }
-                            else
-                            {
-                                targetPos = decision.TargetPosition;
-                            }
-
-                            foundActionableDecision = true;
-                            break;
-                        }
-
-                        decisionNote = decision == null ? "null-decision" : "no-action";
-
-                        if (decision != null)
-                        {
-                            debugStage = decision.DebugStage;
-                            debugRotationType = decision.DebugRotationType;
-                            debugRotationCount = decision.DebugRotationCount;
-                            debugRawSelection = decision.DebugRawSelection;
-                            debugResolvedActivityId = decision.DebugResolvedActivityId;
-                            debugHasAiConfig = decision.DebugHasAiConfig;
-                            debugHasLoadout = decision.DebugHasLoadout;
-                            debugSelectedWeaponIndex = decision.DebugSelectedWeaponIndex;
-                            debugSelectedWeaponSkillCount = decision.DebugSelectedWeaponSkillCount;
-
-                            debugPreferredEnemyId = decision.DebugPreferredEnemyId;
-                            debugChosenEnemyId = decision.DebugChosenEnemyId;
-                            debugChosenEnemyTeamId = decision.DebugChosenEnemyTeamId;
-                            debugChosenEnemyTeamAi = decision.DebugChosenEnemyTeamAi;
-                            debugChosenEnemyControlPlayerId = decision.DebugChosenEnemyControlPlayerId;
-                            debugChosenEnemyControlAi = decision.DebugChosenEnemyControlAi;
-                            debugChosenEnemyIsPlayersPlayerCharacter = decision.DebugChosenEnemyIsPlayersPlayerCharacter;
-                            debugChosenEnemyInteractiveObject = decision.DebugChosenEnemyInteractiveObject;
-                            debugEnemyPick = decision.DebugEnemyPick;
-                            debugEnemyReason = decision.DebugEnemyReason;
-                            debugEnemyX = decision.DebugEnemyX;
-                            debugEnemyY = decision.DebugEnemyY;
-                            debugEnemyCandidateCount = decision.DebugEnemyCandidateCount;
-                            debugReachableCellCount = decision.DebugReachableCellCount;
-                            debugReducingCellCount = decision.DebugReducingCellCount;
-                            debugAvoidedImmediateBacktrack = decision.DebugAvoidedImmediateBacktrack;
-                            debugCurrentDistToEnemy = decision.DebugCurrentDistToEnemy;
-                            debugChosenMoveDistToEnemy = decision.DebugChosenMoveDistToEnemy;
-                            debugChosenMoveDefensiveCover = decision.DebugChosenMoveDefensiveCover;
-                            debugChosenMoveTargetCover = decision.DebugChosenMoveTargetCover;
-                            debugChosenMoveScore = decision.DebugChosenMoveScore;
-                            debugChosenMoveChanceToHit = decision.DebugChosenMoveChanceToHit;
-                            debugChosenMoveWithinWalkRange = decision.DebugChosenMoveWithinWalkRange;
-                            debugProfileRange = decision.DebugProfileRange;
-                            debugShotDistanceToTarget = decision.DebugShotDistanceToTarget;
-                            debugShotChanceToHit = decision.DebugShotChanceToHit;
-                        }
-                    }
-                    catch
-                    {
-                        decisionNote = "exception";
-                        debugStage = "exception";
-                    }
-                }
-
-                if (!foundActionableDecision)
-                {
-                    desiredSkill = 0UL;
-                    commandName = "AI.EndTeamTurn";
-                    if (string.IsNullOrEmpty(decisionNote))
-                    {
-                        decisionNote = "no-action";
-                        debugStage = "no-target";
-                    }
-                }
-            }
+            var diagnostics = plan.Diagnostics ?? new AiPlanningDiagnostics();
+            diagnostics.InactiveSpawnManagerTag = inactiveSpawnManagerTag;
+            diagnostics.ForceEndTurnForInactiveGroup = forceEndTurnForInactiveGroup;
 
             if (_enableAiLogic)
             {
                 try
                 {
-                    var debugReasoning = BuildAiDecisionReasoning(
-                        decisionNote,
-                        commandName,
-                        debugStage,
-                        desiredSkill,
-                        desiredWeaponIndex,
-                        desiredSkillIndex,
-                        targetPos,
-                        debugResolvedActivityId,
-                        debugRawSelection,
-                        debugRotationType,
-                        debugRotationCount,
-                        debugChosenEnemyId,
-                        debugEnemyPick,
-                        debugEnemyReason,
-                        debugEnemyX,
-                        debugEnemyY,
-                        debugEnemyCandidateCount,
-                        debugReachableCellCount,
-                        debugReducingCellCount,
-                        debugAvoidedImmediateBacktrack,
-                        debugCurrentDistToEnemy,
-                        debugChosenMoveDistToEnemy,
-                        debugChosenMoveDefensiveCover,
-                        debugChosenMoveTargetCover,
-                        debugChosenMoveScore,
-                        debugChosenMoveChanceToHit,
-                        debugChosenMoveWithinWalkRange,
-                        debugProfileRange,
-                        debugShotDistanceToTarget,
-                        debugShotChanceToHit);
+                    var debugReasoning = BuildAiDecisionReasoning(plan);
 
                     _logger.LogAi(new
                     {
@@ -456,52 +194,52 @@ namespace Shadowrun.LocalService.Core.Simulation
                         type = "ai",
                         peer = _peer,
                         teamId = team != null ? (int?)team.ID : null,
-                        agentId = agent != null ? (int?)agent.Id : null,
-                        decisionSkillId = desiredSkill,
-                        decisionWeaponIndex = desiredWeaponIndex,
-                        decisionSkillIndex = desiredSkillIndex,
-                        decisionNote = decisionNote,
-                        debugStage = debugStage,
-                        debugRotationType = debugRotationType,
-                        debugRotationCount = debugRotationCount,
-                        debugRawSelection = debugRawSelection,
-                        debugResolvedActivityId = debugResolvedActivityId,
-                        debugHasAiConfig = debugHasAiConfig,
-                        debugHasLoadout = debugHasLoadout,
-                        debugSelectedWeaponIndex = debugSelectedWeaponIndex,
-                        debugSelectedWeaponSkillCount = debugSelectedWeaponSkillCount,
-                        debugPreferredEnemyId = debugPreferredEnemyId,
-                        debugChosenEnemyId = debugChosenEnemyId,
-                        debugChosenEnemyTeamId = debugChosenEnemyTeamId,
-                        debugChosenEnemyTeamAi = debugChosenEnemyTeamAi,
-                        debugChosenEnemyControlPlayerId = debugChosenEnemyControlPlayerId,
-                        debugChosenEnemyControlAi = debugChosenEnemyControlAi,
-                        debugChosenEnemyIsPlayersPlayerCharacter = debugChosenEnemyIsPlayersPlayerCharacter,
-                        debugChosenEnemyInteractiveObject = debugChosenEnemyInteractiveObject,
-                        debugEnemyPick = debugEnemyPick,
-                        debugEnemyReason = debugEnemyReason,
-                        debugEnemyX = debugEnemyX,
-                        debugEnemyY = debugEnemyY,
-                        debugEnemyCandidateCount = debugEnemyCandidateCount,
-                        debugReachableCellCount = debugReachableCellCount,
-                        debugReducingCellCount = debugReducingCellCount,
-                        debugAvoidedImmediateBacktrack = debugAvoidedImmediateBacktrack,
-                        debugCurrentDistToEnemy = debugCurrentDistToEnemy,
-                        debugChosenMoveDistToEnemy = debugChosenMoveDistToEnemy,
-                        debugChosenMoveDefensiveCover = debugChosenMoveDefensiveCover,
-                        debugChosenMoveTargetCover = debugChosenMoveTargetCover,
-                        debugChosenMoveScore = debugChosenMoveScore,
-                        debugChosenMoveChanceToHit = debugChosenMoveChanceToHit,
-                        debugChosenMoveWithinWalkRange = debugChosenMoveWithinWalkRange,
-                        debugProfileRange = debugProfileRange,
-                        debugShotDistanceToTarget = debugShotDistanceToTarget,
-                        debugShotChanceToHit = debugShotChanceToHit,
-                        inactiveSpawnManagerTag = inactiveSpawnManagerTag,
-                        forceEndTurnForInactiveGroup = forceEndTurnForInactiveGroup,
+                        agentId = plan.Agent != null ? (int?)plan.Agent.Id : null,
+                        decisionSkillId = plan.SkillId,
+                        decisionWeaponIndex = plan.WeaponIndex,
+                        decisionSkillIndex = plan.SkillIndex,
+                        decisionNote = diagnostics.DecisionNote,
+                        debugStage = diagnostics.DebugStage,
+                        debugRotationType = diagnostics.DebugRotationType,
+                        debugRotationCount = diagnostics.DebugRotationCount,
+                        debugRawSelection = diagnostics.DebugRawSelection,
+                        debugResolvedActivityId = diagnostics.DebugResolvedActivityId,
+                        debugHasAiConfig = diagnostics.DebugHasAiConfig,
+                        debugHasLoadout = diagnostics.DebugHasLoadout,
+                        debugSelectedWeaponIndex = diagnostics.DebugSelectedWeaponIndex,
+                        debugSelectedWeaponSkillCount = diagnostics.DebugSelectedWeaponSkillCount,
+                        debugPreferredEnemyId = diagnostics.DebugPreferredEnemyId,
+                        debugChosenEnemyId = diagnostics.DebugChosenEnemyId,
+                        debugChosenEnemyTeamId = diagnostics.DebugChosenEnemyTeamId,
+                        debugChosenEnemyTeamAi = diagnostics.DebugChosenEnemyTeamAi,
+                        debugChosenEnemyControlPlayerId = diagnostics.DebugChosenEnemyControlPlayerId,
+                        debugChosenEnemyControlAi = diagnostics.DebugChosenEnemyControlAi,
+                        debugChosenEnemyIsPlayersPlayerCharacter = diagnostics.DebugChosenEnemyIsPlayersPlayerCharacter,
+                        debugChosenEnemyInteractiveObject = diagnostics.DebugChosenEnemyInteractiveObject,
+                        debugEnemyPick = diagnostics.DebugEnemyPick,
+                        debugEnemyReason = diagnostics.DebugEnemyReason,
+                        debugEnemyX = diagnostics.DebugEnemyX,
+                        debugEnemyY = diagnostics.DebugEnemyY,
+                        debugEnemyCandidateCount = diagnostics.DebugEnemyCandidateCount,
+                        debugReachableCellCount = diagnostics.DebugReachableCellCount,
+                        debugReducingCellCount = diagnostics.DebugReducingCellCount,
+                        debugAvoidedImmediateBacktrack = diagnostics.DebugAvoidedImmediateBacktrack,
+                        debugCurrentDistToEnemy = diagnostics.DebugCurrentDistToEnemy,
+                        debugChosenMoveDistToEnemy = diagnostics.DebugChosenMoveDistToEnemy,
+                        debugChosenMoveDefensiveCover = diagnostics.DebugChosenMoveDefensiveCover,
+                        debugChosenMoveTargetCover = diagnostics.DebugChosenMoveTargetCover,
+                        debugChosenMoveScore = diagnostics.DebugChosenMoveScore,
+                        debugChosenMoveChanceToHit = diagnostics.DebugChosenMoveChanceToHit,
+                        debugChosenMoveWithinWalkRange = diagnostics.DebugChosenMoveWithinWalkRange,
+                        debugProfileRange = diagnostics.DebugProfileRange,
+                        debugShotDistanceToTarget = diagnostics.DebugShotDistanceToTarget,
+                        debugShotChanceToHit = diagnostics.DebugShotChanceToHit,
+                        inactiveSpawnManagerTag = diagnostics.InactiveSpawnManagerTag,
+                        forceEndTurnForInactiveGroup = diagnostics.ForceEndTurnForInactiveGroup,
                         debugReasoning = debugReasoning,
-                        command = commandName,
-                        targetX = targetPos.X,
-                        targetY = targetPos.Y,
+                        command = plan.CommandName,
+                        targetX = plan.TargetPosition.X,
+                        targetY = plan.TargetPosition.Y,
                     });
                 }
                 catch
@@ -509,31 +247,24 @@ namespace Shadowrun.LocalService.Core.Simulation
                 }
             }
 
-            var skillToUse = EndTeamTurnSkillId;
-            int? skillToLog = EndTeamTurnSkillId;
-            if (desiredSkill > 0UL && desiredSkill <= (ulong)int.MaxValue)
-            {
-                skillToUse = (int)desiredSkill;
-                skillToLog = (int)desiredSkill;
-            }
-
-            var seeds = _random.CreateSeedPackage();
+            var executedPlan = plan;
+            var seeds = executedPlan.IsMove ? new SeedPackage(0u, 0u, 0u, 0u) : _random.CreateSeedPackage();
 
             ICommand cmd;
             try
             {
-                if (commandName == "AI.Move")
+                if (executedPlan.IsMove)
                 {
-                    cmd = new FollowPathCommand(agent.Id, targetPos, _gameworld);
+                    cmd = new FollowPathCommand(executedPlan.Agent.Id, executedPlan.TargetPosition, _gameworld);
                 }
                 else
                 {
                     cmd = new ActivatePositionTargetedActiveSkillCommand(
-                        desiredWeaponIndex,
-                        desiredSkillIndex,
-                        skillToUse,
-                        agent.Id,
-                        targetPos,
+                        executedPlan.WeaponIndex,
+                        executedPlan.SkillIndex,
+                        executedPlan.SkillId,
+                        executedPlan.Agent.Id,
+                        executedPlan.TargetPosition,
                         _gameworld,
                         _random,
                         seeds);
@@ -542,41 +273,40 @@ namespace Shadowrun.LocalService.Core.Simulation
             catch
             {
                 // Fall back to end-turn if decision command construction fails.
-                commandName = "AI.EndTeamTurn";
-                skillToUse = EndTeamTurnSkillId;
-                skillToLog = EndTeamTurnSkillId;
+                executedPlan = PlannedAiAction.CreateEndTurn(plan.Agent, TryGetAgentGridPositionOrDefault(plan.Agent), "command-build-fallback", "command-build-fallback", EndTeamTurnSkillId);
+                seeds = _random.CreateSeedPackage();
                 cmd = new ActivatePositionTargetedActiveSkillCommand(
                     0,
                     0,
-                    skillToUse,
-                    agent.Id,
-                    TryGetAgentGridPositionOrDefault(agent),
+                    EndTeamTurnSkillId,
+                    executedPlan.Agent.Id,
+                    executedPlan.TargetPosition,
                     _gameworld,
                     _random,
                     seeds);
             }
 
             bool madeProgress;
-            if (commandName == "AI.Move")
+            if (executedPlan.IsMove)
             {
-                madeProgress = ExecuteCommand(cmd, commandName, null, null, null, targetPos.X, targetPos.Y);
+                madeProgress = ExecuteCommand(cmd, executedPlan.CommandName, null, null, null, executedPlan.TargetPosition.X, executedPlan.TargetPosition.Y);
             }
             else
             {
-                madeProgress = ExecuteCommand(cmd, commandName, desiredWeaponIndex, desiredSkillIndex, skillToLog, targetPos.X, targetPos.Y);
+                madeProgress = ExecuteCommand(cmd, executedPlan.CommandName, executedPlan.WeaponIndex, executedPlan.SkillIndex, executedPlan.SkillId, executedPlan.TargetPosition.X, executedPlan.TargetPosition.Y);
             }
 
             // If the AI command was effectively a no-op (common when activity conditions fail), don't spin.
             // Instead, end the unit/team turn and move on.
-            if (!madeProgress && commandName != "AI.EndTeamTurn")
+            if (!madeProgress && !executedPlan.IsEndTurn)
             {
                 var fallbackSeeds = _random.CreateSeedPackage();
-                var fallbackPos = TryGetAgentGridPositionOrDefault(agent);
+                var fallbackPos = TryGetAgentGridPositionOrDefault(executedPlan.Agent);
                 var fallbackCmd = new ActivatePositionTargetedActiveSkillCommand(
                     0,
                     0,
                     EndTeamTurnSkillId,
-                    agent.Id,
+                    executedPlan.Agent.Id,
                     fallbackPos,
                     _gameworld,
                     _random,
@@ -590,7 +320,7 @@ namespace Shadowrun.LocalService.Core.Simulation
 
                 action = new AiTurnAction(
                     AiTurnActionKind.ActivateActiveSkill,
-                    agent.Id,
+                    executedPlan.Agent.Id,
                     0,
                     0,
                     0,
@@ -600,13 +330,13 @@ namespace Shadowrun.LocalService.Core.Simulation
                 return true;
             }
 
-            if (commandName == "AI.Move")
+            if (executedPlan.IsMove)
             {
                 action = new AiTurnAction(
                     AiTurnActionKind.FollowPath,
-                    agent.Id,
-                    targetPos.X,
-                    targetPos.Y,
+                    executedPlan.Agent.Id,
+                    executedPlan.TargetPosition.X,
+                    executedPlan.TargetPosition.Y,
                     0,
                     0,
                     0,
@@ -616,12 +346,12 @@ namespace Shadowrun.LocalService.Core.Simulation
 
             action = new AiTurnAction(
                 AiTurnActionKind.ActivateActiveSkill,
-                agent.Id,
-                targetPos.X,
-                targetPos.Y,
-                desiredWeaponIndex,
-                desiredSkillIndex,
-                skillToUse,
+                executedPlan.Agent.Id,
+                executedPlan.TargetPosition.X,
+                executedPlan.TargetPosition.Y,
+                executedPlan.WeaponIndex,
+                executedPlan.SkillIndex,
+                executedPlan.SkillId,
                 seeds);
             return true;
         }
@@ -717,53 +447,25 @@ namespace Shadowrun.LocalService.Core.Simulation
             return false;
         }
 
-        private static string BuildAiDecisionReasoning(
-            string decisionNote,
-            string commandName,
-            string debugStage,
-            ulong desiredSkill,
-            int desiredWeaponIndex,
-            int desiredSkillIndex,
-            IntVector2D targetPos,
-            ulong debugResolvedActivityId,
-            ulong debugRawSelection,
-            string debugRotationType,
-            int? debugRotationCount,
-            int? debugChosenEnemyId,
-            string debugEnemyPick,
-            string debugEnemyReason,
-            int? debugEnemyX,
-            int? debugEnemyY,
-            int? debugEnemyCandidateCount,
-            int? debugReachableCellCount,
-            int? debugReducingCellCount,
-            bool? debugAvoidedImmediateBacktrack,
-            int? debugCurrentDistToEnemy,
-            int? debugChosenMoveDistToEnemy,
-            float? debugChosenMoveDefensiveCover,
-            float? debugChosenMoveTargetCover,
-            float? debugChosenMoveScore,
-            float? debugChosenMoveChanceToHit,
-            bool? debugChosenMoveWithinWalkRange,
-            int? debugProfileRange,
-            int? debugShotDistanceToTarget,
-            float? debugShotChanceToHit)
+        private static string BuildAiDecisionReasoning(PlannedAiAction action)
         {
+            var diagnostics = action != null && action.Diagnostics != null ? action.Diagnostics : new AiPlanningDiagnostics();
+            var targetPos = action != null ? action.TargetPosition : IntVector2D.Zero;
             var sb = new StringBuilder(256);
 
             sb.Append("note=");
-            sb.Append(string.IsNullOrEmpty(decisionNote) ? "none" : decisionNote);
+            sb.Append(string.IsNullOrEmpty(diagnostics.DecisionNote) ? "none" : diagnostics.DecisionNote);
 
             sb.Append(";command=");
-            sb.Append(string.IsNullOrEmpty(commandName) ? "unknown" : commandName);
+            sb.Append(action == null || string.IsNullOrEmpty(action.CommandName) ? "unknown" : action.CommandName);
 
-            if (!string.IsNullOrEmpty(debugStage))
+            if (!string.IsNullOrEmpty(diagnostics.DebugStage))
             {
                 sb.Append(";stage=");
-                sb.Append(debugStage);
+                sb.Append(diagnostics.DebugStage);
             }
 
-            if (commandName == "AI.Move")
+            if (action != null && action.IsMove)
             {
                 sb.Append(";moveTarget=(");
                 sb.Append(targetPos.X);
@@ -771,138 +473,138 @@ namespace Shadowrun.LocalService.Core.Simulation
                 sb.Append(targetPos.Y);
                 sb.Append(")");
 
-                if (debugChosenEnemyId.HasValue)
+                if (diagnostics.DebugChosenEnemyId.HasValue)
                 {
                     sb.Append(";enemyId=");
-                    sb.Append(debugChosenEnemyId.Value);
+                    sb.Append(diagnostics.DebugChosenEnemyId.Value);
                 }
-                if (!string.IsNullOrEmpty(debugEnemyPick))
+                if (!string.IsNullOrEmpty(diagnostics.DebugEnemyPick))
                 {
                     sb.Append(";enemyPick=");
-                    sb.Append(debugEnemyPick);
+                    sb.Append(diagnostics.DebugEnemyPick);
                 }
-                if (!string.IsNullOrEmpty(debugEnemyReason))
+                if (!string.IsNullOrEmpty(diagnostics.DebugEnemyReason))
                 {
                     sb.Append(";enemyReason=");
-                    sb.Append(debugEnemyReason);
+                    sb.Append(diagnostics.DebugEnemyReason);
                 }
-                if (debugEnemyX.HasValue && debugEnemyY.HasValue)
+                if (diagnostics.DebugEnemyX.HasValue && diagnostics.DebugEnemyY.HasValue)
                 {
                     sb.Append(";enemyPos=(");
-                    sb.Append(debugEnemyX.Value);
+                    sb.Append(diagnostics.DebugEnemyX.Value);
                     sb.Append(",");
-                    sb.Append(debugEnemyY.Value);
+                    sb.Append(diagnostics.DebugEnemyY.Value);
                     sb.Append(")");
                 }
-                if (debugCurrentDistToEnemy.HasValue)
+                if (diagnostics.DebugCurrentDistToEnemy.HasValue)
                 {
                     sb.Append(";distToEnemy=");
-                    sb.Append(debugCurrentDistToEnemy.Value);
+                    sb.Append(diagnostics.DebugCurrentDistToEnemy.Value);
                 }
-                if (debugChosenMoveDistToEnemy.HasValue)
+                if (diagnostics.DebugChosenMoveDistToEnemy.HasValue)
                 {
                     sb.Append(";distAfterMove=");
-                    sb.Append(debugChosenMoveDistToEnemy.Value);
+                    sb.Append(diagnostics.DebugChosenMoveDistToEnemy.Value);
                 }
-                if (debugReachableCellCount.HasValue)
+                if (diagnostics.DebugReachableCellCount.HasValue)
                 {
                     sb.Append(";reachable=");
-                    sb.Append(debugReachableCellCount.Value);
+                    sb.Append(diagnostics.DebugReachableCellCount.Value);
                 }
-                if (debugReducingCellCount.HasValue)
+                if (diagnostics.DebugReducingCellCount.HasValue)
                 {
                     sb.Append(";reducing=");
-                    sb.Append(debugReducingCellCount.Value);
+                    sb.Append(diagnostics.DebugReducingCellCount.Value);
                 }
-                if (debugAvoidedImmediateBacktrack.HasValue)
+                if (diagnostics.DebugAvoidedImmediateBacktrack.HasValue)
                 {
                     sb.Append(";avoidedBacktrack=");
-                    sb.Append(debugAvoidedImmediateBacktrack.Value ? "true" : "false");
+                    sb.Append(diagnostics.DebugAvoidedImmediateBacktrack.Value ? "true" : "false");
                 }
-                if (debugChosenMoveDefensiveCover.HasValue)
+                if (diagnostics.DebugChosenMoveDefensiveCover.HasValue)
                 {
                     sb.Append(";defCover=");
-                    sb.Append(debugChosenMoveDefensiveCover.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
+                    sb.Append(diagnostics.DebugChosenMoveDefensiveCover.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
                 }
-                if (debugChosenMoveTargetCover.HasValue)
+                if (diagnostics.DebugChosenMoveTargetCover.HasValue)
                 {
                     sb.Append(";targetCover=");
-                    sb.Append(debugChosenMoveTargetCover.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
+                    sb.Append(diagnostics.DebugChosenMoveTargetCover.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
                     sb.Append(";targetExposure=");
-                    sb.Append((1f - debugChosenMoveTargetCover.Value).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
+                    sb.Append((1f - diagnostics.DebugChosenMoveTargetCover.Value).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
                 }
-                if (debugChosenMoveScore.HasValue)
+                if (diagnostics.DebugChosenMoveScore.HasValue)
                 {
                     sb.Append(";moveScore=");
-                    sb.Append(debugChosenMoveScore.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
+                    sb.Append(diagnostics.DebugChosenMoveScore.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
                 }
-                if (debugChosenMoveChanceToHit.HasValue)
+                if (diagnostics.DebugChosenMoveChanceToHit.HasValue)
                 {
                     sb.Append(";offCth=");
-                    sb.Append(debugChosenMoveChanceToHit.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
+                    sb.Append(diagnostics.DebugChosenMoveChanceToHit.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
                 }
-                if (debugChosenMoveWithinWalkRange.HasValue)
+                if (diagnostics.DebugChosenMoveWithinWalkRange.HasValue)
                 {
                     sb.Append(";walkMove=");
-                    sb.Append(debugChosenMoveWithinWalkRange.Value ? "true" : "false");
+                    sb.Append(diagnostics.DebugChosenMoveWithinWalkRange.Value ? "true" : "false");
                 }
             }
             else
             {
                 sb.Append(";skill=");
-                sb.Append(desiredSkill);
+                sb.Append(action != null ? action.SkillId : 0);
                 sb.Append(";weaponIndex=");
-                sb.Append(desiredWeaponIndex);
+                sb.Append(action != null ? action.WeaponIndex : 0);
                 sb.Append(";skillIndex=");
-                sb.Append(desiredSkillIndex);
+                sb.Append(action != null ? action.SkillIndex : 0);
                 sb.Append(";target=(");
                 sb.Append(targetPos.X);
                 sb.Append(",");
                 sb.Append(targetPos.Y);
                 sb.Append(")");
 
-                if (debugShotDistanceToTarget.HasValue)
+                if (diagnostics.DebugShotDistanceToTarget.HasValue)
                 {
                     sb.Append(";shotDist=");
-                    sb.Append(debugShotDistanceToTarget.Value);
+                    sb.Append(diagnostics.DebugShotDistanceToTarget.Value);
                 }
-                if (debugShotChanceToHit.HasValue)
+                if (diagnostics.DebugShotChanceToHit.HasValue)
                 {
                     sb.Append(";shotCth=");
-                    sb.Append(debugShotChanceToHit.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
+                    sb.Append(diagnostics.DebugShotChanceToHit.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
                 }
             }
 
-            if (debugProfileRange.HasValue)
+            if (diagnostics.DebugProfileRange.HasValue)
             {
                 sb.Append(";profileRange=");
-                sb.Append(debugProfileRange.Value);
+                sb.Append(diagnostics.DebugProfileRange.Value);
             }
 
-            if (debugResolvedActivityId != 0UL)
+            if (diagnostics.DebugResolvedActivityId != 0UL)
             {
                 sb.Append(";resolvedActivity=");
-                sb.Append(debugResolvedActivityId);
+                sb.Append(diagnostics.DebugResolvedActivityId);
             }
-            if (debugRawSelection != 0UL)
+            if (diagnostics.DebugRawSelection != 0UL)
             {
                 sb.Append(";rawSelection=");
-                sb.Append(debugRawSelection);
+                sb.Append(diagnostics.DebugRawSelection);
             }
-            if (!string.IsNullOrEmpty(debugRotationType))
+            if (!string.IsNullOrEmpty(diagnostics.DebugRotationType))
             {
                 sb.Append(";rotationType=");
-                sb.Append(debugRotationType);
+                sb.Append(diagnostics.DebugRotationType);
             }
-            if (debugRotationCount.HasValue)
+            if (diagnostics.DebugRotationCount.HasValue)
             {
                 sb.Append(";rotationCount=");
-                sb.Append(debugRotationCount.Value);
+                sb.Append(diagnostics.DebugRotationCount.Value);
             }
-            if (debugEnemyCandidateCount.HasValue)
+            if (diagnostics.DebugEnemyCandidateCount.HasValue)
             {
                 sb.Append(";enemyCandidates=");
-                sb.Append(debugEnemyCandidateCount.Value);
+                sb.Append(diagnostics.DebugEnemyCandidateCount.Value);
             }
 
             return sb.ToString();

@@ -47,6 +47,7 @@ namespace Shadowrun.LocalService.Core.Simulation
 
         private readonly bool _enableAiLogic;
         private readonly IAiDecisionEngine _aiDecisionEngine;
+        private readonly IAiPlanner _aiPlanner;
 
         private readonly LocalMissionLootController _lootController;
         private readonly EncounterActivationTracker _encounterActivationTracker;
@@ -71,7 +72,8 @@ namespace Shadowrun.LocalService.Core.Simulation
             object lootPreviewLock,
             List<string> pendingLootPreviews,
             bool enableAiLogic,
-            IAiDecisionEngine aiDecisionEngine)
+            IAiDecisionEngine aiDecisionEngine,
+            IAiPlanner aiPlanner)
         {
             _logger = logger;
             _peer = peer;
@@ -92,6 +94,7 @@ namespace Shadowrun.LocalService.Core.Simulation
 
             _enableAiLogic = enableAiLogic;
             _aiDecisionEngine = aiDecisionEngine;
+            _aiPlanner = aiPlanner;
         }
 
         internal LocalMissionLootController.LootGrant[] DrainPendingLoot()
@@ -373,6 +376,11 @@ namespace Shadowrun.LocalService.Core.Simulation
                 aiDecisionEngine = new NullAiDecisionEngine();
             }
 
+            IAiPlanner aiPlanner = new DecisionEngineAiPlanner(
+                enableAiLogic,
+                aiDecisionEngine,
+                gameworldInstance);
+
             return new ServerSimulationSession(
                 logger,
                 peer,
@@ -390,7 +398,8 @@ namespace Shadowrun.LocalService.Core.Simulation
                 lootPreviewLock,
                 pendingLootPreviews,
                 enableAiLogic,
-                aiDecisionEngine);
+                aiDecisionEngine,
+                aiPlanner);
         }
 
         private static void PopulateMissionEntityTemplateResolver(MatchConfiguration matchConfiguration, ILevelData levelData, GameworldInstance gameworldInstance)
