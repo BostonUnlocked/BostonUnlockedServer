@@ -647,6 +647,33 @@ namespace Shadowrun.LocalService.Core.Simulation
             return _random.CreateSeedPackage();
         }
 
+        public bool CanPlayerControlAgent(ulong playerId, int agentId)
+        {
+            if (playerId == 0UL || _gameworld == null || _gameworld.EntitySystem == null)
+            {
+                return false;
+            }
+
+            Entity entity;
+            if (!_gameworld.EntitySystem.TryGet(agentId, out entity) || entity == null)
+            {
+                return false;
+            }
+
+            ControlComponent control;
+            if (!_gameworld.EntitySystem.TryGetComponent<ControlComponent>(entity, out control) || control == null)
+            {
+                return false;
+            }
+
+            if (control.IsAIControlled)
+            {
+                return false;
+            }
+
+            return control.PlayerId == playerId;
+        }
+
         public void Stop()
         {
             _controller.Stop();
