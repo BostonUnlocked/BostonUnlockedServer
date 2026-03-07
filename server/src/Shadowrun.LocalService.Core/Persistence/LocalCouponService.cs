@@ -375,7 +375,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                     var packagePattern =
                         "\\\"TypeName\\\"\\s*:\\s*\\\"Cliffhanger\\.SRO\\.ServerClientCommons\\.Definitions\\.ItemPackageDefinition, Cliffhanger\\.SRO\\.ServerClientCommons\\\"" +
                         "\\s*,\\s*\\\"TechnicalName\\\"\\s*:\\s*\\\"(?<name>[^\\\"]+)\\\"" +
-                        "\\s*,\\s*\\\"Items\\\"\\s*:\\[(?<items>.*?)\\]";
+                        "\\s*,\\s*\\\"Items\\\"\\s*:\\s*\\[(?<items>.*?)\\]";
 
                     var packageRegex = new Regex(packagePattern, RegexOptions.Singleline | RegexOptions.IgnoreCase);
                     var itemRegex = new Regex("\\\"(?<item>[^\\\"]+)\\\"", RegexOptions.Singleline);

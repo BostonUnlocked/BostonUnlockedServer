@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Text.RegularExpressions;
 using System.Web.Script.Serialization;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay.Changes;
 
@@ -321,6 +322,8 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 return;
             }
 
+            ParseItemDefinitionsFromJson(json, result);
+
             var root = Json.DeserializeObject(json);
             var components = TryGetObjectArray(root as IDictionary, "Components");
             if (components == null)
@@ -344,18 +347,99 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 if (!string.IsNullOrEmpty(typeName) && typeName.IndexOf("SkillTreeData", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     ParseSkillTreeData(component, result);
-                    continue;
                 }
 
                 if (!string.IsNullOrEmpty(typeName) && typeName.IndexOf("ShopListData", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     ParseShopListData(component, result);
-                    continue;
                 }
 
                 ParseBodytypeData(component, result);
                 ParseStorylineData(component, result);
-                ParseItemDefinition(component, result);
+                ParseNestedItemDefinitions(component, result);
+            }
+        }
+
+        private static void ParseItemDefinitionsFromJson(string json, MetagameplayStaticDataIndex result)
+        {
+            if (string.IsNullOrEmpty(json) || result == null)
+            {
+                return;
+            }
+
+            var itemRegex = new Regex(
+                "\\\"TypeName\\\"\\s*:\\s*\\\"Cliffhanger\\.SRO\\.ServerClientCommons\\.Definitions\\.[^\\\"]*ItemDefinition, Cliffhanger\\.SRO\\.ServerClientCommons\\\"" +
+                ".*?\\\"Id\\\"\\s*:\\s*\\\"(?<id>[^\\\"]+)\\\"" +
+                ".*?\\\"MaxStacksize\\\"\\s*:\\s*(?<max>-?\\d+)" +
+                ".*?\\\"SellPrice\\\"\\s*:\\s*(?<sell>-?\\d+)",
+                RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+            var matches = itemRegex.Matches(json);
+            for (var i = 0; i < matches.Count; i++)
+            {
+                var match = matches[i];
+                if (match == null)
+                {
+                    continue;
+                }
+
+                var itemId = match.Groups["id"] != null ? match.Groups["id"].Value : null;
+                if (string.IsNullOrEmpty(itemId) || result.ItemDefinitions.ContainsKey(itemId))
+                {
+                    continue;
+                }
+
+                int maxStacksize;
+                if (!int.TryParse(match.Groups["max"] != null ? match.Groups["max"].Value : null, NumberStyles.Integer, CultureInfo.InvariantCulture, out maxStacksize)
+                    || maxStacksize <= 0)
+                {
+                    maxStacksize = 1;
+                }
+
+                int sellPrice;
+                if (!int.TryParse(match.Groups["sell"] != null ? match.Groups["sell"].Value : null, NumberStyles.Integer, CultureInfo.InvariantCulture, out sellPrice))
+                {
+                    sellPrice = 0;
+                }
+
+                result.ItemDefinitions[itemId] = new ItemDefinitionInfo
+                {
+                    ItemId = itemId,
+                    MaxStacksize = maxStacksize,
+                    SellPrice = sellPrice,
+                };
+            }
+        }
+
+        private static void ParseNestedItemDefinitions(object node, MetagameplayStaticDataIndex result)
+        {
+            if (node == null || result == null)
+            {
+                return;
+            }
+
+            var dict = node as IDictionary;
+            if (dict != null)
+            {
+                ParseItemDefinition(dict, result);
+
+                foreach (DictionaryEntry entry in dict)
+                {
+                    ParseNestedItemDefinitions(entry.Value, result);
+                }
+
+                return;
+            }
+
+            var array = ToObjectArray(node);
+            if (array == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < array.Length; i++)
+            {
+                ParseNestedItemDefinitions(array[i], result);
             }
         }
 
