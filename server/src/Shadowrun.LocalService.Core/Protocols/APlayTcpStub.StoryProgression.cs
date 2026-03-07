@@ -154,40 +154,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                         }
                     }
 
-                    if (!chapterAdvanced
-                        && slotForStoryRewards != null
-                        && (parsedTarget == StoryMissionstate.ReadyToPlay || parsedTarget == StoryMissionstate.Completed)
-                        && slotForStoryRewards.MainCampaignCurrentChapter >= 0)
-                    {
-                        try
-                        {
-                            var currentChapterIndex = slotForStoryRewards.MainCampaignCurrentChapter;
-                            var currentHubId = !IsNullOrWhiteSpace(slotForStoryRewards.HubId) ? slotForStoryRewards.HubId : DefaultHubId;
-
-                            int triggerChapterIndex;
-                            if (_storyProgressionService.TryGetRefreshTriggerChapterIndexWithDifferentHub("Main Campaign", currentChapterIndex, currentHubId, out triggerChapterIndex))
-                            {
-                                var triggerChapterJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.ChapterChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"NewChapterIndex\":" + triggerChapterIndex.ToString(CultureInfo.InvariantCulture) + "}";
-                                var triggerChapterPayload = BuildUtf16StringPayload(triggerChapterJson);
-                                var triggerChapterCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, triggerChapterPayload), outMsgNo++);
-                                SendRawFrame(stream, peer, PrefixLength(triggerChapterCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (ChapterChange " + triggerChapterIndex.ToString(CultureInfo.InvariantCulture) + ") refresh trigger after SetStoryMissionStateMessage");
-
-                                var restoreChapterJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.ChapterChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"NewChapterIndex\":" + currentChapterIndex.ToString(CultureInfo.InvariantCulture) + "}";
-                                var restoreChapterPayload = BuildUtf16StringPayload(restoreChapterJson);
-                                var restoreChapterCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, restoreChapterPayload), outMsgNo++);
-                                SendRawFrame(stream, peer, PrefixLength(restoreChapterCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (ChapterChange " + currentChapterIndex.ToString(CultureInfo.InvariantCulture) + ") refresh restore after SetStoryMissionStateMessage");
-                            }
-                        }
-                        catch
-                        {
-                        }
-                    }
-
                     if (slotForStoryRewards != null)
                     {
                         try
                         {
-                            var forceNewHubInstanceId = (parsedTarget == StoryMissionstate.ReadyToPlay || parsedTarget == StoryMissionstate.Completed || chapterAdvanced);
+                            var forceNewHubInstanceId = (parsedTarget == StoryMissionstate.Completed || chapterAdvanced);
                             cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
                                 slotForStoryRewards,
                                 activeIdentityGuid,
@@ -202,7 +173,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                         }
                     }
 
-                    if (slotForStoryRewards != null)
+                    if (slotForStoryRewards != null
+                        && (storyRewardApplication.ShouldNotifyClient || parsedTarget == StoryMissionstate.Completed || chapterAdvanced))
                     {
                         try
                         {

@@ -2005,10 +2005,17 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 {
                                     if (requestedHostAccountId != Guid.Empty && requestedHostAccountId == activeIdentityGuid)
                                     {
-                                        routedHubId = routedSlot != null && !IsNullOrWhiteSpace(routedSlot.HubId)
-                                            ? routedSlot.HubId
-                                            : DefaultHubId;
-                                        routedHubSource = "self-career";
+                                        var currentStoryHubId = routedSlot != null && _storyProgressionService != null
+                                            ? _storyProgressionService.GetCurrentStoryHubId(routedSlot, "Main Campaign")
+                                            : null;
+                                        routedHubId = !IsNullOrWhiteSpace(currentStoryHubId)
+                                            ? currentStoryHubId
+                                            : (routedSlot != null && !IsNullOrWhiteSpace(routedSlot.HubId)
+                                                ? routedSlot.HubId
+                                                : DefaultHubId);
+                                        routedHubSource = !IsNullOrWhiteSpace(currentStoryHubId)
+                                            ? "self-storyhub"
+                                            : "self-career";
                                     }
                                     else if (requestedHostAccountId != Guid.Empty && TryResolveHubIdForAccount(requestedHostAccountId, out routedHubId))
                                     {
