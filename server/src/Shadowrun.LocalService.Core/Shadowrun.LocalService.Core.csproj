@@ -133,6 +133,12 @@
     <Compile Include="AILogic\GenericAiMovementPlanner.cs" />
     <Compile Include="Persistence\LocalUserStore.cs" />
     <Compile Include="Persistence\LocalUserStore.IO.cs" />
+    <Compile Include="Persistence\LocalAccountStore.cs" />
+    <Compile Include="Persistence\LocalCouponService.cs" />
+    <Compile Include="Persistence\LocalCareerStore.cs" />
+    <Compile Include="Persistence\LocalCareerSeedService.cs" />
+    <Compile Include="Persistence\LocalSessionStore.cs" />
+    <Compile Include="Persistence\LocalPlayerInfoStore.cs" />
     <Compile Include="Persistence\FriendsStore.cs" />
     <Compile Include="Persistence\ISessionIdentityMap.cs" />
     <Compile Include="Persistence\ExpiringSessionIdentityMap.cs" />
