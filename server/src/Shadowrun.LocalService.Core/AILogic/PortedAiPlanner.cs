@@ -14,7 +14,6 @@ namespace Shadowrun.LocalService.Core.AILogic
         private readonly IAiBehaviourConfigLookup _configLookup;
         private readonly ISkillSelectionStrategyFactory _skillSelectionFactory;
         private readonly IValuationFactory _valuationFactory;
-        private readonly IAiPlanner _fallbackPlanner;
 
         public PortedAiPlanner(
             bool enableAiLogic,
@@ -22,8 +21,7 @@ namespace Shadowrun.LocalService.Core.AILogic
             IRandomNumberGenerator random,
             IAiBehaviourConfigLookup configLookup,
             ISkillSelectionStrategyFactory skillSelectionFactory,
-            IValuationFactory valuationFactory,
-            IAiPlanner fallbackPlanner)
+            IValuationFactory valuationFactory)
         {
             _enableAiLogic = enableAiLogic;
             _gameworld = gameworld;
@@ -31,14 +29,18 @@ namespace Shadowrun.LocalService.Core.AILogic
             _configLookup = configLookup;
             _skillSelectionFactory = skillSelectionFactory;
             _valuationFactory = valuationFactory;
-            _fallbackPlanner = fallbackPlanner;
         }
 
         public PlannedAiAction Plan(Entity fallbackAgent, Entity[] activatableMembers, bool forceEndTurnForInactiveGroup)
         {
-            if (!_enableAiLogic || forceEndTurnForInactiveGroup || _gameworld == null || _configLookup == null || _skillSelectionFactory == null)
+            if (fallbackAgent == null)
             {
-                return _fallbackPlanner != null ? _fallbackPlanner.Plan(fallbackAgent, activatableMembers, forceEndTurnForInactiveGroup) : PlannedAiAction.CreateEndTurn(fallbackAgent, AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, fallbackAgent), "no-action", "no-target", Simulation.ServerSimulationSession.EndTeamTurnSkillId);
+                return null;
+            }
+
+            if (!_enableAiLogic || forceEndTurnForInactiveGroup || _gameworld == null || _skillSelectionFactory == null)
+            {
+                return PlannedAiAction.CreateEndTurn(fallbackAgent, AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, fallbackAgent), forceEndTurnForInactiveGroup ? "inactive-group" : "no-action", forceEndTurnForInactiveGroup ? "inactive-group" : "no-target", Simulation.ServerSimulationSession.EndTeamTurnSkillId);
             }
 
             var orderedMembers = (activatableMembers ?? new Entity[0])
@@ -53,48 +55,57 @@ namespace Shadowrun.LocalService.Core.AILogic
             for (var i = 0; i < orderedMembers.Length; i++)
             {
                 var candidate = orderedMembers[i];
+                var diagnostics = new AiPlanningDiagnostics();
                 AIBehaviourConfigurationComponent config;
-                if (!_configLookup.TryGetConfig(candidate, _gameworld, out config) || config == null)
+                if (_configLookup == null || !_configLookup.TryGetConfig(candidate, _gameworld, out config) || config == null)
                 {
-                    continue;
+                    config = null;
                 }
 
-                var movementPlanner = new PortedAIMovementPlanner(_gameworld, candidate, _valuationFactory);
-                IntVector2D moveTarget;
-                float moveScore;
-                if (movementPlanner.TryPlanMove(config, out moveTarget, out moveScore))
+                diagnostics.DebugHasAiConfig = config != null;
+
+                if (config != null)
                 {
-                    return PlannedAiAction.CreateMove(candidate, moveTarget, new AiPlanningDiagnostics
+                    var movementPlanner = new PortedAIMovementPlanner(_gameworld, candidate, _valuationFactory);
+                    IntVector2D moveTarget;
+                    float moveScore;
+                    if (movementPlanner.TryPlanMove(config, out moveTarget, out moveScore))
                     {
-                        DecisionNote = "ported-move",
-                        DebugStage = "ported-move",
-                        DebugChosenMoveScore = moveScore,
-                    });
+                        diagnostics.DecisionNote = "ported-move";
+                        diagnostics.DebugStage = "ported-move";
+                        diagnostics.DebugChosenMoveScore = moveScore;
+                        diagnostics.DebugChosenMoveWithinWalkRange = IsWithinWalkRange(candidate, moveTarget);
+                        return PlannedAiAction.CreateMove(candidate, moveTarget, diagnostics);
+                    }
                 }
 
-                var selector = config.SkillRotation != null ? config.SkillRotation.CreateFor(_skillSelectionFactory, candidate, _random) : null;
                 var attackPlanner = new PortedAIAttackPlanner(_gameworld, candidate);
 
-                var selectedSkill = selector != null ? selector.SelectSkill() : 0UL;
-                PlannedAiAction attackPlan;
-                if (TryCreateAttackPlan(candidate, attackPlanner, selectedSkill, "ported-attack", out attackPlan))
+                var skillCandidates = AiSkillCatalog.CollectCandidateSkills(candidate, _gameworld, _skillSelectionFactory, _random, config, diagnostics);
+                for (var skillIndex = 0; skillIndex < skillCandidates.Length; skillIndex++)
                 {
-                    return attackPlan;
+                    PlannedAiAction attackPlan;
+                    var note = skillIndex == 0 ? "ported-attack" : "ported-attack-fallback";
+                    if (TryCreateAttackPlan(candidate, attackPlanner, skillCandidates[skillIndex], note, diagnostics, out attackPlan))
+                    {
+                        return attackPlan;
+                    }
                 }
 
-                var defaultSkill = selector != null ? selector.DefaultSkill : 0UL;
-                if (defaultSkill != 0UL && defaultSkill != selectedSkill && TryCreateAttackPlan(candidate, attackPlanner, defaultSkill, "ported-default-attack", out attackPlan))
+                var genericMovementPlanner = new GenericAiMovementPlanner(_gameworld, candidate);
+                IntVector2D fallbackMoveTarget;
+                AiPlanningDiagnostics moveDiagnostics;
+                if (genericMovementPlanner.TryPlanAdvance(out fallbackMoveTarget, out moveDiagnostics))
                 {
-                    return attackPlan;
+                    CopyUnsetDiagnostics(moveDiagnostics, diagnostics);
+                    return PlannedAiAction.CreateMove(candidate, fallbackMoveTarget, moveDiagnostics);
                 }
             }
 
-            return _fallbackPlanner != null
-                ? _fallbackPlanner.Plan(fallbackAgent, activatableMembers, forceEndTurnForInactiveGroup)
-                : PlannedAiAction.CreateEndTurn(fallbackAgent, AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, fallbackAgent), "no-action", "no-target", Simulation.ServerSimulationSession.EndTeamTurnSkillId);
+            return PlannedAiAction.CreateEndTurn(fallbackAgent, AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, fallbackAgent), "no-action", "no-target", Simulation.ServerSimulationSession.EndTeamTurnSkillId);
         }
 
-        private bool TryCreateAttackPlan(Entity candidate, PortedAIAttackPlanner attackPlanner, ulong skillId, string note, out PlannedAiAction plan)
+        private bool TryCreateAttackPlan(Entity candidate, PortedAIAttackPlanner attackPlanner, ulong skillId, string note, AiPlanningDiagnostics baseDiagnostics, out PlannedAiAction plan)
         {
             plan = null;
             if (skillId == 0UL || attackPlanner == null)
@@ -111,13 +122,133 @@ namespace Shadowrun.LocalService.Core.AILogic
                 return false;
             }
 
+            var diagnostics = CloneDiagnostics(baseDiagnostics);
+            diagnostics.DecisionNote = note;
+            diagnostics.DebugStage = note;
+            diagnostics.DebugResolvedActivityId = skillId;
+            diagnostics.DebugShotChanceToHit = score;
+
             plan = PlannedAiAction.CreateSkill(candidate, weaponIndex, skillIndex, skillId <= (ulong)int.MaxValue ? (int)skillId : Simulation.ServerSimulationSession.EndTeamTurnSkillId, targetPosition, new AiPlanningDiagnostics
             {
-                DecisionNote = note,
-                DebugStage = note,
-                DebugShotChanceToHit = score,
+                DecisionNote = diagnostics.DecisionNote,
+                DebugStage = diagnostics.DebugStage,
+                DebugRotationType = diagnostics.DebugRotationType,
+                DebugRotationCount = diagnostics.DebugRotationCount,
+                DebugRawSelection = diagnostics.DebugRawSelection,
+                DebugResolvedActivityId = diagnostics.DebugResolvedActivityId,
+                DebugHasAiConfig = diagnostics.DebugHasAiConfig,
+                DebugHasLoadout = diagnostics.DebugHasLoadout,
+                DebugSelectedWeaponIndex = diagnostics.DebugSelectedWeaponIndex,
+                DebugSelectedWeaponSkillCount = diagnostics.DebugSelectedWeaponSkillCount,
+                DebugShotChanceToHit = diagnostics.DebugShotChanceToHit,
             });
             return true;
+        }
+
+        private bool IsWithinWalkRange(Entity agent, IntVector2D position)
+        {
+            if (_gameworld == null || _gameworld.ReachableRangesCalculator == null || agent == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                var ranges = _gameworld.ReachableRangesCalculator.GetReachableRanges(agent);
+                return ranges != null && ranges.WalkRange != null && ranges.WalkRange.Contains(position);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static AiPlanningDiagnostics CloneDiagnostics(AiPlanningDiagnostics source)
+        {
+            if (source == null)
+            {
+                return new AiPlanningDiagnostics();
+            }
+
+            return new AiPlanningDiagnostics
+            {
+                DecisionNote = source.DecisionNote,
+                DebugStage = source.DebugStage,
+                DebugRotationType = source.DebugRotationType,
+                DebugRotationCount = source.DebugRotationCount,
+                DebugRawSelection = source.DebugRawSelection,
+                DebugResolvedActivityId = source.DebugResolvedActivityId,
+                DebugHasAiConfig = source.DebugHasAiConfig,
+                DebugHasLoadout = source.DebugHasLoadout,
+                DebugSelectedWeaponIndex = source.DebugSelectedWeaponIndex,
+                DebugSelectedWeaponSkillCount = source.DebugSelectedWeaponSkillCount,
+                DebugPreferredEnemyId = source.DebugPreferredEnemyId,
+                DebugChosenEnemyId = source.DebugChosenEnemyId,
+                DebugChosenEnemyTeamId = source.DebugChosenEnemyTeamId,
+                DebugChosenEnemyTeamAi = source.DebugChosenEnemyTeamAi,
+                DebugChosenEnemyControlPlayerId = source.DebugChosenEnemyControlPlayerId,
+                DebugChosenEnemyControlAi = source.DebugChosenEnemyControlAi,
+                DebugChosenEnemyIsPlayersPlayerCharacter = source.DebugChosenEnemyIsPlayersPlayerCharacter,
+                DebugChosenEnemyInteractiveObject = source.DebugChosenEnemyInteractiveObject,
+                DebugEnemyPick = source.DebugEnemyPick,
+                DebugEnemyReason = source.DebugEnemyReason,
+                DebugEnemyX = source.DebugEnemyX,
+                DebugEnemyY = source.DebugEnemyY,
+                DebugEnemyCandidateCount = source.DebugEnemyCandidateCount,
+                DebugReachableCellCount = source.DebugReachableCellCount,
+                DebugReducingCellCount = source.DebugReducingCellCount,
+                DebugAvoidedImmediateBacktrack = source.DebugAvoidedImmediateBacktrack,
+                DebugCurrentDistToEnemy = source.DebugCurrentDistToEnemy,
+                DebugChosenMoveDistToEnemy = source.DebugChosenMoveDistToEnemy,
+                DebugChosenMoveDefensiveCover = source.DebugChosenMoveDefensiveCover,
+                DebugChosenMoveTargetCover = source.DebugChosenMoveTargetCover,
+                DebugChosenMoveScore = source.DebugChosenMoveScore,
+                DebugChosenMoveChanceToHit = source.DebugChosenMoveChanceToHit,
+                DebugChosenMoveWithinWalkRange = source.DebugChosenMoveWithinWalkRange,
+                DebugProfileRange = source.DebugProfileRange,
+                DebugShotDistanceToTarget = source.DebugShotDistanceToTarget,
+                DebugShotChanceToHit = source.DebugShotChanceToHit,
+                InactiveSpawnManagerTag = source.InactiveSpawnManagerTag,
+                ForceEndTurnForInactiveGroup = source.ForceEndTurnForInactiveGroup,
+            };
+        }
+
+        private static void CopyUnsetDiagnostics(AiPlanningDiagnostics target, AiPlanningDiagnostics source)
+        {
+            if (target == null || source == null)
+            {
+                return;
+            }
+
+            if (!target.DebugHasAiConfig.HasValue)
+            {
+                target.DebugHasAiConfig = source.DebugHasAiConfig;
+            }
+
+            if (!target.DebugHasLoadout.HasValue)
+            {
+                target.DebugHasLoadout = source.DebugHasLoadout;
+            }
+
+            if (target.DebugSelectedWeaponIndex == null)
+            {
+                target.DebugSelectedWeaponIndex = source.DebugSelectedWeaponIndex;
+            }
+
+            if (target.DebugSelectedWeaponSkillCount == null)
+            {
+                target.DebugSelectedWeaponSkillCount = source.DebugSelectedWeaponSkillCount;
+            }
+
+            if (target.DebugRotationType == null)
+            {
+                target.DebugRotationType = source.DebugRotationType;
+            }
+
+            if (target.DebugRotationCount == null)
+            {
+                target.DebugRotationCount = source.DebugRotationCount;
+            }
         }
 
         private int GetInitiative(Entity entity)

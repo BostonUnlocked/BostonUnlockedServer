@@ -41,51 +41,5 @@ namespace Shadowrun.LocalService.Core.AILogic
         public string InactiveSpawnManagerTag { get; set; }
         public bool ForceEndTurnForInactiveGroup { get; set; }
 
-        public static AiPlanningDiagnostics FromDecision(AiDecision decision, string decisionNote)
-        {
-            var diagnostics = new AiPlanningDiagnostics();
-            diagnostics.DecisionNote = decisionNote;
-            if (decision == null)
-            {
-                return diagnostics;
-            }
-
-            diagnostics.DebugStage = decision.DebugStage;
-            diagnostics.DebugRotationType = decision.DebugRotationType;
-            diagnostics.DebugRotationCount = decision.DebugRotationCount;
-            diagnostics.DebugRawSelection = decision.DebugRawSelection;
-            diagnostics.DebugResolvedActivityId = decision.DebugResolvedActivityId;
-            diagnostics.DebugHasAiConfig = decision.DebugHasAiConfig;
-            diagnostics.DebugHasLoadout = decision.DebugHasLoadout;
-            diagnostics.DebugSelectedWeaponIndex = decision.DebugSelectedWeaponIndex;
-            diagnostics.DebugSelectedWeaponSkillCount = decision.DebugSelectedWeaponSkillCount;
-            diagnostics.DebugPreferredEnemyId = decision.DebugPreferredEnemyId;
-            diagnostics.DebugChosenEnemyId = decision.DebugChosenEnemyId;
-            diagnostics.DebugChosenEnemyTeamId = decision.DebugChosenEnemyTeamId;
-            diagnostics.DebugChosenEnemyTeamAi = decision.DebugChosenEnemyTeamAi;
-            diagnostics.DebugChosenEnemyControlPlayerId = decision.DebugChosenEnemyControlPlayerId;
-            diagnostics.DebugChosenEnemyControlAi = decision.DebugChosenEnemyControlAi;
-            diagnostics.DebugChosenEnemyIsPlayersPlayerCharacter = decision.DebugChosenEnemyIsPlayersPlayerCharacter;
-            diagnostics.DebugChosenEnemyInteractiveObject = decision.DebugChosenEnemyInteractiveObject;
-            diagnostics.DebugEnemyPick = decision.DebugEnemyPick;
-            diagnostics.DebugEnemyReason = decision.DebugEnemyReason;
-            diagnostics.DebugEnemyX = decision.DebugEnemyX;
-            diagnostics.DebugEnemyY = decision.DebugEnemyY;
-            diagnostics.DebugEnemyCandidateCount = decision.DebugEnemyCandidateCount;
-            diagnostics.DebugReachableCellCount = decision.DebugReachableCellCount;
-            diagnostics.DebugReducingCellCount = decision.DebugReducingCellCount;
-            diagnostics.DebugAvoidedImmediateBacktrack = decision.DebugAvoidedImmediateBacktrack;
-            diagnostics.DebugCurrentDistToEnemy = decision.DebugCurrentDistToEnemy;
-            diagnostics.DebugChosenMoveDistToEnemy = decision.DebugChosenMoveDistToEnemy;
-            diagnostics.DebugChosenMoveDefensiveCover = decision.DebugChosenMoveDefensiveCover;
-            diagnostics.DebugChosenMoveTargetCover = decision.DebugChosenMoveTargetCover;
-            diagnostics.DebugChosenMoveScore = decision.DebugChosenMoveScore;
-            diagnostics.DebugChosenMoveChanceToHit = decision.DebugChosenMoveChanceToHit;
-            diagnostics.DebugChosenMoveWithinWalkRange = decision.DebugChosenMoveWithinWalkRange;
-            diagnostics.DebugProfileRange = decision.DebugProfileRange;
-            diagnostics.DebugShotDistanceToTarget = decision.DebugShotDistanceToTarget;
-            diagnostics.DebugShotChanceToHit = decision.DebugShotChanceToHit;
-            return diagnostics;
-        }
     }
 }

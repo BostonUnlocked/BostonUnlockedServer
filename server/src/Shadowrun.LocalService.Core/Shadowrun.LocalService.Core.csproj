@@ -106,7 +106,6 @@
   <ItemGroup>
     <Compile Include="Career\CareerInfoGenerator.cs" />
     <Compile Include="Career\MatchConfigurationGenerator.cs" />
-    <Compile Include="AILogic\AiDecision.cs" />
     <Compile Include="AILogic\AiAgentSnapshotFactory.cs" />
     <Compile Include="AILogic\AiMovementScorer.cs" />
     <Compile Include="AILogic\Valuations\AValuation.cs" />
@@ -114,17 +113,14 @@
     <Compile Include="AILogic\BasicValuationFactory.cs" />
     <Compile Include="AILogic\AiPlanningDiagnostics.cs" />
     <Compile Include="AILogic\Valuations\CloseToPointOfInterest.cs" />
-    <Compile Include="AILogic\ConfigDrivenAiDecisionEngine.cs" />
-    <Compile Include="AILogic\DecisionEngineAiPlanner.cs" />
     <Compile Include="AILogic\EntityComponentAiBehaviourConfigLookup.cs" />
     <Compile Include="AILogic\Valuations\Flanked.cs" />
     <Compile Include="AILogic\Valuations\FlankingAvoidance.cs" />
     <Compile Include="AILogic\IAgentTemplateAiConfigLookup.cs" />
     <Compile Include="AILogic\IAiBehaviourConfigLookup.cs" />
-    <Compile Include="AILogic\IAiDecisionEngine.cs" />
     <Compile Include="AILogic\IAiPlanner.cs" />
     <Compile Include="AILogic\NullAgentTemplateAiConfigLookup.cs" />
-    <Compile Include="AILogic\NullAiDecisionEngine.cs" />
+    <Compile Include="AILogic\AiSkillCatalog.cs" />
     <Compile Include="AILogic\Valuations\OptimalDistance.cs" />
     <Compile Include="AILogic\Valuations\OptimalDistanceEnemies.cs" />
     <Compile Include="AILogic\Valuations\Opportunity.cs" />
@@ -134,6 +130,7 @@
     <Compile Include="AILogic\PortedAiPlanner.cs" />
     <Compile Include="AILogic\SkillSelectionStrategyFactory.cs" />
     <Compile Include="AILogic\Valuations\WalkDistanceToEnemies.cs" />
+    <Compile Include="AILogic\GenericAiMovementPlanner.cs" />
     <Compile Include="Persistence\LocalUserStore.cs" />
     <Compile Include="Persistence\LocalUserStore.IO.cs" />
     <Compile Include="Persistence\FriendsStore.cs" />

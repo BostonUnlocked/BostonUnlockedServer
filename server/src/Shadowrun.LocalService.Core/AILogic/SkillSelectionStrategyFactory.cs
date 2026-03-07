@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Cliffhanger.SRO.ServerClientCommons.ArtificialIntelligence;
+using Cliffhanger.SRO.ServerClientCommons.GameLogic;
 using Cliffhanger.SRO.ServerClientCommons.GameLogic.Components;
 using Cliffhanger.SRO.ServerClientCommons.Gameworld;
 using Cliffhanger.SRO.ServerClientCommons.Gameworld.RandomNumbers;
@@ -9,7 +11,6 @@ namespace Shadowrun.LocalService.Core.AILogic
 {
     /// <summary>
     /// Creates runtime skill-selection strategies from serialized rotation config objects.
-    /// Placeholder: selections currently return DefaultSkill (or 0).
     /// </summary>
     public sealed class SkillSelectionStrategyFactory : ISkillSelectionStrategyFactory
     {
@@ -160,63 +161,60 @@ namespace Shadowrun.LocalService.Core.AILogic
         {
             private readonly WeightedSkillSelection _rotation;
             private readonly IRandomNumberGenerator _rng;
+            private readonly List<IWeightedItem<int>> _weightedItems;
 
             public WeightedSelection(Entity entity, IGameworldInstance gameworld, WeightedSkillSelection rotation, IRandomNumberGenerator rng)
                 : base(entity, gameworld)
             {
                 _rotation = rotation;
                 _rng = rng;
+                _weightedItems = BuildWeightedItems(rotation);
             }
 
             public override ulong SelectSkill()
             {
-                if (_rotation == null || _rotation.Rotation == null || _rotation.Rotation.Length == 0)
+                if (_weightedItems == null || _weightedItems.Count == 0 || _rng == null)
                 {
                     return DefaultSkill;
                 }
 
-                // Placeholder: simple weighted pick without allocations.
-                float total = 0f;
-                for (var i = 0; i < _rotation.Rotation.Length; i++)
+                return SelectSkillByAvailabilityOrId(_rng.SelectRandomItemFromWeightedList(_weightedItems));
+            }
+
+            private static List<IWeightedItem<int>> BuildWeightedItems(WeightedSkillSelection rotation)
+            {
+                var weightedItems = new List<IWeightedItem<int>>();
+                if (rotation == null || rotation.Rotation == null)
                 {
-                    var w = _rotation.Rotation[i] != null ? _rotation.Rotation[i].Weight : 0f;
-                    if (w > 0f)
+                    return weightedItems;
+                }
+
+                for (var i = 0; i < rotation.Rotation.Length; i++)
+                {
+                    var entry = rotation.Rotation[i];
+                    if (entry == null || entry.Weight <= 0f)
                     {
-                        total += w;
+                        continue;
                     }
+
+                    weightedItems.Add(new WeightedSkillItem(entry.Item, entry.Weight));
                 }
 
-                if (total <= 0.0001f)
-                {
-                    return SelectSkillByAvailabilityOrId(_rotation.Rotation[0].Item);
-                }
-
-                var bestWeight = float.MinValue;
-                var bestItem = _rotation.Rotation[0].Item;
-                for (var i = 0; i < _rotation.Rotation.Length; i++)
-                {
-                    var entry = _rotation.Rotation[i];
-                    if (entry != null && entry.Weight > bestWeight)
-                    {
-                        bestWeight = entry.Weight;
-                        bestItem = entry.Item;
-                    }
-                }
-
-                return SelectSkillByAvailabilityOrId(bestItem);
+                return weightedItems;
             }
         }
 
         private sealed class ConditionalRotationSelection : ASimpleSelection
         {
             private readonly ConditionalRotationSkillSelection _rotation;
-            private int _index;
+            private readonly HashSet<int> _selectedRunOnceSkills;
+            private ConditionalSkill _lastSkill;
 
             public ConditionalRotationSelection(Entity entity, IGameworldInstance gameworld, ConditionalRotationSkillSelection rotation)
                 : base(entity, gameworld)
             {
                 _rotation = rotation;
-                _index = 0;
+                _selectedRunOnceSkills = new HashSet<int>();
             }
 
             public override ulong SelectSkill()
@@ -226,15 +224,67 @@ namespace Shadowrun.LocalService.Core.AILogic
                     return DefaultSkill;
                 }
 
-                // Placeholder: ignore conditions and return next.
-                var entry = _rotation.Rotation[_index % _rotation.Rotation.Length];
-                _index++;
-                if (entry == null)
+                if (Gameworld == null || Gameworld.EntitySystem == null || Entity == null)
                 {
                     return DefaultSkill;
                 }
 
-                return SelectSkillByAvailabilityOrId(entry.SkillId);
+                var activityParameters = new ActivityParametersBuilder()
+                    .WithEntitySystem(Gameworld.EntitySystem)
+                    .WithGameworldInstance(Gameworld)
+                    .WithSource(Entity)
+                    .Build();
+
+                var filteredSkills = _rotation.Rotation.Where(skill => ApplyFilter(skill, activityParameters)).ToList();
+                if (filteredSkills.Count == 0)
+                {
+                    return DefaultSkill;
+                }
+
+                var nextIndex = filteredSkills.IndexOf(_lastSkill) + 1;
+                if (nextIndex >= filteredSkills.Count)
+                {
+                    nextIndex = 0;
+                }
+
+                var selectedSkill = filteredSkills[nextIndex];
+                if (selectedSkill == null)
+                {
+                    return DefaultSkill;
+                }
+
+                if (selectedSkill.RunOnce)
+                {
+                    _selectedRunOnceSkills.Add(selectedSkill.SkillId);
+                }
+
+                _lastSkill = selectedSkill;
+                return SelectSkillByAvailabilityOrId(selectedSkill.SkillId);
+            }
+
+            private bool ApplyFilter(ConditionalSkill skill, ActivityParameters activityParameters)
+            {
+                if (skill == null || skill.Condition == null)
+                {
+                    return false;
+                }
+
+                bool fulfilled;
+                try
+                {
+                    fulfilled = skill.Condition.IsFulfilledBy(activityParameters);
+                }
+                catch
+                {
+                    return false;
+                }
+
+                if (!skill.RunOnce)
+                {
+                    return fulfilled;
+                }
+
+                return fulfilled && !_selectedRunOnceSkills.Contains(skill.SkillId);
             }
         }
 
@@ -247,7 +297,7 @@ namespace Shadowrun.LocalService.Core.AILogic
                 : base(entity, gameworld)
             {
                 _rotation = rotation;
-                _index = 0;
+                _index = -1;
             }
 
             public override ulong SelectSkill()
@@ -257,11 +307,35 @@ namespace Shadowrun.LocalService.Core.AILogic
                     return DefaultSkill;
                 }
 
-                // Placeholder: ignore cooldowns and iterate.
-                var skill = SelectSkillByAvailabilityOrId((int)_rotation.Rotation[_index % _rotation.Rotation.Length]);
-                _index++;
-                return skill;
+                CooldownComponent cooldown;
+                TryGetCooldown(out cooldown);
+
+                var firstIndex = _index;
+                do
+                {
+                    _index = (_index + 1) % _rotation.Rotation.Length;
+                    var skillId = _rotation.Rotation[_index];
+                    if (cooldown == null || !cooldown.IsSkillOnCooldown(skillId))
+                    {
+                        return skillId;
+                    }
+                }
+                while (_index != firstIndex);
+
+                return DefaultSkill;
             }
+        }
+
+        private sealed class WeightedSkillItem : IWeightedItem<int>
+        {
+            public WeightedSkillItem(int item, float weight)
+            {
+                Item = item;
+                Weight = weight;
+            }
+
+            public int Item { get; private set; }
+            public float Weight { get; private set; }
         }
 
     }

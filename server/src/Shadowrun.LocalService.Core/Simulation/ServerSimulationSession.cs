@@ -46,7 +46,6 @@ namespace Shadowrun.LocalService.Core.Simulation
         private readonly TurnObserver _turnObserver;
 
         private readonly bool _enableAiLogic;
-        private readonly IAiDecisionEngine _aiDecisionEngine;
         private readonly IAiPlanner _aiPlanner;
 
         private readonly LocalMissionLootController _lootController;
@@ -72,7 +71,6 @@ namespace Shadowrun.LocalService.Core.Simulation
             object lootPreviewLock,
             List<string> pendingLootPreviews,
             bool enableAiLogic,
-            IAiDecisionEngine aiDecisionEngine,
             IAiPlanner aiPlanner)
         {
             _logger = logger;
@@ -93,7 +91,6 @@ namespace Shadowrun.LocalService.Core.Simulation
             _pendingLootPreviews = pendingLootPreviews ?? new List<string>();
 
             _enableAiLogic = enableAiLogic;
-            _aiDecisionEngine = aiDecisionEngine;
             _aiPlanner = aiPlanner;
         }
 
@@ -363,32 +360,13 @@ namespace Shadowrun.LocalService.Core.Simulation
                 staticDataDir = staticDataDir,
             });
 
-            IAiDecisionEngine aiDecisionEngine;
-            if (enableAiLogic)
-            {
-                aiDecisionEngine = new ConfigDrivenAiDecisionEngine(
-                    new EntityComponentAiBehaviourConfigLookup(),
-                    new SkillSelectionStrategyFactory(gameworldInstance),
-                    random);
-            }
-            else
-            {
-                aiDecisionEngine = new NullAiDecisionEngine();
-            }
-
-            var fallbackAiPlanner = new DecisionEngineAiPlanner(
-                enableAiLogic,
-                aiDecisionEngine,
-                gameworldInstance);
-
             IAiPlanner aiPlanner = new PortedAiPlanner(
                 enableAiLogic,
                 gameworldInstance,
                 random,
                 new EntityComponentAiBehaviourConfigLookup(),
                 new SkillSelectionStrategyFactory(gameworldInstance),
-                new BasicValuationFactory(),
-                fallbackAiPlanner);
+                new BasicValuationFactory());
 
             return new ServerSimulationSession(
                 logger,
@@ -407,7 +385,6 @@ namespace Shadowrun.LocalService.Core.Simulation
                 lootPreviewLock,
                 pendingLootPreviews,
                 enableAiLogic,
-                aiDecisionEngine,
                 aiPlanner);
         }
 

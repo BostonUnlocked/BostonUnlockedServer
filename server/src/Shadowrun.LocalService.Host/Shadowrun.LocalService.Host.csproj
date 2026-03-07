@@ -33,6 +33,7 @@
 
   <PropertyGroup>
     <ResourcesOutDir>$(MSBuildProjectDirectory)\$(OutputPath)Resources\</ResourcesOutDir>
+    <CoreProjectOutDir>$(MSBuildProjectDirectory)\..\Shadowrun.LocalService.Core\$(OutputPath)</CoreProjectOutDir>
     <ShadowrunGameRoot Condition=" '$(ShadowrunGameRoot)' == '' ">d:\SteamLibrary\steamapps\common\ShadowrunChronicles</ShadowrunGameRoot>
     <ShadowrunStreamingAssetsLevelsDir>$(ShadowrunGameRoot)\Shadowrun_Data\StreamingAssets\levels</ShadowrunStreamingAssetsLevelsDir>
     <LocalStreamingAssetsLevelsDir>$(MSBuildProjectDirectory)\..\..\StreamingAssets\levels</LocalStreamingAssetsLevelsDir>
@@ -42,6 +43,10 @@ if not exist "$(ResourcesOutDir)" mkdir "$(ResourcesOutDir)"
 if not exist "$(ResourcesOutDir)config" mkdir "$(ResourcesOutDir)config"
 if not exist "$(ResourcesOutDir)static-data" mkdir "$(ResourcesOutDir)static-data"
 if not exist "$(ResourcesOutDir)Dependencies" mkdir "$(ResourcesOutDir)Dependencies"
+
+if exist "$(CoreProjectOutDir)" xcopy /Y /I "$(CoreProjectOutDir)*.dll" "$(TargetDir)" &gt;nul 2&gt;nul
+if exist "$(CoreProjectOutDir)" xcopy /Y /I "$(CoreProjectOutDir)*.pdb" "$(TargetDir)" &gt;nul 2&gt;nul
+if exist "$(MSBuildProjectDirectory)\..\Dependencies" xcopy /Y /I "$(MSBuildProjectDirectory)\..\Dependencies\*.dll" "$(TargetDir)" &gt;nul 2&gt;nul
 
 xcopy /E /Y /I "$(MSBuildProjectDirectory)\..\..\config\*" "$(ResourcesOutDir)config\" &gt;nul 2&gt;nul
 xcopy /E /Y /I "$(MSBuildProjectDirectory)\..\..\static-data\*" "$(ResourcesOutDir)static-data\" &gt;nul 2&gt;nul
