@@ -861,11 +861,16 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                     if (slotForSnapshot != null)
                     {
-                        var hubId = !IsNullOrWhiteSpace(slotForSnapshot.HubId) ? slotForSnapshot.HubId : DefaultHubId;
-                        var characterIdentifier = !IsNullOrWhiteSpace(slotForSnapshot.CharacterIdentifier)
-                            ? slotForSnapshot.CharacterIdentifier
-                            : (activeIdentityGuid.ToString() + ":" + activeCareerIndex.ToString());
-                        cachedHubStatePayload = BuildMetaHubPushPayload(4, SerializeHubStateOrFallback(hubId, characterIdentifier, slotForSnapshot.CharacterName, slotForSnapshot));
+                        string resolvedHubInstanceId;
+                        PortedHubInstance resolvedHubInstance;
+                        cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
+                            slotForSnapshot,
+                            activeIdentityGuid,
+                            activeCareerIndex,
+                            false,
+                            null,
+                            out resolvedHubInstanceId,
+                            out resolvedHubInstance);
                     }
                 }
                 catch

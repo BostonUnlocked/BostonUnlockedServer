@@ -20,7 +20,6 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         private readonly object _lock = new object();
         private readonly Dictionary<string, Participant> _byPeer = new Dictionary<string, Participant>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, HashSet<string>> _peersByHub = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<Guid, HashSet<string>> _peersByAccount = new Dictionary<Guid, HashSet<string>>();
         private readonly Dictionary<string, string> _peerByCharacterId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -62,34 +61,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                 p.Y = y;
 
                 AddToIndexes_NoLock(p);
-            }
-        }
-
-        public void SetHubForPeer(string peer, string hubId)
-        {
-            if (IsNullOrWhiteSpace(peer) || IsNullOrWhiteSpace(hubId))
-            {
-                return;
-            }
-
-            lock (_lock)
-            {
-                Participant p;
-                if (!_byPeer.TryGetValue(peer, out p) || p == null)
-                {
-                    p = new Participant();
-                    p.Peer = peer;
-                    _byPeer[peer] = p;
-                }
-
-                if (string.Equals(p.HubId, hubId, StringComparison.OrdinalIgnoreCase))
-                {
-                    return;
-                }
-
-                RemoveFromHub_NoLock(p.Peer, p.HubId);
-                p.HubId = hubId;
-                AddToHub_NoLock(p.Peer, p.HubId);
             }
         }
 
@@ -203,47 +174,6 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
-        public IList<Participant> GetParticipantsInHub(string hubId)
-        {
-            var result = new List<Participant>();
-            if (IsNullOrWhiteSpace(hubId))
-            {
-                return result;
-            }
-
-            lock (_lock)
-            {
-                HashSet<string> peers;
-                if (!_peersByHub.TryGetValue(hubId, out peers) || peers == null || peers.Count == 0)
-                {
-                    return result;
-                }
-
-                foreach (var peer in peers)
-                {
-                    Participant p;
-                    if (!_byPeer.TryGetValue(peer, out p) || p == null)
-                    {
-                        continue;
-                    }
-
-                    var copy = new Participant();
-                    copy.Peer = p.Peer;
-                    copy.AccountId = p.AccountId;
-                    copy.IdentityHash = p.IdentityHash;
-                    copy.CareerIndex = p.CareerIndex;
-                    copy.CharacterId = p.CharacterId;
-                    copy.CharacterName = p.CharacterName;
-                    copy.HubId = p.HubId;
-                    copy.X = p.X;
-                    copy.Y = p.Y;
-                    result.Add(copy);
-                }
-            }
-
-            return result;
-        }
-
         public bool TryGetParticipantForPeer(string peer, out Participant participant)
         {
             participant = null;
@@ -302,8 +232,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
-            RemoveFromHub_NoLock(p.Peer, p.HubId);
-
             if (p.AccountId != Guid.Empty)
             {
                 HashSet<string> peers;
@@ -334,8 +262,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
-            AddToHub_NoLock(p.Peer, p.HubId);
-
             if (p.AccountId != Guid.Empty)
             {
                 HashSet<string> peers;
@@ -351,40 +277,6 @@ namespace Shadowrun.LocalService.Core.Protocols
             {
                 _peerByCharacterId[p.CharacterId] = p.Peer;
             }
-        }
-
-        private void RemoveFromHub_NoLock(string peer, string hubId)
-        {
-            if (IsNullOrWhiteSpace(peer) || IsNullOrWhiteSpace(hubId))
-            {
-                return;
-            }
-
-            HashSet<string> peers;
-            if (_peersByHub.TryGetValue(hubId, out peers) && peers != null)
-            {
-                peers.Remove(peer);
-                if (peers.Count == 0)
-                {
-                    _peersByHub.Remove(hubId);
-                }
-            }
-        }
-
-        private void AddToHub_NoLock(string peer, string hubId)
-        {
-            if (IsNullOrWhiteSpace(peer) || IsNullOrWhiteSpace(hubId))
-            {
-                return;
-            }
-
-            HashSet<string> peers;
-            if (!_peersByHub.TryGetValue(hubId, out peers) || peers == null)
-            {
-                peers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                _peersByHub[hubId] = peers;
-            }
-            peers.Add(peer);
         }
 
         private static bool IsNullOrWhiteSpace(string value)

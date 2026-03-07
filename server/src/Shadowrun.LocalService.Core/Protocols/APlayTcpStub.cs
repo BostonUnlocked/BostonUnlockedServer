@@ -1130,101 +1130,84 @@ namespace Shadowrun.LocalService.Core.Protocols
             return canonicalHubName + "#" + sequence.ToString(CultureInfo.InvariantCulture);
         }
 
-        private static byte[] BuildHubStatePayloadForSlot(CareerSlot slot, string characterIdentifier, bool forceNewHubInstanceId)
+        private PlayerCharacterSnapshot BuildMappedPlayerCharacterSnapshotForHub(Guid identityGuid, string characterIdentifier, string characterName, CareerSlot slot)
         {
-            var hubName = slot != null && !IsNullOrWhiteSpace(slot.HubId) ? slot.HubId : DefaultHubId;
-            var hubId = forceNewHubInstanceId ? BuildProgressionHubInstanceId(hubName) : hubName;
-            var name = slot != null ? slot.CharacterName : null;
-            return BuildMetaHubPushPayload(4, SerializeHubStateOrFallback(hubId, characterIdentifier, name, slot, hubName));
-        }
-
-        private static string SerializeHubStateOrFallback(string hubId, string characterIdentifier, string characterName, CareerSlot slot)
-        {
-            return SerializeHubStateOrFallback(hubId, characterIdentifier, characterName, slot, null);
-        }
-
-        private static string SerializeHubStateOrFallback(string hubId, string characterIdentifier, string characterName, CareerSlot slot, string hubNameOverride)
-        {
-            if (IsNullOrWhiteSpace(hubId))
+            if (IsNullOrWhiteSpace(characterIdentifier))
             {
-                return FallbackSerializedHubState;
+                return null;
             }
 
-            try
+            var snapshot = BuildPlayerCharacterSnapshotForSlot(characterIdentifier, characterName, slot);
+            var accountId = identityGuid != Guid.Empty ? identityGuid : TryParseAccountIdFromCharacterIdentifier(characterIdentifier);
+            ulong mappedPlayerId;
+            if (accountId != Guid.Empty
+                && TryGetGameClientEntityIdForIdentity(accountId, out mappedPlayerId)
+                && mappedPlayerId != 0UL)
             {
-                var state = new HubState { HubId = hubId, Name = !IsNullOrWhiteSpace(hubNameOverride) ? hubNameOverride : hubId };
+                snapshot.PlayerId = mappedPlayerId;
+            }
 
-                if (!IsNullOrWhiteSpace(characterIdentifier))
+            return snapshot;
+        }
+
+        private PortedHubTransitionResult TryExecutePortedHubTransition(string requestedHubId, Guid identityGuid, string characterIdentifier, string characterName, CareerSlot slot, PortedHubInstance currentHubInstance)
+        {
+            if (_portedHubInstanceManager == null || IsNullOrWhiteSpace(requestedHubId) || IsNullOrWhiteSpace(characterIdentifier))
+            {
+                return null;
+            }
+
+            var snapshot = BuildMappedPlayerCharacterSnapshotForHub(identityGuid, characterIdentifier, characterName, slot);
+            if (snapshot == null)
+            {
+                return null;
+            }
+
+            var exactTargetHub = _portedHubInstanceManager.RequestHubInstanceByHubId(requestedHubId);
+            if (exactTargetHub != null)
+            {
+                return _portedHubInstanceManager.ExecuteRequestHubInstance(exactTargetHub, snapshot, currentHubInstance);
+            }
+
+            return _portedHubInstanceManager.ExecuteRequestHubInstance(GetHubNameFromHubInstanceId(requestedHubId), snapshot, currentHubInstance, new GroupStatus());
+        }
+
+        private byte[] BuildPortedHubStatePayloadForSlot(CareerSlot slot, Guid identityGuid, int careerIndex, bool forceNewHubInstanceId, PortedHubInstance currentHubInstance, out string resolvedHubId, out PortedHubInstance resolvedHubInstance)
+        {
+            resolvedHubId = slot != null && !IsNullOrWhiteSpace(slot.HubId) ? slot.HubId : DefaultHubId;
+            resolvedHubInstance = currentHubInstance;
+
+            var characterIdentifier = slot != null && !IsNullOrWhiteSpace(slot.CharacterIdentifier)
+                ? slot.CharacterIdentifier
+                : (identityGuid.ToString() + ":" + careerIndex.ToString(CultureInfo.InvariantCulture));
+            var characterName = slot != null ? slot.CharacterName : null;
+            var requestedHubId = forceNewHubInstanceId ? BuildProgressionHubInstanceId(resolvedHubId) : resolvedHubId;
+
+            if (_portedHubInstanceManager != null && !IsNullOrWhiteSpace(characterIdentifier))
+            {
+                if (resolvedHubInstance == null)
                 {
-                    var snapshot = new PlayerCharacterSnapshot();
-                    snapshot.CharacterIdentifier = characterIdentifier;
-                    snapshot.PlayerId = 1UL;
-                    snapshot.DataVersion = 48;
-                    snapshot.CharacterName = !IsNullOrWhiteSpace(characterName) ? characterName : PlayerCharacterDefaultValues.PlayerName;
-                    snapshot.PortraitPath = (slot != null && !IsNullOrWhiteSpace(slot.PortraitPath)) ? slot.PortraitPath : PlayerCharacterDefaultValues.PortraitPath;
-                    snapshot.Voiceset = (slot != null && !IsNullOrWhiteSpace(slot.Voiceset)) ? slot.Voiceset : PlayerCharacterDefaultValues.Voiceset;
-                    snapshot.Bodytype = (slot != null && slot.Bodytype != 0UL) ? slot.Bodytype : PlayerCharacterDefaultValues.Bodytype;
-                    snapshot.SkinTextureIndex = (slot != null) ? slot.SkinTextureIndex : PlayerCharacterDefaultValues.SkinTextureIndex;
-                    snapshot.BackgroundStory = (slot != null && slot.BackgroundStory != 0UL) ? slot.BackgroundStory : PlayerCharacterDefaultValues.BackgroundStory;
-                    snapshot.WantsBackgroundChange = slot != null && slot.WantsBackgroundChange;
-                    if (snapshot.Wallet != null)
-                    {
-                        snapshot.Wallet.Reset(CurrencyId.Karma, slot != null ? slot.Karma : 0, slot != null ? slot.SpentKarma : 0);
-                        snapshot.Wallet.Reset(CurrencyId.Nuyen, slot != null ? slot.Nuyen : 0, 0);
-                    }
-
-                    // Provide a minimal valid loadout so hub UI (e.g., shop inspectors) can resolve equipped weapons.
-                    var pcInv = new PlayerCharacterInventory();
-                    var primaryItemId = (slot != null && !IsNullOrWhiteSpace(slot.PrimaryWeaponItemId)) ? slot.PrimaryWeaponItemId : PlayerCharacterDefaultValues.PrimaryWeapon;
-                    var primaryKey = slot != null ? slot.PrimaryWeaponInventoryKey : 0;
-                    pcInv.PrimaryWeapon = CreateInventoryItem(primaryItemId, primaryKey);
-
-                    var secondaryItemId = (slot != null && !IsNullOrWhiteSpace(slot.SecondaryWeaponItemId)) ? slot.SecondaryWeaponItemId : PlayerCharacterDefaultValues.SecondaryWeapon;
-                    var secondaryKey = slot != null ? slot.SecondaryWeaponInventoryKey : 1;
-                    pcInv.SecondaryWeapon = CreateInventoryItem(secondaryItemId, secondaryKey);
-
-                    var armorItemId = (slot != null && !IsNullOrWhiteSpace(slot.ArmorItemId)) ? slot.ArmorItemId : PlayerCharacterDefaultValues.Armor;
-                    var armorKey = slot != null ? slot.ArmorInventoryKey : 2;
-                    pcInv.Armor = CreateInventoryItem(armorItemId, armorKey);
-
-                    // Cosmetic equipment slots (hair/clothes/etc) chosen in character editor.
-                    if (slot != null && slot.EquippedItems != null && slot.EquippedItems.Count > 0)
-                    {
-                        foreach (var kvp in slot.EquippedItems)
-                        {
-                            if (IsNullOrWhiteSpace(kvp.Key) || IsNullOrWhiteSpace(kvp.Value))
-                            {
-                                continue;
-                            }
-                            ulong slotId;
-                            if (!TryParseUInt64(kvp.Key, out slotId) || slotId == 0UL)
-                            {
-                                continue;
-                            }
-
-                            var def = new LogicItemslotDefinition();
-                            def.Id = slotId;
-                            def.AssignableItemTypes = new ulong[0];
-                            def.CannotBeEmpty = false;
-                            def.DefaultItem = string.Empty;
-
-                            var itemSlot = new ItemSlot(def);
-                            itemSlot.Item = CreateInventoryItem(kvp.Value, 10);
-                            pcInv.EquippedItems.Add(itemSlot);
-                        }
-                    }
-                    snapshot.PlayerCharacterInventory = pcInv;
-
-                    // The hub scene expects at least one player character to spawn.
-                    state.Add(snapshot, new Vector2D(0f, 0f));
+                    resolvedHubInstance = _portedHubInstanceManager.RequestHubInstance(characterIdentifier);
                 }
 
-                return HubSerializer.SerializeHubState(state);
+                var snapshot = BuildMappedPlayerCharacterSnapshotForHub(identityGuid, characterIdentifier, characterName, slot);
+                if (snapshot != null)
+                {
+                    PortedHubTransitionResult transition = forceNewHubInstanceId
+                        ? _portedHubInstanceManager.ExecuteRequestExactHubInstance(requestedHubId, snapshot, resolvedHubInstance)
+                        : TryExecutePortedHubTransition(requestedHubId, identityGuid, characterIdentifier, characterName, slot, resolvedHubInstance);
+
+                    if (transition != null && transition.TargetHubInstance != null)
+                    {
+                        resolvedHubInstance = transition.TargetHubInstance;
+                        resolvedHubId = resolvedHubInstance.HubId;
+                        return BuildMetaHubPushPayload(HubEntityId, resolvedHubInstance.SerializedHubState());
+                    }
+                }
             }
-            catch
-            {
-                return FallbackSerializedHubState;
-            }
+
+            resolvedHubId = requestedHubId;
+            return BuildMetaHubPushPayload(HubEntityId, FallbackSerializedHubState);
         }
 
         private string BuildSerializedSharedHubStateOrFallback(string hubId, string fallbackCharacterIdentifier, string fallbackCharacterName, CareerSlot fallbackSlot)
@@ -1234,70 +1217,34 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return FallbackSerializedHubState;
             }
 
-            try
+            if (_portedHubInstanceManager != null)
             {
-                var state = new HubState
+                var portedHubInstance = _portedHubInstanceManager.RequestHubInstanceByHubId(hubId);
+                if (portedHubInstance == null && !IsNullOrWhiteSpace(fallbackCharacterIdentifier))
                 {
-                    HubId = hubId,
-                    Name = GetHubNameFromHubInstanceId(hubId),
-                };
-
-                var participants = _hubPresenceRegistry.GetParticipantsInHub(hubId);
-                var anyAdded = false;
-                if (participants != null)
-                {
-                    for (var i = 0; i < participants.Count; i++)
+                    var identityGuid = TryParseAccountIdFromCharacterIdentifier(fallbackCharacterIdentifier);
+                    var snapshot = BuildMappedPlayerCharacterSnapshotForHub(identityGuid, fallbackCharacterIdentifier, fallbackCharacterName, fallbackSlot);
+                    if (snapshot != null)
                     {
-                        var participant = participants[i];
-                        if (participant == null || IsNullOrWhiteSpace(participant.CharacterId))
+                        var transition = _portedHubInstanceManager.ExecuteRequestExactHubInstance(hubId, snapshot, null);
+                        if (transition != null)
                         {
-                            continue;
+                            portedHubInstance = transition.TargetHubInstance;
                         }
-
-                        CareerSlot slot = null;
-                        if (fallbackSlot != null && !IsNullOrWhiteSpace(fallbackCharacterIdentifier)
-                            && string.Equals(fallbackCharacterIdentifier, participant.CharacterId, StringComparison.OrdinalIgnoreCase))
-                        {
-                            slot = fallbackSlot;
-                        }
-                        else if (_userStore != null && !IsNullOrWhiteSpace(participant.IdentityHash))
-                        {
-                            try
-                            {
-                                slot = _userStore.GetOrCreateCareer(participant.IdentityHash, participant.CareerIndex, false);
-                            }
-                            catch
-                            {
-                                slot = null;
-                            }
-                        }
-
-                        var characterName = !IsNullOrWhiteSpace(participant.CharacterName) ? participant.CharacterName : fallbackCharacterName;
-                        var snapshot = BuildPlayerCharacterSnapshotForSlot(participant.CharacterId, characterName, slot);
-                        ulong mappedPlayerId;
-                        var participantAccountId = TryParseAccountIdFromCharacterIdentifier(participant.CharacterId);
-                        if (participantAccountId != Guid.Empty
-                            && TryGetGameClientEntityIdForIdentity(participantAccountId, out mappedPlayerId)
-                            && mappedPlayerId != 0UL)
-                        {
-                            snapshot.PlayerId = mappedPlayerId;
-                        }
-                        state.Add(snapshot, new Vector2D(participant.X, participant.Y));
-                        anyAdded = true;
                     }
                 }
 
-                if (!anyAdded)
+                if (portedHubInstance != null)
                 {
-                    return SerializeHubStateOrFallback(hubId, fallbackCharacterIdentifier, fallbackCharacterName, fallbackSlot, GetHubNameFromHubInstanceId(hubId));
+                    var serializedHubState = portedHubInstance.SerializedHubState();
+                    if (!IsNullOrWhiteSpace(serializedHubState))
+                    {
+                        return serializedHubState;
+                    }
                 }
+            }
 
-                return HubSerializer.SerializeHubState(state);
-            }
-            catch
-            {
-                return SerializeHubStateOrFallback(hubId, fallbackCharacterIdentifier, fallbackCharacterName, fallbackSlot, GetHubNameFromHubInstanceId(hubId));
-            }
+            return FallbackSerializedHubState;
         }
 
         private static string GetHubNameFromHubInstanceId(string hubId)
@@ -1360,6 +1307,12 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return null;
             }
 
+            HubPlayerCharacter authoritativeCharacter;
+            if (TryGetAuthoritativeHubPlayerCharacter(participant.HubId, participant.CharacterId, out authoritativeCharacter))
+            {
+                return authoritativeCharacter;
+            }
+
             CareerSlot slot = null;
             if (_userStore != null && !IsNullOrWhiteSpace(participant.IdentityHash))
             {
@@ -1383,6 +1336,91 @@ namespace Shadowrun.LocalService.Core.Protocols
                 snapshot.PlayerId = mappedPlayerId;
             }
             return new HubPlayerCharacter(participant.CharacterId, new Vector2D(participant.X, participant.Y), snapshot);
+        }
+
+        private bool TryGetAuthoritativeHubPlayerCharacter(string hubId, string characterId, out HubPlayerCharacter hubPlayerCharacter)
+        {
+            hubPlayerCharacter = null;
+            if (_portedHubInstanceManager == null || IsNullOrWhiteSpace(hubId) || IsNullOrWhiteSpace(characterId))
+            {
+                return false;
+            }
+
+            var portedHubInstance = _portedHubInstanceManager.RequestHubInstanceByHubId(hubId);
+            if (portedHubInstance == null || portedHubInstance.HubState == null || portedHubInstance.HubState.PlayerCharacters == null)
+            {
+                return false;
+            }
+
+            return portedHubInstance.HubState.PlayerCharacters.TryGetValue(characterId, out hubPlayerCharacter)
+                && hubPlayerCharacter != null;
+        }
+
+        private bool TryGetHubParticipantByCharacterId(string characterId, out HubPresenceRegistry.Participant participant)
+        {
+            participant = null;
+            if (IsNullOrWhiteSpace(characterId))
+            {
+                return false;
+            }
+
+            string peer;
+            if (!_hubPresenceRegistry.TryGetPeerForCharacter(characterId, out peer) || IsNullOrWhiteSpace(peer))
+            {
+                return false;
+            }
+
+            return _hubPresenceRegistry.TryGetParticipantForPeer(peer, out participant) && participant != null;
+        }
+
+        private static HubPresenceRegistry.Participant CreateSyntheticParticipant(string hubId, string characterId, HubPlayerCharacter hubPlayerCharacter)
+        {
+            return new HubPresenceRegistry.Participant
+            {
+                Peer = string.Empty,
+                AccountId = TryParseAccountIdFromCharacterIdentifier(characterId),
+                IdentityHash = string.Empty,
+                CareerIndex = 0,
+                CharacterId = characterId ?? string.Empty,
+                CharacterName = hubPlayerCharacter != null && hubPlayerCharacter.Snapshot != null ? (hubPlayerCharacter.Snapshot.CharacterName ?? string.Empty) : string.Empty,
+                HubId = hubId ?? string.Empty,
+                X = hubPlayerCharacter != null ? hubPlayerCharacter.CurrentPosition.X : 0f,
+                Y = hubPlayerCharacter != null ? hubPlayerCharacter.CurrentPosition.Y : 0f,
+            };
+        }
+
+        private byte[] BuildHubMovementPayload(string hubId, string characterId, float fallbackX, float fallbackY)
+        {
+            if (IsNullOrWhiteSpace(characterId))
+            {
+                return null;
+            }
+
+            if (_portedHubInstanceManager != null && !IsNullOrWhiteSpace(hubId))
+            {
+                var portedHubInstance = _portedHubInstanceManager.RequestHubInstanceByHubId(hubId);
+                if (portedHubInstance != null && portedHubInstance.HubState != null && portedHubInstance.HubState.PlayerCharacters != null)
+                {
+                    HubPlayerCharacter hubPlayerCharacter;
+                    if (portedHubInstance.HubState.PlayerCharacters.TryGetValue(characterId, out hubPlayerCharacter)
+                        && hubPlayerCharacter != null)
+                    {
+                        var authoritativeMoves = new[]
+                        {
+                            new KeyValuePair<string, Vector2D>(characterId, hubPlayerCharacter.CurrentPosition)
+                        };
+
+                        return BuildUtf16StringPayload(HubMovementSerializer.Serialize(authoritativeMoves));
+                    }
+                }
+            }
+
+            var moveRequests = new[]
+            {
+                new KeyValuePair<string, Vector2D>(characterId, new Vector2D(fallbackX, fallbackY))
+            };
+
+            return BuildUtf16StringPayload(HubMovementSerializer.Serialize(moveRequests));
         }
 
         private void RegisterHubPeerStream(string peer, NetworkStream stream)
@@ -1695,38 +1733,44 @@ namespace Shadowrun.LocalService.Core.Protocols
         private IList<HubPeerTarget> GetHubBroadcastTargets(string hubId, string senderPeer)
         {
             var targets = new List<HubPeerTarget>();
-            if (IsNullOrWhiteSpace(hubId))
+            if (IsNullOrWhiteSpace(hubId) || _portedHubInstanceManager == null)
             {
                 return targets;
             }
 
-            var participants = _hubPresenceRegistry.GetParticipantsInHub(hubId);
-            if (participants == null || participants.Count == 0)
+            var portedHubInstance = _portedHubInstanceManager.RequestHubInstanceByHubId(hubId);
+            if (portedHubInstance == null || portedHubInstance.HubState == null || portedHubInstance.HubState.PlayerCharacters == null)
             {
                 return targets;
             }
 
             lock (_hubPeerStreamsLock)
             {
-                for (var i = 0; i < participants.Count; i++)
+                foreach (var kvp in portedHubInstance.HubState.PlayerCharacters)
                 {
-                    var participant = participants[i];
-                    if (participant == null || IsNullOrWhiteSpace(participant.Peer))
+                    if (IsNullOrWhiteSpace(kvp.Key))
                     {
                         continue;
                     }
-                    if (!IsNullOrWhiteSpace(senderPeer) && string.Equals(participant.Peer, senderPeer, StringComparison.OrdinalIgnoreCase))
+
+                    string participantPeer;
+                    if (!_hubPresenceRegistry.TryGetPeerForCharacter(kvp.Key, out participantPeer) || IsNullOrWhiteSpace(participantPeer))
+                    {
+                        continue;
+                    }
+
+                    if (!IsNullOrWhiteSpace(senderPeer) && string.Equals(participantPeer, senderPeer, StringComparison.OrdinalIgnoreCase))
                     {
                         continue;
                     }
 
                     NetworkStream stream;
-                    if (!_hubPeerStreams.TryGetValue(participant.Peer, out stream) || stream == null)
+                    if (!_hubPeerStreams.TryGetValue(participantPeer, out stream) || stream == null)
                     {
                         continue;
                     }
 
-                    targets.Add(new HubPeerTarget(participant.Peer, stream));
+                    targets.Add(new HubPeerTarget(participantPeer, stream));
                 }
             }
 
@@ -1874,8 +1918,16 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
             }
 
-            var participants = _hubPresenceRegistry.GetParticipantsInHub(hubId);
-            if (participants == null || participants.Count == 0)
+            HubPresenceRegistry.Participant targetParticipant;
+            _hubPresenceRegistry.TryGetParticipantForPeer(targetPeer, out targetParticipant);
+
+            if (_portedHubInstanceManager == null)
+            {
+                return;
+            }
+
+            var portedHubInstance = _portedHubInstanceManager.RequestHubInstanceByHubId(hubId);
+            if (portedHubInstance == null || portedHubInstance.HubState == null || portedHubInstance.HubState.PlayerCharacters == null)
             {
                 return;
             }
@@ -1884,41 +1936,40 @@ namespace Shadowrun.LocalService.Core.Protocols
             var sentPlayerIds = new List<ulong>();
             var candidateCount = 0;
             var sentCharacterIds = new List<string>();
-            for (var i = 0; i < participants.Count; i++)
+            foreach (var kvp in portedHubInstance.HubState.PlayerCharacters)
             {
-                var participant = participants[i];
-                if (participant == null
-                    || IsNullOrWhiteSpace(participant.Peer)
-                    || IsNullOrWhiteSpace(participant.CharacterId)
-                    || string.Equals(participant.Peer, targetPeer, StringComparison.OrdinalIgnoreCase))
+                var characterId = kvp.Key;
+                var hubPlayerCharacter = kvp.Value;
+                if (IsNullOrWhiteSpace(characterId)
+                    || hubPlayerCharacter == null
+                    || (targetParticipant != null && string.Equals(targetParticipant.CharacterId, characterId, StringComparison.OrdinalIgnoreCase)))
                 {
                     continue;
                 }
 
                 candidateCount++;
 
-                if (IsHubCharacterAnnounced(targetPeer, hubId, participant.CharacterId))
+                if (IsHubCharacterAnnounced(targetPeer, hubId, characterId))
                 {
                     continue;
                 }
 
-                if (!TryMarkHubCharacterAnnounced(targetPeer, hubId, participant.CharacterId))
-                {
-                    continue;
-                }
-
-                var hubPlayerCharacter = BuildHubPlayerCharacterFromParticipant(participant);
-                if (hubPlayerCharacter == null)
+                if (!TryMarkHubCharacterAnnounced(targetPeer, hubId, characterId))
                 {
                     continue;
                 }
 
                 var update = HubStateUpdate.CreateForCharacterAddtion(hubPlayerCharacter, hubId);
-                var serializedUpdate = HubSerializer.SerializeHubStateUpdate(update);
-                var payload = BuildUtf16StringPayload(serializedUpdate);
+                var payload = BuildUtf16StringPayload(HubSerializer.SerializeHubStateUpdate(update));
                 updates.Add(payload);
-                sentCharacterIds.Add(participant.CharacterId);
+                sentCharacterIds.Add(characterId);
                 sentPlayerIds.Add(hubPlayerCharacter.Snapshot != null ? hubPlayerCharacter.Snapshot.PlayerId : 0UL);
+
+                HubPresenceRegistry.Participant participant;
+                if (!TryGetHubParticipantByCharacterId(characterId, out participant) || participant == null)
+                {
+                    participant = CreateSyntheticParticipant(hubId, characterId, hubPlayerCharacter);
+                }
 
                 LogHubAddPayloadSummary(
                     "roster-replay",
@@ -1959,6 +2010,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 sentCharacterIds = sentCharacterIds,
                 sentPlayerIds = sentPlayerIds,
                 source = source ?? string.Empty,
+                authoritative = true,
             });
 
             _logger.Log(new
@@ -1971,6 +2023,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 source = source ?? string.Empty,
                 sentCount = updates.Count,
                 sentCharacterIds = sentCharacterIds,
+                authoritative = true,
             });
         }
 
@@ -2108,13 +2161,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                 blockedTargets = blockedTargets,
             });
 
-            var moveRequests = new[]
+            var data = BuildHubMovementPayload(hubId, characterId, x, y);
+            if (data == null)
             {
-                new KeyValuePair<string, Vector2D>(characterId, new Vector2D(x, y))
-            };
-
-            var serializedMoves = HubMovementSerializer.Serialize(moveRequests);
-            var data = BuildUtf16StringPayload(serializedMoves);
+                return;
+            }
 
             BroadcastHubFieldEvent(filteredTargets, 4, data, "sent HubCommunicationObject ExecuteMoveToPosition (broadcast)");
         }
@@ -2678,6 +2729,7 @@ namespace Shadowrun.LocalService.Core.Protocols
         private readonly PortedStoryProgressionService _storyProgressionService;
         private readonly PortedSkillPurchaseService _skillPurchaseService;
         private readonly PortedShopInventoryService _shopInventoryService;
+        private readonly PortedHubInstanceManager _portedHubInstanceManager;
 
         // APlay DirectSystem messages include an 8-byte message number the client may use for ordering/dedup.
         // For MetaGameplay pushes we must keep these monotonic even if the client repeats a request with a lower MsgNo.
@@ -2803,6 +2855,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             _storyProgressionService = new PortedStoryProgressionService(_options);
             _skillPurchaseService = new PortedSkillPurchaseService(_options);
             _shopInventoryService = new PortedShopInventoryService(_options);
+            _portedHubInstanceManager = new PortedHubInstanceManager(new PortedHubRepository(new PortedHubLoader()), false);
         }
 
         private ulong AllocateGameClientEntityId()
@@ -3409,6 +3462,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     var activeCareerIndex = 0;
                     var activeCharacterName = "OfflineRunner";
                     string currentHubInstanceId = null;
+                    PortedHubInstance currentHubInstance = null;
                     const int HubReadyFallbackDelayMs = 2500;
                     var hubReadyFallbackLock = new object();
                     var hubReadyFallbackGeneration = 0;
@@ -3788,6 +3842,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                     && !IsNullOrWhiteSpace(movedCharacterId)
                                                     && !string.Equals(movementParticipant.CharacterId, movedCharacterId, StringComparison.OrdinalIgnoreCase))
                                                 {
+                                                    var previousCharacterId = movementParticipant.CharacterId;
                                                     var updatedHubId = !IsNullOrWhiteSpace(movementParticipant.HubId)
                                                         ? movementParticipant.HubId
                                                         : movementHubId;
@@ -3829,6 +3884,33 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                                     movementHubId = updatedHubId;
                                                     movementParticipant = shiftedParticipant;
+
+                                                    if (currentHubInstance != null && !IsNullOrWhiteSpace(movementParticipant != null ? movementParticipant.CharacterId : null))
+                                                    {
+                                                        CareerSlot shiftedSlot = null;
+                                                        if (_userStore != null && !IsNullOrWhiteSpace(activeIdentityHash))
+                                                        {
+                                                            try
+                                                            {
+                                                                shiftedSlot = _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false);
+                                                            }
+                                                            catch
+                                                            {
+                                                                shiftedSlot = null;
+                                                            }
+                                                        }
+
+                                                        var shiftedSnapshot = BuildMappedPlayerCharacterSnapshotForHub(
+                                                            activeIdentityGuid,
+                                                            movedCharacterId,
+                                                            movementParticipant != null ? movementParticipant.CharacterName : activeCharacterName,
+                                                            shiftedSlot);
+                                                        _portedHubInstanceManager.RemoveCharacterFromHub(currentHubInstance, previousCharacterId);
+                                                        if (shiftedSnapshot != null)
+                                                        {
+                                                            currentHubInstance.AddCharacter(shiftedSnapshot);
+                                                        }
+                                                    }
                                                 }
 
                                                 var movementCharacterId = movedCharacterId;
@@ -3838,6 +3920,17 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                     {
                                                         movementCharacterId = movementParticipant.CharacterId;
                                                     }
+                                                }
+
+                                                if (currentHubInstance == null && !IsNullOrWhiteSpace(movementHubId) && _portedHubInstanceManager != null)
+                                                {
+                                                    currentHubInstance = _portedHubInstanceManager.RequestHubInstanceByHubId(movementHubId);
+                                                }
+
+                                                if (currentHubInstance != null && !IsNullOrWhiteSpace(movementCharacterId))
+                                                {
+                                                    currentHubInstance.QueueMoveRequest(movementCharacterId, new Vector2D(movedX, movedY));
+                                                    currentHubInstanceId = currentHubInstance.HubId;
                                                 }
 
                                                 var firstMoveReadyActivated = TryActivateHubReadiness(peer, movementHubId, "first-move");
@@ -3892,6 +3985,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 if (!IsNullOrWhiteSpace(hubIdForPresence))
                                                 {
                                                     currentHubInstanceId = hubIdForPresence;
+                                                    if (_portedHubInstanceManager != null)
+                                                    {
+                                                        currentHubInstance = _portedHubInstanceManager.RequestHubInstanceByHubId(currentHubInstanceId);
+                                                    }
                                                 }
 
                                                 HubPresenceRegistry.Participant currentParticipant;
@@ -3939,6 +4036,13 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 else if (shared.Value.FieldId == 3)
                                 {
                                     cancelHubReadyFallback("hub-leave-field-3");
+                                    HubPresenceRegistry.Participant leavingParticipant;
+                                    _hubPresenceRegistry.TryGetParticipantForPeer(peer, out leavingParticipant);
+                                    if (currentHubInstance != null && leavingParticipant != null && !IsNullOrWhiteSpace(leavingParticipant.CharacterId))
+                                    {
+                                        _portedHubInstanceManager.RemoveCharacterFromHub(currentHubInstance, leavingParticipant.CharacterId);
+                                        currentHubInstance = null;
+                                    }
                                     RemoveHubPresenceWithBroadcast(peer);
                                 }
                             }
@@ -4222,8 +4326,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     : (identityGuid.ToString() + ":" + careerIndex.ToString());
                                 var hubId = slot != null && !IsNullOrWhiteSpace(slot.HubId) ? slot.HubId : DefaultHubId;
 
-                                var hubStatePayload = BuildMetaHubPushPayload(4, SerializeHubStateOrFallback(hubId, characterIdentifier, characterName, slot));
-                                currentHubInstanceId = hubId;
+                                var hubStatePayload = BuildPortedHubStatePayloadForSlot(
+                                    slot,
+                                    identityGuid,
+                                    careerIndex,
+                                    false,
+                                    currentHubInstance,
+                                    out currentHubInstanceId,
+                                    out currentHubInstance);
                                 cachedHubStatePayload = hubStatePayload;
                                 RegisterOrUpdateHubPresenceWithDuplicateRetire(
                                     peer,
@@ -5516,11 +5626,16 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 activeCharacterName = slot.CharacterName;
                                             }
 
-                                            var hubId = !IsNullOrWhiteSpace(slot.HubId) ? slot.HubId : DefaultHubId;
-                                            var characterIdentifier = !IsNullOrWhiteSpace(slot.CharacterIdentifier)
-                                                ? slot.CharacterIdentifier
-                                                : (activeIdentityGuid.ToString() + ":" + slotIndex.ToString());
-                                            cachedHubStatePayload = BuildMetaHubPushPayload(4, SerializeHubStateOrFallback(hubId, characterIdentifier, slot.CharacterName, slot));
+                                            string refreshedHubId;
+                                            cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
+                                                slot,
+                                                activeIdentityGuid,
+                                                slotIndex,
+                                                false,
+                                                currentHubInstance,
+                                                out refreshedHubId,
+                                                out currentHubInstance);
+                                            currentHubInstanceId = refreshedHubId;
 
                                             var msgNoBase = direct.Value.MsgNo + 2;
                                             var summaryJson = BuildCareerSummaryJson(!IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetCareers(activeIdentityHash) : null);
@@ -5558,6 +5673,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 // not only a full metagame snapshot.
                                                 try
                                                 {
+                                                    var characterIdentifier = !IsNullOrWhiteSpace(slot.CharacterIdentifier)
+                                                        ? slot.CharacterIdentifier
+                                                        : (activeIdentityGuid.ToString() + ":" + slotIndex.ToString(CultureInfo.InvariantCulture));
                                                     var pcs = BuildPlayerCharacterSnapshotForSlot(characterIdentifier, slot.CharacterName, slot);
                                                     var serializedPcs = PCSSerializer.SerializePlayerCharacterSnapshot(pcs);
                                                     var pcsPayload = BuildUtf16StringPayload(serializedPcs);
@@ -5711,6 +5829,19 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         ? routedSlot.CharacterName
                                         : activeCharacterName;
 
+                                    var transition = TryExecutePortedHubTransition(
+                                        routedHubId,
+                                        activeIdentityGuid,
+                                        routedCharacterIdentifier,
+                                        routedCharacterName,
+                                        routedSlot,
+                                        currentHubInstance);
+                                    if (transition != null && transition.TargetHubInstance != null)
+                                    {
+                                        currentHubInstance = transition.TargetHubInstance;
+                                        routedHubId = currentHubInstance.HubId;
+                                    }
+
                                     var routedX = previousParticipant != null ? previousParticipant.X : 0f;
                                     var routedY = previousParticipant != null ? previousParticipant.Y : 0f;
 
@@ -5765,7 +5896,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         shouldBroadcastAdd = shouldBroadcastAdd,
                                     });
 
-                                    var serializedSharedHubState = BuildSerializedSharedHubStateOrFallback(routedHubId, routedCharacterIdentifier, routedCharacterName, routedSlot);
+                                    var serializedSharedHubState = currentHubInstance != null
+                                        ? currentHubInstance.SerializedHubState()
+                                        : BuildSerializedSharedHubStateOrFallback(routedHubId, routedCharacterIdentifier, routedCharacterName, routedSlot);
                                     cachedHubStatePayload = BuildMetaHubPushPayload(HubEntityId, serializedSharedHubState);
                                     currentHubInstanceId = routedHubId;
 
@@ -5922,6 +6055,19 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             effectiveHubId = currentSlot.HubId;
                                         }
 
+                                        var transition = TryExecutePortedHubTransition(
+                                            effectiveHubId,
+                                            activeIdentityGuid,
+                                            currentCharacterIdentifier,
+                                            currentCharacterName,
+                                            currentSlot,
+                                            currentHubInstance);
+                                        if (transition != null && transition.TargetHubInstance != null)
+                                        {
+                                            currentHubInstance = transition.TargetHubInstance;
+                                            effectiveHubId = currentHubInstance.HubId;
+                                        }
+
                                         currentHubInstanceId = effectiveHubId;
 
                                         var currentX = previousParticipant != null ? previousParticipant.X : 0f;
@@ -5978,7 +6124,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             shouldBroadcastAdd = shouldBroadcastAdd,
                                         });
 
-                                        var serializedSharedHubState = BuildSerializedSharedHubStateOrFallback(effectiveHubId, currentCharacterIdentifier, currentCharacterName, currentSlot);
+                                        var serializedSharedHubState = currentHubInstance != null
+                                            ? currentHubInstance.SerializedHubState()
+                                            : BuildSerializedSharedHubStateOrFallback(effectiveHubId, currentCharacterIdentifier, currentCharacterName, currentSlot);
                                         cachedHubStatePayload = BuildMetaHubPushPayload(HubEntityId, serializedSharedHubState);
                                     }
 
@@ -6101,11 +6249,16 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 }
 
                                                 // Refresh cached hub payload (used later when client requests hub state).
-                                                var hubId = !IsNullOrWhiteSpace(slot.HubId) ? slot.HubId : DefaultHubId;
-                                                var characterIdentifier = !IsNullOrWhiteSpace(slot.CharacterIdentifier)
-                                                    ? slot.CharacterIdentifier
-                                                    : (activeIdentityGuid.ToString() + ":" + slotIndex.ToString());
-                                                cachedHubStatePayload = BuildMetaHubPushPayload(4, SerializeHubStateOrFallback(hubId, characterIdentifier, slot.CharacterName, slot));
+                                                string refreshedHubId;
+                                                cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
+                                                    slot,
+                                                    activeIdentityGuid,
+                                                    slotIndex,
+                                                    false,
+                                                    currentHubInstance,
+                                                    out refreshedHubId,
+                                                    out currentHubInstance);
+                                                currentHubInstanceId = refreshedHubId;
 
                                                 // Nudge client UI lists.
                                                 var msgNoBase = direct.Value.MsgNo + 2;
@@ -6144,6 +6297,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     activeIdentityHash,
                                     activeIdentityGuid,
                                     activeCareerIndex,
+                                    ref currentHubInstanceId,
+                                    ref currentHubInstance,
                                     ref cachedHubStatePayload,
                                     cachedCreationInfoPayload))
                                 {
@@ -6464,6 +6619,13 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                             cancelHubReadyFallback("socket-closed");
                             connectionClosed.Set();
+                            HubPresenceRegistry.Participant disconnectedParticipant;
+                            _hubPresenceRegistry.TryGetParticipantForPeer(peer, out disconnectedParticipant);
+                            if (currentHubInstance != null && disconnectedParticipant != null && !IsNullOrWhiteSpace(disconnectedParticipant.CharacterId))
+                            {
+                                _portedHubInstanceManager.RemoveCharacterFromHub(currentHubInstance, disconnectedParticipant.CharacterId);
+                                currentHubInstance = null;
+                            }
                             RemoveHubPresenceWithBroadcast(peer);
                             _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "aplay-conn", peer = peer, note = "socket closed" });
                             break;
@@ -6478,6 +6640,13 @@ namespace Shadowrun.LocalService.Core.Protocols
                     }
 
                     cancelHubReadyFallback("connection-teardown");
+                    HubPresenceRegistry.Participant teardownParticipant;
+                    _hubPresenceRegistry.TryGetParticipantForPeer(peer, out teardownParticipant);
+                    if (currentHubInstance != null && teardownParticipant != null && !IsNullOrWhiteSpace(teardownParticipant.CharacterId))
+                    {
+                        _portedHubInstanceManager.RemoveCharacterFromHub(currentHubInstance, teardownParticipant.CharacterId);
+                        currentHubInstance = null;
+                    }
                     RemoveHubPresenceWithBroadcast(peer);
                     UnregisterHubPeerStream(peer, stream);
                 }

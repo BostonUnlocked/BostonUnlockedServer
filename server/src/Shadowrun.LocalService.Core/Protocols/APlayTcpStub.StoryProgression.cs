@@ -21,6 +21,8 @@ namespace Shadowrun.LocalService.Core.Protocols
             string activeIdentityHash,
             Guid activeIdentityGuid,
             int activeCareerIndex,
+            ref string currentHubInstanceId,
+            ref PortedHubInstance currentHubInstance,
             ref byte[] cachedHubStatePayload,
             byte[] cachedCreationInfoPayload)
         {
@@ -185,11 +187,15 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                         try
                         {
-                            var characterIdentifier = !IsNullOrWhiteSpace(slotForStoryRewards.CharacterIdentifier)
-                                ? slotForStoryRewards.CharacterIdentifier
-                                : (activeIdentityGuid.ToString() + ":" + activeCareerIndex.ToString());
                             var forceNewHubInstanceId = (parsedTarget == StoryMissionstate.ReadyToPlay || parsedTarget == StoryMissionstate.Completed || chapterAdvanced);
-                            cachedHubStatePayload = BuildHubStatePayloadForSlot(slotForStoryRewards, characterIdentifier, forceNewHubInstanceId);
+                            cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
+                                slotForStoryRewards,
+                                activeIdentityGuid,
+                                activeCareerIndex,
+                                forceNewHubInstanceId,
+                                currentHubInstance,
+                                out currentHubInstanceId,
+                                out currentHubInstance);
                         }
                         catch
                         {
