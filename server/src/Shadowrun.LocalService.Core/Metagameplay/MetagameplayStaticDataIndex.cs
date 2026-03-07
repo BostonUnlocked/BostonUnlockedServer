@@ -33,6 +33,13 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             public int SellPrice;
         }
 
+        internal sealed class ShopEntryInfo
+        {
+            public string ItemId;
+            public int Price;
+            public MetagameplayAvailabilityCondition Condition;
+        }
+
         private static readonly object CacheLock = new object();
         private static string _cachedPath;
         private static DateTime _cachedLastWriteUtc;
@@ -41,14 +48,14 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
         public readonly Dictionary<string, SkillTreeInfo> SkillTrees;
         public readonly Dictionary<string, List<string>> InitialSkills;
-        public readonly Dictionary<string, Dictionary<string, int>> ShopPrices;
+        public readonly Dictionary<string, Dictionary<string, ShopEntryInfo>> ShopEntries;
         public readonly Dictionary<string, ItemDefinitionInfo> ItemDefinitions;
 
         private MetagameplayStaticDataIndex()
         {
             SkillTrees = new Dictionary<string, SkillTreeInfo>(StringComparer.Ordinal);
             InitialSkills = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-            ShopPrices = new Dictionary<string, Dictionary<string, int>>(StringComparer.OrdinalIgnoreCase);
+            ShopEntries = new Dictionary<string, Dictionary<string, ShopEntryInfo>>(StringComparer.OrdinalIgnoreCase);
             ItemDefinitions = new Dictionary<string, ItemDefinitionInfo>(StringComparer.OrdinalIgnoreCase);
         }
 
@@ -127,13 +134,31 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 return false;
             }
 
-            Dictionary<string, int> shop;
-            if (!ShopPrices.TryGetValue(shopKeeper, out shop) || shop == null)
+            ShopEntryInfo entry;
+            if (!TryGetShopEntry(shopKeeper, itemId, out entry) || entry == null)
             {
                 return false;
             }
 
-            return shop.TryGetValue(itemId, out price);
+            price = entry.Price;
+            return true;
+        }
+
+        public bool TryGetShopEntry(string shopKeeper, string itemId, out ShopEntryInfo entry)
+        {
+            entry = null;
+            if (string.IsNullOrEmpty(shopKeeper) || string.IsNullOrEmpty(itemId))
+            {
+                return false;
+            }
+
+            Dictionary<string, ShopEntryInfo> shop;
+            if (!ShopEntries.TryGetValue(shopKeeper, out shop) || shop == null)
+            {
+                return false;
+            }
+
+            return shop.TryGetValue(itemId, out entry) && entry != null;
         }
 
         public bool TryGetItemDefinition(string itemId, out ItemDefinitionInfo itemDefinition)
@@ -314,11 +339,11 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                     continue;
                 }
 
-                Dictionary<string, int> shopEntries;
-                if (!result.ShopPrices.TryGetValue(internalName, out shopEntries) || shopEntries == null)
+                Dictionary<string, ShopEntryInfo> shopEntries;
+                if (!result.ShopEntries.TryGetValue(internalName, out shopEntries) || shopEntries == null)
                 {
-                    shopEntries = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                    result.ShopPrices[internalName] = shopEntries;
+                    shopEntries = new Dictionary<string, ShopEntryInfo>(StringComparer.OrdinalIgnoreCase);
+                    result.ShopEntries[internalName] = shopEntries;
                 }
 
                 var entries = TryGetObjectArray(shopDefinition, "ShopListEntries");
@@ -341,9 +366,63 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                         continue;
                     }
 
-                    shopEntries[itemId] = GetInt32(entry, "Price", 0);
+                    var shopEntry = new ShopEntryInfo();
+                    shopEntry.ItemId = itemId;
+                    shopEntry.Price = GetInt32(entry, "Price", 0);
+                    shopEntry.Condition = ParseAvailabilityCondition(entry.Contains("Condition") ? entry["Condition"] as IDictionary : null);
+                    shopEntries[itemId] = shopEntry;
                 }
             }
+        }
+
+        private static MetagameplayAvailabilityCondition ParseAvailabilityCondition(IDictionary dict)
+        {
+            if (dict == null)
+            {
+                return null;
+            }
+
+            var condition = new MetagameplayAvailabilityCondition();
+            condition.TypeName = GetString(dict, "TypeName");
+            condition.StorylineReference = GetString(dict, "StorylineReference");
+            condition.ChapterIndex = GetInt32(dict, "ChapterIndex", 0);
+            condition.From = GetDateTime(dict, "From");
+            condition.To = GetDateTime(dict, "To");
+
+            var unlocks = ToObjectArray(dict.Contains("Unlocks") ? dict["Unlocks"] : null);
+            if (unlocks != null && unlocks.Length > 0)
+            {
+                condition.Unlocks = new List<string>();
+                for (var i = 0; i < unlocks.Length; i++)
+                {
+                    var unlock = unlocks[i] as string;
+                    if (!string.IsNullOrEmpty(unlock))
+                    {
+                        condition.Unlocks.Add(unlock);
+                    }
+                }
+            }
+
+            var innerConditions = ToObjectArray(dict.Contains("InnerConditions") ? dict["InnerConditions"] : null);
+            if (innerConditions != null && innerConditions.Length > 0)
+            {
+                condition.InnerConditions = new List<MetagameplayAvailabilityCondition>();
+                for (var i = 0; i < innerConditions.Length; i++)
+                {
+                    var parsedInner = ParseAvailabilityCondition(innerConditions[i] as IDictionary);
+                    if (parsedInner != null)
+                    {
+                        condition.InnerConditions.Add(parsedInner);
+                    }
+                }
+            }
+
+            if (dict.Contains("InnerCondition") && dict["InnerCondition"] is IDictionary)
+            {
+                condition.InnerCondition = ParseAvailabilityCondition(dict["InnerCondition"] as IDictionary);
+            }
+
+            return condition;
         }
 
         private static void ParseItemDefinition(IDictionary component, MetagameplayStaticDataIndex result)
@@ -435,6 +514,23 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             catch
             {
                 return defaultValue;
+            }
+        }
+
+        private static DateTime GetDateTime(IDictionary dict, string key)
+        {
+            if (dict == null || string.IsNullOrEmpty(key) || !dict.Contains(key) || dict[key] == null)
+            {
+                return default(DateTime);
+            }
+
+            try
+            {
+                return Convert.ToDateTime(dict[key], CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                return default(DateTime);
             }
         }
     }

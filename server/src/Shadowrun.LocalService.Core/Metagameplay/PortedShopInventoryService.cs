@@ -48,7 +48,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             var allRequested = requestedChanges.ItemChanges ?? new ItemChange[0];
             var totalNuyenChange = 0;
 
-            if (string.IsNullOrEmpty(requestedChanges.ShopKeeper) || !index.ShopPrices.ContainsKey(requestedChanges.ShopKeeper))
+            if (string.IsNullOrEmpty(requestedChanges.ShopKeeper) || !index.ShopEntries.ContainsKey(requestedChanges.ShopKeeper))
             {
                 result.ShopChanges = new ShopItemChanges
                 {
@@ -71,7 +71,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
                 if (change.Delta == 1)
                 {
-                    if (!TryApplyBuy(index, requestedChanges.ShopKeeper, tempInventory, change, applied, ref totalNuyenChange))
+                    if (!TryApplyBuy(index, requestedChanges.ShopKeeper, slot, tempInventory, change, applied, ref totalNuyenChange))
                     {
                         result.ShopChanges = Fail(allRequested);
                         return result;
@@ -124,7 +124,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             };
         }
 
-        private static bool TryApplyBuy(MetagameplayStaticDataIndex index, string shopKeeper, Dictionary<string, int> tempInventory, ItemChange requestedChange, List<ItemChange> applied, ref int totalNuyenChange)
+        private static bool TryApplyBuy(MetagameplayStaticDataIndex index, string shopKeeper, CareerSlot slot, Dictionary<string, int> tempInventory, ItemChange requestedChange, List<ItemChange> applied, ref int totalNuyenChange)
         {
             MetagameplayStaticDataIndex.ItemDefinitionInfo itemDefinition;
             if (!index.TryGetItemDefinition(requestedChange.ItemDefintionId, out itemDefinition) || itemDefinition == null)
@@ -132,8 +132,13 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 return false;
             }
 
-            int shopPrice;
-            if (!index.TryGetShopPrice(shopKeeper, requestedChange.ItemDefintionId, out shopPrice))
+            MetagameplayStaticDataIndex.ShopEntryInfo shopEntry;
+            if (!index.TryGetShopEntry(shopKeeper, requestedChange.ItemDefintionId, out shopEntry) || shopEntry == null)
+            {
+                return false;
+            }
+
+            if (!MetagameplayAvailabilityEvaluator.IsFulfilled(shopEntry.Condition, MetagameplayAvailabilityContext.Create(slot)))
             {
                 return false;
             }
@@ -157,7 +162,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
             tempInventory[possessionKey] = existingAmount + 1;
             applied.Add(CloneItemChange(requestedChange));
-            totalNuyenChange -= shopPrice;
+            totalNuyenChange -= shopEntry.Price;
             return true;
         }
 

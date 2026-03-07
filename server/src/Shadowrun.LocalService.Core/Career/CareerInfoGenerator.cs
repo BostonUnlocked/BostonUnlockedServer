@@ -99,12 +99,13 @@ namespace Shadowrun.LocalService.Core.Career
                 var storyKey = BuildStoryProgressKey(slot);
                 var skillKey = BuildSkillTreeKey(slot);
                 var itemKey = BuildItemPossessionsKey(slot);
+                var unlockKey = BuildCareerUnlocksCacheKey(identityGuid, slot);
                 var unlockCacheKey = BuildCouponUnlockCacheKey(identityGuid);
 
                 var karma = slot != null ? slot.Karma : 0;
                 var spentKarma = slot != null ? slot.SpentKarma : 0;
                 var nuyen = slot != null ? slot.Nuyen : 0;
-                var cacheKey = identityGuid.ToString() + "|" + careerIndex.ToString() + "|" + (characterName ?? string.Empty) + "|" + (pendingPersistenceCreation ? "1" : "0") + "|" + bodytype.ToString() + "|" + skin.ToString() + "|" + story.ToString() + "|" + portraitPath + "|" + voiceset + "|" + (wants ? "1" : "0") + "|" + karma.ToString(CultureInfo.InvariantCulture) + "|" + spentKarma.ToString(CultureInfo.InvariantCulture) + "|" + nuyen.ToString(CultureInfo.InvariantCulture) + "|" + equippedKey + "|" + loadoutKey + "|" + storyKey + "|" + skillKey + "|" + itemKey + "|" + unlockCacheKey;
+                var cacheKey = identityGuid.ToString() + "|" + careerIndex.ToString() + "|" + (characterName ?? string.Empty) + "|" + (pendingPersistenceCreation ? "1" : "0") + "|" + bodytype.ToString() + "|" + skin.ToString() + "|" + story.ToString() + "|" + portraitPath + "|" + voiceset + "|" + (wants ? "1" : "0") + "|" + karma.ToString(CultureInfo.InvariantCulture) + "|" + spentKarma.ToString(CultureInfo.InvariantCulture) + "|" + nuyen.ToString(CultureInfo.InvariantCulture) + "|" + equippedKey + "|" + loadoutKey + "|" + storyKey + "|" + skillKey + "|" + itemKey + "|" + unlockKey + "|" + unlockCacheKey;
                 string cached;
                 if (_cache.TryGetValue(cacheKey, out cached) && !IsNullOrWhiteSpace(cached))
                 {
@@ -136,7 +137,7 @@ namespace Shadowrun.LocalService.Core.Career
 #pragma warning disable 618 // PlayerCharacterSnapshot() is obsolete; recommended factory is in unavailable server-side DLLs.
                 var pcs = new PlayerCharacterSnapshot();
 #pragma warning restore 618
-                var unlock = BuildUnlockContainer(identityGuid);
+                var unlock = BuildUnlockContainer(identityGuid, slot);
                 var inventory = BuildInventoryFromSlot(slot);
                 var story = BuildStoryProgress(slot);
                 var mgd = new MetagameplayData(string.Empty, unlock, string.Empty, inventory, story);
@@ -269,10 +270,22 @@ namespace Shadowrun.LocalService.Core.Career
             return string.Join(";", unlocks.ToArray());
         }
 
-        private UnlockContainer BuildUnlockContainer(Guid identityGuid)
+        private string BuildCareerUnlocksCacheKey(Guid identityGuid, CareerSlot slot)
+        {
+            var unlocks = GetAllActiveUnlocks(identityGuid, slot);
+            if (unlocks.Count <= 0)
+            {
+                return string.Empty;
+            }
+
+            unlocks.Sort(StringComparer.OrdinalIgnoreCase);
+            return string.Join(";", unlocks.ToArray());
+        }
+
+        private UnlockContainer BuildUnlockContainer(Guid identityGuid, CareerSlot slot)
         {
             var container = new UnlockContainer();
-            var unlocks = GetCouponUnlocksForIdentity(identityGuid);
+            var unlocks = GetAllActiveUnlocks(identityGuid, slot);
             for (var i = 0; i < unlocks.Count; i++)
             {
                 var technicalName = unlocks[i];
@@ -289,6 +302,36 @@ namespace Shadowrun.LocalService.Core.Career
             }
 
             return container;
+        }
+
+        private List<string> GetAllActiveUnlocks(Guid identityGuid, CareerSlot slot)
+        {
+            var unlocks = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            var couponUnlocks = GetCouponUnlocksForIdentity(identityGuid);
+            for (var i = 0; i < couponUnlocks.Count; i++)
+            {
+                var unlock = couponUnlocks[i];
+                if (!IsNullOrWhiteSpace(unlock) && seen.Add(unlock))
+                {
+                    unlocks.Add(unlock);
+                }
+            }
+
+            if (slot != null && slot.ActiveUnlocks != null)
+            {
+                for (var i = 0; i < slot.ActiveUnlocks.Count; i++)
+                {
+                    var unlock = slot.ActiveUnlocks[i];
+                    if (!IsNullOrWhiteSpace(unlock) && seen.Add(unlock))
+                    {
+                        unlocks.Add(unlock);
+                    }
+                }
+            }
+
+            return unlocks;
         }
 
         private List<string> GetCouponUnlocksForIdentity(Guid identityGuid)

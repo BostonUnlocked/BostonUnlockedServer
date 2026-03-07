@@ -3494,6 +3494,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
             }
 
+            if (!HasAllActiveUnlocks(slot, chapter.RequiredUnlocks))
+            {
+                return false;
+            }
+
             var nextIndex = currentIndex + 1;
             if (nextIndex >= storyline.Chapters.Count)
             {
@@ -3560,6 +3565,88 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             return true;
+        }
+
+        private static bool HasAllActiveUnlocks(CareerSlot slot, List<string> requiredUnlocks)
+        {
+            if (requiredUnlocks == null || requiredUnlocks.Count <= 0)
+            {
+                return true;
+            }
+
+            if (slot == null || slot.ActiveUnlocks == null || slot.ActiveUnlocks.Count <= 0)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < requiredUnlocks.Count; i++)
+            {
+                var requiredUnlock = requiredUnlocks[i];
+                if (IsNullOrWhiteSpace(requiredUnlock))
+                {
+                    continue;
+                }
+
+                if (!slot.ActiveUnlocks.Contains(requiredUnlock))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static string[] AddActiveUnlocks(CareerSlot slot, string[] unlocks)
+        {
+            if (slot == null || unlocks == null || unlocks.Length <= 0)
+            {
+                return new string[0];
+            }
+
+            if (slot.ActiveUnlocks == null)
+            {
+                slot.ActiveUnlocks = new List<string>();
+            }
+
+            var added = new List<string>();
+            for (var i = 0; i < unlocks.Length; i++)
+            {
+                var unlock = unlocks[i];
+                if (IsNullOrWhiteSpace(unlock) || slot.ActiveUnlocks.Contains(unlock))
+                {
+                    continue;
+                }
+
+                slot.ActiveUnlocks.Add(unlock);
+                added.Add(unlock);
+            }
+
+            return added.ToArray();
+        }
+
+        private static string[] RemoveActiveUnlocks(CareerSlot slot, string[] unlocks)
+        {
+            if (slot == null || slot.ActiveUnlocks == null || slot.ActiveUnlocks.Count <= 0 || unlocks == null || unlocks.Length <= 0)
+            {
+                return new string[0];
+            }
+
+            var removed = new List<string>();
+            for (var i = 0; i < unlocks.Length; i++)
+            {
+                var unlock = unlocks[i];
+                if (IsNullOrWhiteSpace(unlock))
+                {
+                    continue;
+                }
+
+                if (slot.ActiveUnlocks.Remove(unlock))
+                {
+                    removed.Add(unlock);
+                }
+            }
+
+            return removed.ToArray();
         }
 
         private static bool TryGetUlong(IDictionary dict, string key, out ulong value)
@@ -6555,6 +6642,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         int storyKarma = 0;
                                         int storyNuyen = 0;
                                         var storyItemChangesApplied = new List<ItemChange>();
+                                        var storyGrantedUnlocks = new string[0];
                                         var grantedAnyStoryRewards = false;
                                         if (shouldGrantStoryRewards && slotForStoryRewards != null)
                                         {
@@ -6568,6 +6656,12 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 if (TryResolveMissionStoryCurrencyReward(missionName, "Victory", "Nuyen", out found) && found != 0)
                                                 {
                                                     storyNuyen = found;
+                                                }
+
+                                                string[] resolvedStoryUnlocks;
+                                                if (TryResolveMissionStoryRewardUnlocks(missionName, "Victory", out resolvedStoryUnlocks) && resolvedStoryUnlocks != null && resolvedStoryUnlocks.Length > 0)
+                                                {
+                                                    storyGrantedUnlocks = AddActiveUnlocks(slotForStoryRewards, resolvedStoryUnlocks);
                                                 }
 
                                                 ItemChange[] storyItems;
@@ -6650,7 +6744,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                     }
                                                 }
 
-                                                grantedAnyStoryRewards = (storyKarma != 0 || storyNuyen != 0 || (storyItemChangesApplied != null && storyItemChangesApplied.Count > 0));
+                                                grantedAnyStoryRewards = (storyKarma != 0 || storyNuyen != 0 || (storyItemChangesApplied != null && storyItemChangesApplied.Count > 0) || storyGrantedUnlocks.Length > 0);
                                                 if (grantedAnyStoryRewards)
                                                 {
                                                     try { _userStore.UpsertCareer(slotForStoryRewards); } catch { }
@@ -6667,6 +6761,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                         karmaTotal = slotForStoryRewards.Karma,
                                                         nuyenDelta = storyNuyen,
                                                         nuyenTotal = slotForStoryRewards.Nuyen,
+                                                        grantedUnlocks = storyGrantedUnlocks,
                                                         itemChanges = storyItemChangesApplied != null ? storyItemChangesApplied.Count : 0,
                                                         careerIndex = activeCareerIndex,
                                                     });
@@ -6676,6 +6771,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             {
                                                 storyKarma = 0;
                                                 storyNuyen = 0;
+                                                storyGrantedUnlocks = new string[0];
                                                 try { storyItemChangesApplied.Clear(); } catch { }
                                                 grantedAnyStoryRewards = false;
                                             }
@@ -6749,7 +6845,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                                 var rewardJson = Json.Serialize(new Dictionary<string, object>
                                                 {
-                                                    { "GrantedUnlocks", new string[0] },
+                                                    { "GrantedUnlocks", storyGrantedUnlocks },
                                                     { "EarnedCurrencies", earnedCurrencies.ToArray() },
                                                     { "ItemChanges", storyItemPayload },
                                                 });

@@ -2455,6 +2455,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 target.MainCampaignCurrentChapter = 0;
                 target.MainCampaignMissionStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 target.MainCampaignInteractedNpcs = new List<string>();
+                    target.ActiveUnlocks = new List<string>();
                 target.Bodytype = 0UL;
                 target.SkinTextureIndex = 0;
                 target.BackgroundStory = 0UL;
@@ -2546,6 +2547,7 @@ namespace Shadowrun.LocalService.Core.Persistence
         public int MainCampaignCurrentChapter;
         public Dictionary<string, string> MainCampaignMissionStates;
         public List<string> MainCampaignInteractedNpcs;
+        public List<string> ActiveUnlocks;
 
         // Minimal persistent inventory for hub shops (items bought/sold).
         // Key format: "{ItemId}|{Quality}|{Flavour}" (quality/flavour default to 0/-1).
@@ -2584,6 +2586,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             dict["MainCampaignCurrentChapter"] = MainCampaignCurrentChapter;
             dict["MainCampaignMissionStates"] = MainCampaignMissionStates ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             dict["MainCampaignInteractedNpcs"] = MainCampaignInteractedNpcs ?? new List<string>();
+            dict["ActiveUnlocks"] = ActiveUnlocks ?? new List<string>();
             dict["ItemPossessions"] = ItemPossessions ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             dict["AppliedCouponItemPackages"] = AppliedCouponItemPackages ?? new List<string>();
             return dict;
@@ -2836,6 +2839,40 @@ namespace Shadowrun.LocalService.Core.Persistence
                 slot.MainCampaignInteractedNpcs = new List<string>();
             }
 
+            slot.ActiveUnlocks = new List<string>();
+            try
+            {
+                if (dict.Contains("ActiveUnlocks") && dict["ActiveUnlocks"] != null)
+                {
+                    var asArray = dict["ActiveUnlocks"] as object[];
+                    if (asArray == null)
+                    {
+                        var asList = dict["ActiveUnlocks"] as ArrayList;
+                        if (asList != null)
+                        {
+                            asArray = new object[asList.Count];
+                            asList.CopyTo(asArray);
+                        }
+                    }
+
+                    if (asArray != null)
+                    {
+                        for (var i = 0; i < asArray.Length; i++)
+                        {
+                            var s = asArray[i] as string;
+                            if (!IsNullOrWhiteSpace(s) && !slot.ActiveUnlocks.Contains(s))
+                            {
+                                slot.ActiveUnlocks.Add(s);
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                slot.ActiveUnlocks = new List<string>();
+            }
+
             if (slot.CharacterName == null) slot.CharacterName = string.Empty;
             if (slot.Portrait == null) slot.Portrait = string.Empty;
             if (slot.PortraitPath == null) slot.PortraitPath = string.Empty;
@@ -2853,6 +2890,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             if (slot.SkillTreeDefinitions == null) slot.SkillTreeDefinitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
             if (slot.MainCampaignMissionStates == null) slot.MainCampaignMissionStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (slot.MainCampaignInteractedNpcs == null) slot.MainCampaignInteractedNpcs = new List<string>();
+            if (slot.ActiveUnlocks == null) slot.ActiveUnlocks = new List<string>();
 
             slot.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             try

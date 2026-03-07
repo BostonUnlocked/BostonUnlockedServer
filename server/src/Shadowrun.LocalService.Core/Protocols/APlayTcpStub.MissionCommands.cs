@@ -777,6 +777,26 @@ namespace Shadowrun.LocalService.Core.Protocols
                 nuyenReward = found;
             }
 
+            var grantedUnlocks = new string[0];
+            if (!leavingMidMission)
+            {
+                string[] resolvedUnlocks;
+                if (TryResolveMissionRewardUnlocks(completedMapName, missionOutcome, out resolvedUnlocks) && resolvedUnlocks != null && resolvedUnlocks.Length > 0)
+                {
+                    grantedUnlocks = resolvedUnlocks;
+                }
+            }
+
+            var deactivatedUnlocks = new string[0];
+            if (!leavingMidMission && isVictory)
+            {
+                string[] resolvedUnlocks;
+                if (TryResolveMissionUnlockDeactivationsOnVictory(completedMapName, out resolvedUnlocks) && resolvedUnlocks != null && resolvedUnlocks.Length > 0)
+                {
+                    deactivatedUnlocks = resolvedUnlocks;
+                }
+            }
+
             if (lootNuyenReward > 0)
             {
                 _logger.Log(new
@@ -795,6 +815,8 @@ namespace Shadowrun.LocalService.Core.Protocols
             if (_userStore != null)
             {
                 rewardSlot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false) : null;
+                var appliedGrantedUnlocks = new string[0];
+                var appliedDeactivatedUnlocks = new string[0];
 
                 var appliedLootItems = 0;
                 if (rewardSlot != null && lootItemChanges != null && lootItemChanges.Count > 0)
@@ -835,7 +857,13 @@ namespace Shadowrun.LocalService.Core.Protocols
                     }
                 }
 
-                if (rewardSlot != null && (karmaReward > 0 || nuyenReward > 0 || appliedLootItems > 0))
+                if (rewardSlot != null)
+                {
+                    appliedGrantedUnlocks = AddActiveUnlocks(rewardSlot, grantedUnlocks);
+                    appliedDeactivatedUnlocks = RemoveActiveUnlocks(rewardSlot, deactivatedUnlocks);
+                }
+
+                if (rewardSlot != null && (karmaReward > 0 || nuyenReward > 0 || appliedLootItems > 0 || appliedGrantedUnlocks.Length > 0 || appliedDeactivatedUnlocks.Length > 0))
                 {
                     if (karmaReward > 0)
                     {
@@ -885,6 +913,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                         nuyenTotal = rewardSlot.Nuyen,
                         lootItemChanges = lootItemChanges != null ? lootItemChanges.Count : 0,
                         lootItemsApplied = appliedLootItems,
+                        grantedUnlocks = appliedGrantedUnlocks,
+                        deactivatedUnlocks = appliedDeactivatedUnlocks,
                         careerIndex = activeCareerIndex,
                     });
 
@@ -933,7 +963,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                         var missionRewardJson = Json.Serialize(new Dictionary<string, object>
                         {
-                            { "GrantedUnlocks", new string[0] },
+                            { "GrantedUnlocks", appliedGrantedUnlocks },
                             { "EarnedCurrencies", earnedCurrencies.ToArray() },
                             { "ItemChanges", itemChangesPayload },
                         });

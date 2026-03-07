@@ -18,6 +18,8 @@ namespace Shadowrun.LocalService.Core.Protocols
         private static readonly object MissionRewardMapLock = new object();
         private static Dictionary<string, int> _missionRewardMap;
         private static Dictionary<string, ItemChange[]> _missionRewardItemChangesMap;
+        private static Dictionary<string, string[]> _missionRewardUnlocksMap;
+        private static Dictionary<string, string[]> _missionUnlockDeactivationMap;
         private static string _missionRewardMapSourceDir;
         private static readonly JavaScriptSerializer Json = CreateSerializer();
 
@@ -433,6 +435,122 @@ namespace Shadowrun.LocalService.Core.Protocols
             return TryResolveMissionItemChangesInternal("StoryRewards", missionName, missionOutcome, out itemChanges);
         }
 
+        private bool TryResolveMissionRewardUnlocks(string missionName, string missionOutcome, out string[] unlocks)
+        {
+            return TryResolveMissionRewardUnlocksInternal("Rewards", missionName, missionOutcome, out unlocks);
+        }
+
+        private bool TryResolveMissionStoryRewardUnlocks(string missionName, string missionOutcome, out string[] unlocks)
+        {
+            return TryResolveMissionRewardUnlocksInternal("StoryRewards", missionName, missionOutcome, out unlocks);
+        }
+
+        private bool TryResolveMissionRewardUnlocksInternal(string rewardSection, string missionName, string missionOutcome, out string[] unlocks)
+        {
+            unlocks = null;
+            try
+            {
+                if (IsNullOrWhiteSpace(rewardSection) || IsNullOrWhiteSpace(missionName) || IsNullOrWhiteSpace(missionOutcome))
+                {
+                    return false;
+                }
+
+                var dir = _options != null ? _options.StaticDataDir : null;
+                if (IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
+                {
+                    return false;
+                }
+
+                Dictionary<string, string[]> map;
+                lock (MissionRewardMapLock)
+                {
+                    if (_missionRewardMap == null || _missionRewardItemChangesMap == null || _missionRewardUnlocksMap == null || _missionUnlockDeactivationMap == null || !string.Equals(_missionRewardMapSourceDir, dir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Dictionary<string, int> currency;
+                        Dictionary<string, ItemChange[]> items;
+                        Dictionary<string, string[]> rewardUnlocks;
+                        Dictionary<string, string[]> deactivatedUnlocks;
+                        LoadMissionRewardMaps(dir, out currency, out items, out rewardUnlocks, out deactivatedUnlocks);
+                        _missionRewardMap = currency;
+                        _missionRewardItemChangesMap = items;
+                        _missionRewardUnlocksMap = rewardUnlocks;
+                        _missionUnlockDeactivationMap = deactivatedUnlocks;
+                        _missionRewardMapSourceDir = dir;
+                    }
+                    map = _missionRewardUnlocksMap;
+                }
+
+                if (map == null)
+                {
+                    return false;
+                }
+
+                var key = rewardSection + "|" + missionName + "|" + missionOutcome;
+                string[] found;
+                if (map.TryGetValue(key, out found) && found != null && found.Length > 0)
+                {
+                    unlocks = found;
+                    return true;
+                }
+
+                return false;
+            }
+            catch
+            {
+                unlocks = null;
+                return false;
+            }
+        }
+
+        private bool TryResolveMissionUnlockDeactivationsOnVictory(string missionName, out string[] unlocks)
+        {
+            unlocks = null;
+            try
+            {
+                if (IsNullOrWhiteSpace(missionName))
+                {
+                    return false;
+                }
+
+                var dir = _options != null ? _options.StaticDataDir : null;
+                if (IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
+                {
+                    return false;
+                }
+
+                Dictionary<string, string[]> map;
+                lock (MissionRewardMapLock)
+                {
+                    if (_missionRewardMap == null || _missionRewardItemChangesMap == null || _missionRewardUnlocksMap == null || _missionUnlockDeactivationMap == null || !string.Equals(_missionRewardMapSourceDir, dir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Dictionary<string, int> currency;
+                        Dictionary<string, ItemChange[]> items;
+                        Dictionary<string, string[]> rewardUnlocks;
+                        Dictionary<string, string[]> deactivatedUnlocks;
+                        LoadMissionRewardMaps(dir, out currency, out items, out rewardUnlocks, out deactivatedUnlocks);
+                        _missionRewardMap = currency;
+                        _missionRewardItemChangesMap = items;
+                        _missionRewardUnlocksMap = rewardUnlocks;
+                        _missionUnlockDeactivationMap = deactivatedUnlocks;
+                        _missionRewardMapSourceDir = dir;
+                    }
+                    map = _missionUnlockDeactivationMap;
+                }
+
+                if (map == null)
+                {
+                    return false;
+                }
+
+                return map.TryGetValue(missionName, out unlocks) && unlocks != null && unlocks.Length > 0;
+            }
+            catch
+            {
+                unlocks = null;
+                return false;
+            }
+        }
+
         private bool TryResolveMissionItemChangesInternal(string rewardSection, string missionName, string missionOutcome, out ItemChange[] itemChanges)
         {
             itemChanges = null;
@@ -452,13 +570,17 @@ namespace Shadowrun.LocalService.Core.Protocols
                 Dictionary<string, ItemChange[]> map;
                 lock (MissionRewardMapLock)
                 {
-                    if (_missionRewardMap == null || _missionRewardItemChangesMap == null || !string.Equals(_missionRewardMapSourceDir, dir, StringComparison.OrdinalIgnoreCase))
+                    if (_missionRewardMap == null || _missionRewardItemChangesMap == null || _missionRewardUnlocksMap == null || _missionUnlockDeactivationMap == null || !string.Equals(_missionRewardMapSourceDir, dir, StringComparison.OrdinalIgnoreCase))
                     {
                         Dictionary<string, int> currency;
                         Dictionary<string, ItemChange[]> items;
-                        LoadMissionRewardMaps(dir, out currency, out items);
+                        Dictionary<string, string[]> rewardUnlocks;
+                        Dictionary<string, string[]> deactivatedUnlocks;
+                        LoadMissionRewardMaps(dir, out currency, out items, out rewardUnlocks, out deactivatedUnlocks);
                         _missionRewardMap = currency;
                         _missionRewardItemChangesMap = items;
+                        _missionRewardUnlocksMap = rewardUnlocks;
+                        _missionUnlockDeactivationMap = deactivatedUnlocks;
                         _missionRewardMapSourceDir = dir;
                     }
                     map = _missionRewardItemChangesMap;
@@ -505,13 +627,17 @@ namespace Shadowrun.LocalService.Core.Protocols
                 Dictionary<string, int> map;
                 lock (MissionRewardMapLock)
                 {
-                    if (_missionRewardMap == null || !string.Equals(_missionRewardMapSourceDir, dir, StringComparison.OrdinalIgnoreCase))
+                    if (_missionRewardMap == null || _missionRewardItemChangesMap == null || _missionRewardUnlocksMap == null || _missionUnlockDeactivationMap == null || !string.Equals(_missionRewardMapSourceDir, dir, StringComparison.OrdinalIgnoreCase))
                     {
                         Dictionary<string, int> currency;
                         Dictionary<string, ItemChange[]> items;
-                        LoadMissionRewardMaps(dir, out currency, out items);
+                        Dictionary<string, string[]> rewardUnlocks;
+                        Dictionary<string, string[]> deactivatedUnlocks;
+                        LoadMissionRewardMaps(dir, out currency, out items, out rewardUnlocks, out deactivatedUnlocks);
                         _missionRewardMap = currency;
                         _missionRewardItemChangesMap = items;
+                        _missionRewardUnlocksMap = rewardUnlocks;
+                        _missionUnlockDeactivationMap = deactivatedUnlocks;
                         _missionRewardMapSourceDir = dir;
                     }
                     map = _missionRewardMap;
@@ -641,10 +767,12 @@ namespace Shadowrun.LocalService.Core.Protocols
             return result;
         }
 
-        private static void LoadMissionRewardMaps(string staticDataDir, out Dictionary<string, int> currencyMap, out Dictionary<string, ItemChange[]> itemChangesMap)
+        private static void LoadMissionRewardMaps(string staticDataDir, out Dictionary<string, int> currencyMap, out Dictionary<string, ItemChange[]> itemChangesMap, out Dictionary<string, string[]> rewardUnlocksMap, out Dictionary<string, string[]> unlockDeactivationMap)
         {
             currencyMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             itemChangesMap = new Dictionary<string, ItemChange[]>(StringComparer.OrdinalIgnoreCase);
+            rewardUnlocksMap = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+            unlockDeactivationMap = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
 
             try
             {
@@ -724,6 +852,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                         {
                             TryAddMissionCurrencyRewards(currencyMap, "Rewards", missionName, rewards);
                             TryAddMissionItemChanges(itemChangesMap, "Rewards", missionName, rewards);
+                            TryAddMissionRewardUnlocks(rewardUnlocksMap, "Rewards", missionName, rewards);
                         }
 
                         var storyRewards = mission.Contains("StoryRewards") ? (mission["StoryRewards"] as IDictionary) : null;
@@ -731,13 +860,118 @@ namespace Shadowrun.LocalService.Core.Protocols
                         {
                             TryAddMissionCurrencyRewards(currencyMap, "StoryRewards", missionName, storyRewards);
                             TryAddMissionItemChanges(itemChangesMap, "StoryRewards", missionName, storyRewards);
+                            TryAddMissionRewardUnlocks(rewardUnlocksMap, "StoryRewards", missionName, storyRewards);
                         }
+
+                        TryAddMissionUnlockDeactivations(unlockDeactivationMap, missionName, mission);
                     }
                 }
             }
             catch
             {
                 // best-effort; leave maps as-is
+                return;
+            }
+        }
+
+        private static void TryAddMissionRewardUnlocks(Dictionary<string, string[]> map, string rewardSection, string missionName, IDictionary rewardDef)
+        {
+            try
+            {
+                if (map == null || IsNullOrWhiteSpace(rewardSection) || IsNullOrWhiteSpace(missionName) || rewardDef == null)
+                {
+                    return;
+                }
+
+                if (!rewardDef.Contains("GrantedUnlocks") || rewardDef["GrantedUnlocks"] == null)
+                {
+                    return;
+                }
+
+                object[] unlocks = rewardDef["GrantedUnlocks"] as object[];
+                if (unlocks == null)
+                {
+                    var list = rewardDef["GrantedUnlocks"] as ArrayList;
+                    if (list != null)
+                    {
+                        unlocks = new object[list.Count];
+                        list.CopyTo(unlocks);
+                    }
+                }
+
+                if (unlocks == null || unlocks.Length == 0)
+                {
+                    return;
+                }
+
+                var values = new List<string>();
+                for (var i = 0; i < unlocks.Length; i++)
+                {
+                    var unlock = unlocks[i] as string;
+                    if (!IsNullOrWhiteSpace(unlock) && !values.Contains(unlock))
+                    {
+                        values.Add(unlock);
+                    }
+                }
+
+                if (values.Count > 0)
+                {
+                    map[rewardSection + "|" + missionName + "|Victory"] = values.ToArray();
+                }
+            }
+            catch
+            {
+                return;
+            }
+        }
+
+        private static void TryAddMissionUnlockDeactivations(Dictionary<string, string[]> map, string missionName, IDictionary mission)
+        {
+            try
+            {
+                if (map == null || IsNullOrWhiteSpace(missionName) || mission == null)
+                {
+                    return;
+                }
+
+                if (!mission.Contains("UnlocksDeactivatedOnVictory") || mission["UnlocksDeactivatedOnVictory"] == null)
+                {
+                    return;
+                }
+
+                object[] unlocks = mission["UnlocksDeactivatedOnVictory"] as object[];
+                if (unlocks == null)
+                {
+                    var list = mission["UnlocksDeactivatedOnVictory"] as ArrayList;
+                    if (list != null)
+                    {
+                        unlocks = new object[list.Count];
+                        list.CopyTo(unlocks);
+                    }
+                }
+
+                if (unlocks == null || unlocks.Length == 0)
+                {
+                    return;
+                }
+
+                var values = new List<string>();
+                for (var i = 0; i < unlocks.Length; i++)
+                {
+                    var unlock = unlocks[i] as string;
+                    if (!IsNullOrWhiteSpace(unlock) && !values.Contains(unlock))
+                    {
+                        values.Add(unlock);
+                    }
+                }
+
+                if (values.Count > 0)
+                {
+                    map[missionName] = values.ToArray();
+                }
+            }
+            catch
+            {
                 return;
             }
         }
