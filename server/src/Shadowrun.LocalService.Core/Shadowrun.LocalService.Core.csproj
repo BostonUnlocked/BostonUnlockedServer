@@ -107,6 +107,7 @@
     <Compile Include="Career\CareerInfoGenerator.cs" />
     <Compile Include="Career\MatchConfigurationGenerator.cs" />
     <Compile Include="AILogic\AiDecision.cs" />
+    <Compile Include="AILogic\AiAgentSnapshotFactory.cs" />
     <Compile Include="AILogic\AiMovementScorer.cs" />
     <Compile Include="AILogic\BasicValuationContext.cs" />
     <Compile Include="AILogic\BasicValuationFactory.cs" />
@@ -121,6 +122,9 @@
     <Compile Include="AILogic\NullAgentTemplateAiConfigLookup.cs" />
     <Compile Include="AILogic\NullAiDecisionEngine.cs" />
     <Compile Include="AILogic\PlannedAiAction.cs" />
+    <Compile Include="AILogic\PortedAIAttackPlanner.cs" />
+    <Compile Include="AILogic\PortedAIMovementPlanner.cs" />
+    <Compile Include="AILogic\PortedAiPlanner.cs" />
     <Compile Include="AILogic\SkillSelectionStrategyFactory.cs" />
     <Compile Include="Persistence\LocalUserStore.cs" />
     <Compile Include="Persistence\LocalUserStore.IO.cs" />

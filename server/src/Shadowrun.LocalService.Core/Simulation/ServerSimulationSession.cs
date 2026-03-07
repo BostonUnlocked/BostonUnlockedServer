@@ -368,7 +368,7 @@ namespace Shadowrun.LocalService.Core.Simulation
             {
                 aiDecisionEngine = new ConfigDrivenAiDecisionEngine(
                     new EntityComponentAiBehaviourConfigLookup(),
-                    new SkillSelectionStrategyFactory(),
+                    new SkillSelectionStrategyFactory(gameworldInstance),
                     random);
             }
             else
@@ -376,10 +376,19 @@ namespace Shadowrun.LocalService.Core.Simulation
                 aiDecisionEngine = new NullAiDecisionEngine();
             }
 
-            IAiPlanner aiPlanner = new DecisionEngineAiPlanner(
+            var fallbackAiPlanner = new DecisionEngineAiPlanner(
                 enableAiLogic,
                 aiDecisionEngine,
                 gameworldInstance);
+
+            IAiPlanner aiPlanner = new PortedAiPlanner(
+                enableAiLogic,
+                gameworldInstance,
+                random,
+                new EntityComponentAiBehaviourConfigLookup(),
+                new SkillSelectionStrategyFactory(gameworldInstance),
+                new BasicValuationFactory(),
+                fallbackAiPlanner);
 
             return new ServerSimulationSession(
                 logger,
