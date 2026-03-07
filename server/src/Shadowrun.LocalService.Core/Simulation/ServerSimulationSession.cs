@@ -29,6 +29,7 @@ namespace Shadowrun.LocalService.Core.Simulation
 {
     public sealed partial class ServerSimulationSession
     {
+        public const int EndActorTurnSkillId = 99996;
         public const int EndTeamTurnSkillId = 99997;
         public const int SwitchToCombatSkillId = 90011;
 
@@ -868,6 +869,15 @@ namespace Shadowrun.LocalService.Core.Simulation
                 return true;
             }
 
+            // Original SRO.Server allows the transition-to-combat activity to hand control back to the
+            // turn system without forcing an immediate fallback end-turn, even though the activity does
+            // not consume actions or move the agent. Treat it as meaningful progress so the next AI
+            // continue-turn step can immediately issue the first real combat action.
+            if (skillId.HasValue && skillId.Value == SwitchToCombatSkillId)
+            {
+                return true;
+            }
+
             return false;
         }
 
@@ -881,10 +891,9 @@ namespace Shadowrun.LocalService.Core.Simulation
         {
             IntVector2D targetPos;
 
-            // Client EndTurn() is encoded as ActivateActiveSkill(skillId=99997, x=0, y=0).
-            // The shared command type is position-targeted, but the end-turn activity is effectively positionless.
-            // Using (0,0) breaks the authoritative sim's turn advancement, which in turn prevents AI turns from being auto-ended.
-            if (skillId == EndTeamTurnSkillId)
+            // End-turn activities are encoded as ActivateActiveSkill, but are effectively positionless.
+            // Using (0,0) breaks the authoritative sim's turn advancement.
+            if (skillId == EndTeamTurnSkillId || skillId == EndActorTurnSkillId)
             {
                 Entity entity;
                 if (_gameworld.EntitySystem.TryGet(agentId, out entity))

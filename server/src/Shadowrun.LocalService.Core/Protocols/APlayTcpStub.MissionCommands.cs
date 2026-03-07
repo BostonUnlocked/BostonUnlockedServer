@@ -514,6 +514,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                         SendRawFrame(stream, peer, PrefixLength(activateCore), "sim: auto-ended AI team turn (agentId=" + aiAction.AgentId + ")");
                         BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(activateCore), "sim: auto-ended AI team turn (coop bcast) (agentId=" + aiAction.AgentId + ")");
                     }
+                    else if (aiAction.SkillId == ServerSimulationSession.EndActorTurnSkillId)
+                    {
+                        SendRawFrame(stream, peer, PrefixLength(activateCore), "sim: auto-ended AI actor turn (agentId=" + aiAction.AgentId + ")");
+                        BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(activateCore), "sim: auto-ended AI actor turn (coop bcast) (agentId=" + aiAction.AgentId + ")");
+                    }
                     else
                     {
                         SendRawFrame(stream, peer, PrefixLength(activateCore), "sim: AI ActivateActiveSkill (agentId=" + aiAction.AgentId + ", skillId=" + aiAction.SkillId + ")");

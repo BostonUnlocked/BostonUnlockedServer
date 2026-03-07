@@ -267,12 +267,12 @@ namespace Shadowrun.LocalService.Core.Simulation
             catch
             {
                 // Fall back to end-turn if decision command construction fails.
-                executedPlan = PlannedAiAction.CreateEndTurn(plan.Agent, TryGetAgentGridPositionOrDefault(plan.Agent), "command-build-fallback", "command-build-fallback", EndTeamTurnSkillId);
+                executedPlan = PlannedAiAction.CreateEndTurn(plan.Agent, TryGetAgentGridPositionOrDefault(plan.Agent), "command-build-fallback", "command-build-fallback", EndActorTurnSkillId);
                 seeds = _random.CreateSeedPackage();
                 cmd = new ActivatePositionTargetedActiveSkillCommand(
                     0,
                     0,
-                    EndTeamTurnSkillId,
+                    EndActorTurnSkillId,
                     executedPlan.Agent.Id,
                     executedPlan.TargetPosition,
                     _gameworld,
@@ -299,7 +299,7 @@ namespace Shadowrun.LocalService.Core.Simulation
                 var fallbackCmd = new ActivatePositionTargetedActiveSkillCommand(
                     0,
                     0,
-                    EndTeamTurnSkillId,
+                    EndActorTurnSkillId,
                     executedPlan.Agent.Id,
                     fallbackPos,
                     _gameworld,
@@ -319,7 +319,7 @@ namespace Shadowrun.LocalService.Core.Simulation
                     0,
                     0,
                     0,
-                    EndTeamTurnSkillId,
+                    EndActorTurnSkillId,
                     fallbackSeeds);
                 return true;
             }

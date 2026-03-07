@@ -1,5 +1,7 @@
+using System.Collections.Generic;
 using System.Linq;
 using Cliffhanger.SRO.ServerClientCommons.ArtificialIntelligence;
+using Cliffhanger.SRO.ServerClientCommons.GameLogic.Components;
 using Cliffhanger.SRO.ServerClientCommons.Gameworld;
 using Cliffhanger.SRO.ServerClientCommons.Gameworld.RandomNumbers;
 using SRO.Core.Compatibility.Math;
@@ -14,6 +16,7 @@ namespace Shadowrun.LocalService.Core.AILogic
         private readonly IAiBehaviourConfigLookup _configLookup;
         private readonly ISkillSelectionStrategyFactory _skillSelectionFactory;
         private readonly IValuationFactory _valuationFactory;
+        private readonly Dictionary<int, IAISkillSelection> _skillSelectors;
 
         public PortedAiPlanner(
             bool enableAiLogic,
@@ -29,6 +32,7 @@ namespace Shadowrun.LocalService.Core.AILogic
             _configLookup = configLookup;
             _skillSelectionFactory = skillSelectionFactory;
             _valuationFactory = valuationFactory;
+            _skillSelectors = new Dictionary<int, IAISkillSelection>();
         }
 
         public PlannedAiAction Plan(Entity fallbackAgent, Entity[] activatableMembers, bool forceEndTurnForInactiveGroup)
@@ -40,7 +44,7 @@ namespace Shadowrun.LocalService.Core.AILogic
 
             if (!_enableAiLogic || forceEndTurnForInactiveGroup || _gameworld == null || _skillSelectionFactory == null)
             {
-                return PlannedAiAction.CreateEndTurn(fallbackAgent, AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, fallbackAgent), forceEndTurnForInactiveGroup ? "inactive-group" : "no-action", forceEndTurnForInactiveGroup ? "inactive-group" : "no-target", Simulation.ServerSimulationSession.EndTeamTurnSkillId);
+                return PlannedAiAction.CreateEndTurn(fallbackAgent, AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, fallbackAgent), forceEndTurnForInactiveGroup ? "inactive-group" : "no-action", forceEndTurnForInactiveGroup ? "inactive-group" : "no-target", Simulation.ServerSimulationSession.EndActorTurnSkillId);
             }
 
             var orderedMembers = (activatableMembers ?? new Entity[0])
@@ -81,12 +85,32 @@ namespace Shadowrun.LocalService.Core.AILogic
 
                 var attackPlanner = new PortedAIAttackPlanner(_gameworld, candidate);
 
-                var skillCandidates = AiSkillCatalog.CollectCandidateSkills(candidate, _gameworld, _skillSelectionFactory, _random, config, diagnostics);
-                for (var skillIndex = 0; skillIndex < skillCandidates.Length; skillIndex++)
+                PopulateLoadoutDiagnostics(candidate, diagnostics);
+
+                var selector = GetOrCreateSkillSelector(candidate, config, diagnostics);
+                if (selector != null)
                 {
                     PlannedAiAction attackPlan;
-                    var note = skillIndex == 0 ? "ported-attack" : "ported-attack-fallback";
-                    if (TryCreateAttackPlan(candidate, attackPlanner, skillCandidates[skillIndex], note, diagnostics, out attackPlan))
+
+                    ulong selectedSkillId;
+                    try
+                    {
+                        selectedSkillId = selector.SelectSkill();
+                    }
+                    catch
+                    {
+                        selectedSkillId = selector.DefaultSkill;
+                    }
+
+                    diagnostics.DebugRawSelection = selectedSkillId;
+
+                    if (TryCreateAttackPlan(candidate, attackPlanner, selectedSkillId, "ported-attack", diagnostics, out attackPlan))
+                    {
+                        return attackPlan;
+                    }
+
+                    if (selectedSkillId != selector.DefaultSkill
+                        && TryCreateAttackPlan(candidate, attackPlanner, selector.DefaultSkill, "ported-attack-fallback", diagnostics, out attackPlan))
                     {
                         return attackPlan;
                     }
@@ -102,7 +126,7 @@ namespace Shadowrun.LocalService.Core.AILogic
                 }
             }
 
-            return PlannedAiAction.CreateEndTurn(fallbackAgent, AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, fallbackAgent), "no-action", "no-target", Simulation.ServerSimulationSession.EndTeamTurnSkillId);
+            return PlannedAiAction.CreateEndTurn(fallbackAgent, AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, fallbackAgent), "no-action", "no-target", Simulation.ServerSimulationSession.EndActorTurnSkillId);
         }
 
         private bool TryCreateAttackPlan(Entity candidate, PortedAIAttackPlanner attackPlanner, ulong skillId, string note, AiPlanningDiagnostics baseDiagnostics, out PlannedAiAction plan)
@@ -143,6 +167,98 @@ namespace Shadowrun.LocalService.Core.AILogic
                 DebugShotChanceToHit = diagnostics.DebugShotChanceToHit,
             });
             return true;
+        }
+
+        private IAISkillSelection GetOrCreateSkillSelector(Entity candidate, AIBehaviourConfigurationComponent config, AiPlanningDiagnostics diagnostics)
+        {
+            if (candidate == null || config == null || config.SkillRotation == null || _skillSelectionFactory == null)
+            {
+                return null;
+            }
+
+            if (diagnostics != null)
+            {
+                diagnostics.DebugRotationType = config.SkillRotation.GetType().FullName;
+                diagnostics.DebugRotationCount = TryGetRotationCount(config.SkillRotation);
+            }
+
+            IAISkillSelection selector;
+            if (_skillSelectors.TryGetValue(candidate.Id, out selector) && selector != null)
+            {
+                return selector;
+            }
+
+            try
+            {
+                selector = config.SkillRotation.CreateFor(_skillSelectionFactory, candidate, _random);
+            }
+            catch
+            {
+                selector = null;
+            }
+
+            if (selector != null)
+            {
+                _skillSelectors[candidate.Id] = selector;
+            }
+
+            return selector;
+        }
+
+        private void PopulateLoadoutDiagnostics(Entity candidate, AiPlanningDiagnostics diagnostics)
+        {
+            if (diagnostics == null)
+            {
+                return;
+            }
+
+            ISkillLoadoutComponent loadout;
+            if (_gameworld != null
+                && _gameworld.EntitySystem != null
+                && candidate != null
+                && _gameworld.EntitySystem.TryGetComponent<ISkillLoadoutComponent>(candidate, out loadout)
+                && loadout != null)
+            {
+                diagnostics.DebugHasLoadout = true;
+                diagnostics.DebugSelectedWeaponIndex = loadout.SelectedWeaponIndex;
+                diagnostics.DebugSelectedWeaponSkillCount = loadout.SelectedWeapon != null && loadout.SelectedWeapon.Skills != null
+                    ? (int?)loadout.SelectedWeapon.Skills.Length
+                    : null;
+                return;
+            }
+
+            diagnostics.DebugHasLoadout = false;
+            diagnostics.DebugSelectedWeaponIndex = null;
+            diagnostics.DebugSelectedWeaponSkillCount = null;
+        }
+
+        private static int? TryGetRotationCount(ISkillSelectionConfiguration rotation)
+        {
+            var simple = rotation as RotationSkillSelection;
+            if (simple != null)
+            {
+                return simple.Rotation != null ? (int?)simple.Rotation.Length : null;
+            }
+
+            var weighted = rotation as WeightedSkillSelection;
+            if (weighted != null)
+            {
+                return weighted.Rotation != null ? (int?)weighted.Rotation.Length : null;
+            }
+
+            var conditional = rotation as ConditionalRotationSkillSelection;
+            if (conditional != null)
+            {
+                return conditional.Rotation != null ? (int?)conditional.Rotation.Length : null;
+            }
+
+            var notOnCooldown = rotation as NextSkillNotOnCooldownSelection;
+            if (notOnCooldown != null)
+            {
+                return notOnCooldown.Rotation != null ? (int?)notOnCooldown.Rotation.Length : null;
+            }
+
+            return null;
         }
 
         private bool IsWithinWalkRange(Entity agent, IntVector2D position)

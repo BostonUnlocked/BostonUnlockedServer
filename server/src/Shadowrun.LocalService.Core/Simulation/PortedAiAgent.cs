@@ -46,10 +46,10 @@ namespace Shadowrun.LocalService.Core.Simulation
                         }
                     }
 
-                    return PlannedAiAction.CreateEndTurn(_entity, gridPosition, "no-action", "no-action", ServerSimulationSession.EndTeamTurnSkillId);
+                    return PlannedAiAction.CreateEndTurn(_entity, gridPosition, "no-action", "no-action", ServerSimulationSession.EndActorTurnSkillId);
 
                 default:
-                    return PlannedAiAction.CreateEndTurn(_entity, gridPosition, "peaceful", "peaceful", ServerSimulationSession.EndTeamTurnSkillId);
+                    return PlannedAiAction.CreateEndTurn(_entity, gridPosition, "peaceful", "peaceful", ServerSimulationSession.EndActorTurnSkillId);
             }
         }
 
