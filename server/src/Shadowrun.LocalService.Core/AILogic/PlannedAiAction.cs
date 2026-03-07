@@ -33,6 +33,7 @@ namespace Shadowrun.LocalService.Core.AILogic
 
         public bool IsMove { get { return CommandName == "AI.Move"; } }
         public bool IsEndTurn { get { return CommandName == "AI.EndTeamTurn"; } }
+        public bool IsSwitchToCombat { get { return CommandName == "AI.SwitchToCombat"; } }
 
         public static PlannedAiAction CreateMove(Entity agent, IntVector2D targetPosition, AiPlanningDiagnostics diagnostics)
         {
@@ -42,6 +43,23 @@ namespace Shadowrun.LocalService.Core.AILogic
         public static PlannedAiAction CreateSkill(Entity agent, int weaponIndex, int skillIndex, int skillId, IntVector2D targetPosition, AiPlanningDiagnostics diagnostics)
         {
             return new PlannedAiAction(agent, "AI.Decision", targetPosition, weaponIndex, skillIndex, skillId, diagnostics);
+        }
+
+        public static PlannedAiAction CreateSwitchToCombat(Entity agent, IntVector2D targetPosition)
+        {
+            return new PlannedAiAction(
+                agent,
+                "AI.SwitchToCombat",
+                targetPosition,
+                0,
+                0,
+                Simulation.ServerSimulationSession.SwitchToCombatSkillId,
+                new AiPlanningDiagnostics
+                {
+                    DecisionNote = "switch-to-combat",
+                    DebugStage = "switch-to-combat",
+                    DebugResolvedActivityId = (ulong)Simulation.ServerSimulationSession.SwitchToCombatSkillId,
+                });
         }
 
         public static PlannedAiAction CreateEndTurn(Entity agent, IntVector2D targetPosition, string decisionNote, string debugStage, int endTurnSkillId)

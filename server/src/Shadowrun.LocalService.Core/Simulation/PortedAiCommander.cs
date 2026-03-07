@@ -12,7 +12,7 @@ namespace Shadowrun.LocalService.Core.Simulation
         private readonly EntitySystem _entitySystem;
         private readonly ILineOfSightEvaluator _lineOfSightEvaluator;
         private readonly string _spawnManagerTag;
-        private readonly HashSet<Entity> _controlledAgents = new HashSet<Entity>();
+        private readonly HashSet<PortedAiAgent> _controlledAgents = new HashSet<PortedAiAgent>();
         private readonly List<IntVector2D> _suspiciousPositions = new List<IntVector2D>();
         private readonly TeamInfoComponent _teamInfoComponent;
 
@@ -34,17 +34,22 @@ namespace Shadowrun.LocalService.Core.Simulation
 
         public bool InCombat { get; private set; }
 
-        public void Add(Entity newAgent)
+        public void Add(PortedAiAgent newAgent)
         {
             if (newAgent == null)
             {
                 return;
             }
 
+            if (InCombat)
+            {
+                newAgent.SetHostile();
+            }
+
             _controlledAgents.Add(newAgent);
         }
 
-        public void Remove(Entity agent)
+        public void Remove(PortedAiAgent agent)
         {
             if (agent == null)
             {
@@ -72,13 +77,13 @@ namespace Shadowrun.LocalService.Core.Simulation
 
             foreach (var controlledAgent in _controlledAgents)
             {
-                if (controlledAgent == null)
+                if (controlledAgent == null || controlledAgent.Entity == null)
                 {
                     continue;
                 }
 
                 DetectionComponent detection;
-                if (!_entitySystem.TryGetComponent<DetectionComponent>(controlledAgent, out detection) || detection == null || detection.VisibleAgents == null)
+                if (!_entitySystem.TryGetComponent<DetectionComponent>(controlledAgent.Entity, out detection) || detection == null || detection.VisibleAgents == null)
                 {
                     continue;
                 }
@@ -121,20 +126,20 @@ namespace Shadowrun.LocalService.Core.Simulation
 
                 foreach (var agent in _controlledAgents)
                 {
-                    if (agent == null)
+                    if (agent == null || agent.Entity == null)
                     {
                         continue;
                     }
 
                     IPositionComponent positionComponent;
-                    if (!_entitySystem.TryGetComponent<IPositionComponent>(agent, out positionComponent) || positionComponent == null)
+                    if (!_entitySystem.TryGetComponent<IPositionComponent>(agent.Entity, out positionComponent) || positionComponent == null)
                     {
                         continue;
                     }
 
                     var aggroDistance = 0;
                     DetectionComponent detectionComponent;
-                    if (_entitySystem.TryGetComponent<DetectionComponent>(agent, out detectionComponent) && detectionComponent != null)
+                    if (_entitySystem.TryGetComponent<DetectionComponent>(agent.Entity, out detectionComponent) && detectionComponent != null)
                     {
                         aggroDistance = detectionComponent.Range;
                     }
@@ -155,6 +160,14 @@ namespace Shadowrun.LocalService.Core.Simulation
         private void SetAllInCombat()
         {
             InCombat = true;
+
+            foreach (var controlledAgent in _controlledAgents)
+            {
+                if (controlledAgent != null)
+                {
+                    controlledAgent.SetHostile();
+                }
+            }
         }
 
         public void MovementEvent(Entity agent, IntVector2D startPosition, IntVector2D targetPosition)
@@ -182,7 +195,7 @@ namespace Shadowrun.LocalService.Core.Simulation
 
                 foreach (var controlledAgent in _controlledAgents)
                 {
-                    if (controlledAgent != null && controlledAgent.Id == entity.Id)
+                    if (controlledAgent != null && controlledAgent.Entity != null && controlledAgent.Entity.Id == entity.Id)
                     {
                         SetAllInCombat();
                         return;

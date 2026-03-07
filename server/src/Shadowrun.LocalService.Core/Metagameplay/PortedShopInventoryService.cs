@@ -43,6 +43,8 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             result.NuyenAfter = slot.Nuyen;
 
             var index = MetagameplayStaticDataIndex.Load(_options != null ? _options.StaticDataDir : null);
+            var storyProgression = new PortedStoryProgressionService(_options);
+            var availabilityContext = MetagameplayAvailabilityContext.Create(slot, storyProgression.GetVirtualChapterIndex(slot, "Main Campaign"));
             var tempInventory = new Dictionary<string, int>(slot.ItemPossessions, StringComparer.OrdinalIgnoreCase);
             var applied = new List<ItemChange>();
             var allRequested = requestedChanges.ItemChanges ?? new ItemChange[0];
@@ -71,7 +73,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
                 if (change.Delta == 1)
                 {
-                    if (!TryApplyBuy(index, requestedChanges.ShopKeeper, slot, tempInventory, change, applied, ref totalNuyenChange))
+                    if (!TryApplyBuy(index, requestedChanges.ShopKeeper, availabilityContext, tempInventory, change, applied, ref totalNuyenChange))
                     {
                         result.ShopChanges = Fail(allRequested);
                         return result;
@@ -124,7 +126,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             };
         }
 
-        private static bool TryApplyBuy(MetagameplayStaticDataIndex index, string shopKeeper, CareerSlot slot, Dictionary<string, int> tempInventory, ItemChange requestedChange, List<ItemChange> applied, ref int totalNuyenChange)
+        private static bool TryApplyBuy(MetagameplayStaticDataIndex index, string shopKeeper, MetagameplayAvailabilityContext availabilityContext, Dictionary<string, int> tempInventory, ItemChange requestedChange, List<ItemChange> applied, ref int totalNuyenChange)
         {
             MetagameplayStaticDataIndex.ItemDefinitionInfo itemDefinition;
             if (!index.TryGetItemDefinition(requestedChange.ItemDefintionId, out itemDefinition) || itemDefinition == null)
@@ -138,7 +140,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 return false;
             }
 
-            if (!MetagameplayAvailabilityEvaluator.IsFulfilled(shopEntry.Condition, MetagameplayAvailabilityContext.Create(slot)))
+            if (!MetagameplayAvailabilityEvaluator.IsFulfilled(shopEntry.Condition, availabilityContext))
             {
                 return false;
             }

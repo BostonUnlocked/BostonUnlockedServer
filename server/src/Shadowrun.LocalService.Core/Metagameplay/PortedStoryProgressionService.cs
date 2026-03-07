@@ -143,6 +143,54 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             return result;
         }
 
+        public int GetVirtualChapterIndex(CareerSlot slot, string storylineName)
+        {
+            MetagameplayStaticDataIndex.StorylineInfo storyline;
+            MetagameplayStaticDataIndex.ChapterInfo chapter;
+            int currentIndex;
+            if (!TryGetCurrentChapter(slot, storylineName, out storyline, out chapter, out currentIndex))
+            {
+                return 0;
+            }
+
+            if (!AreAllRequiredMissionsAtLeast(slot, chapter, StoryMissionstate.ReadyToReceiveRewards))
+            {
+                return currentIndex;
+            }
+
+            return Math.Min(currentIndex + 1, storyline.Chapters.Count);
+        }
+
+        public string GetCurrentStoryHubId(CareerSlot slot, string storylineName)
+        {
+            MetagameplayStaticDataIndex.StorylineInfo storyline;
+            MetagameplayStaticDataIndex.ChapterInfo chapter;
+            int currentIndex;
+            if (!TryGetCurrentChapter(slot, storylineName, out storyline, out chapter, out currentIndex))
+            {
+                return slot != null ? slot.HubId : null;
+            }
+
+            if (storyline.Chapters == null || storyline.Chapters.Count == 0)
+            {
+                return slot != null ? slot.HubId : null;
+            }
+
+            if (!AreAllRequiredMissionsAtLeast(slot, chapter, StoryMissionstate.ReadyToReceiveRewards))
+            {
+                return !string.IsNullOrEmpty(chapter.Hub) ? chapter.Hub : slot.HubId;
+            }
+
+            var nextIndex = Math.Min(currentIndex + 1, storyline.Chapters.Count - 1);
+            var nextChapter = storyline.Chapters[nextIndex];
+            if (nextChapter != null && !string.IsNullOrEmpty(nextChapter.Hub))
+            {
+                return nextChapter.Hub;
+            }
+
+            return !string.IsNullOrEmpty(chapter.Hub) ? chapter.Hub : slot.HubId;
+        }
+
         public bool TryGetRefreshTriggerChapterIndexWithDifferentHub(string storylineName, int currentIndex, string currentHub, out int triggerIndex)
         {
             triggerIndex = -1;
@@ -270,6 +318,66 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             }
 
             return npcIds;
+        }
+
+        private bool TryGetCurrentChapter(CareerSlot slot, string storylineName, out MetagameplayStaticDataIndex.StorylineInfo storyline, out MetagameplayStaticDataIndex.ChapterInfo chapter, out int currentIndex)
+        {
+            storyline = null;
+            chapter = null;
+            currentIndex = 0;
+
+            if (slot == null || string.IsNullOrEmpty(storylineName))
+            {
+                return false;
+            }
+
+            if (!TryGetStoryline(storylineName, out storyline) || storyline == null || storyline.Chapters == null || storyline.Chapters.Count == 0)
+            {
+                return false;
+            }
+
+            currentIndex = slot.MainCampaignCurrentChapter;
+            if (currentIndex < 0)
+            {
+                currentIndex = 0;
+            }
+            if (currentIndex >= storyline.Chapters.Count)
+            {
+                currentIndex = storyline.Chapters.Count - 1;
+            }
+
+            chapter = storyline.Chapters[currentIndex];
+            return chapter != null;
+        }
+
+        private static bool AreAllRequiredMissionsAtLeast(CareerSlot slot, MetagameplayStaticDataIndex.ChapterInfo chapter, StoryMissionstate minimumState)
+        {
+            if (chapter == null)
+            {
+                return false;
+            }
+
+            var states = slot != null && slot.MainCampaignMissionStates != null
+                ? slot.MainCampaignMissionStates
+                : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            for (var i = 0; i < chapter.RequiredMissions.Count; i++)
+            {
+                var missionName = chapter.RequiredMissions[i];
+                if (string.IsNullOrEmpty(missionName))
+                {
+                    continue;
+                }
+
+                string raw;
+                states.TryGetValue(missionName, out raw);
+                if (ParseStoryMissionStateOrDefault(raw, StoryMissionstate.Available) < minimumState)
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         private bool TryGetStoryline(string storylineName, out MetagameplayStaticDataIndex.StorylineInfo storyline)

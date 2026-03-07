@@ -59,6 +59,50 @@ namespace Shadowrun.LocalService.Core.Simulation
             return _portedAiCommanderRepository.TryProcessCombatStateForSpawnTag(spawnManagerTag);
         }
 
+        public bool TryEngageEntityFromCurrentPlayerVisibility(Entity entity, out string groupKey)
+        {
+            groupKey = null;
+            if (_portedAiCommanderRepository == null || entity == null)
+            {
+                return false;
+            }
+
+            return _portedAiCommanderRepository.TryProcessCombatStateForEntity(entity, out groupKey);
+        }
+
+        public bool IsEntityGroupEngaged(Entity entity, out string groupKey)
+        {
+            groupKey = null;
+            if (_portedAiCommanderRepository == null || entity == null)
+            {
+                return true;
+            }
+
+            return _portedAiCommanderRepository.IsGroupInCombat(entity, out groupKey);
+        }
+
+        public void OnAiControlledAgentsTurn(Entity entity)
+        {
+            if (_portedAiCommanderRepository == null || entity == null)
+            {
+                return;
+            }
+
+            _portedAiCommanderRepository.OnAiControlledAgentsTurn(entity);
+        }
+
+        public bool TryGetAiAgent(Entity entity, out PortedAiAgent agent, out string groupKey)
+        {
+            agent = null;
+            groupKey = null;
+            if (_portedAiCommanderRepository == null || entity == null)
+            {
+                return false;
+            }
+
+            return _portedAiCommanderRepository.TryGetAiAgent(entity, out agent, out groupKey);
+        }
+
         public void MoveToCombatState(string spawnManagerTag)
         {
             if (string.IsNullOrEmpty(spawnManagerTag) || _portedAiCommanderRepository == null)
@@ -151,11 +195,6 @@ namespace Shadowrun.LocalService.Core.Simulation
 
         public void Action(Entity entity, Entity[] targets, IntVector2D targetPosition, ulong skillId)
         {
-            if (_portedAiCommanderRepository != null)
-            {
-                _portedAiCommanderRepository.Skill(entity, targets);
-            }
-
             if (_logger == null || _entitySystem == null)
             {
                 return;
@@ -211,6 +250,15 @@ namespace Shadowrun.LocalService.Core.Simulation
         {
             if (_portedAiCommanderRepository != null)
             {
+                if (targetTeam != null && targetTeam.AIControlled)
+                {
+                    _portedAiCommanderRepository.RegisterAiControlledEntity(entity);
+                }
+                else
+                {
+                    _portedAiCommanderRepository.UnregisterAiControlledEntity(entity);
+                }
+
                 _portedAiCommanderRepository.ChangeTeam(entity, targetTeam);
             }
 

@@ -30,6 +30,7 @@ namespace Shadowrun.LocalService.Core.Simulation
     public sealed partial class ServerSimulationSession
     {
         public const int EndTeamTurnSkillId = 99997;
+        public const int SwitchToCombatSkillId = 90011;
 
         private readonly RequestLogger _logger;
         private readonly string _peer;

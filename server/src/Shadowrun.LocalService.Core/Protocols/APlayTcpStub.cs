@@ -90,7 +90,12 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         private byte[] BuildPortedHubStatePayloadForSlot(CareerSlot slot, Guid identityGuid, int careerIndex, bool forceNewHubInstanceId, PortedHubInstance currentHubInstance, out string resolvedHubId, out PortedHubInstance resolvedHubInstance)
         {
-            resolvedHubId = slot != null && !IsNullOrWhiteSpace(slot.HubId) ? slot.HubId : DefaultHubId;
+            var storylineHubId = _storyProgressionService != null
+                ? _storyProgressionService.GetCurrentStoryHubId(slot, "Main Campaign")
+                : null;
+            resolvedHubId = !IsNullOrWhiteSpace(storylineHubId)
+                ? storylineHubId
+                : (slot != null && !IsNullOrWhiteSpace(slot.HubId) ? slot.HubId : DefaultHubId);
             resolvedHubInstance = currentHubInstance;
 
             var characterIdentifier = slot != null && !IsNullOrWhiteSpace(slot.CharacterIdentifier)
@@ -2258,9 +2263,20 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         {
                                             effectiveHubId = followHostHubId;
                                         }
-                                        else if (currentSlot != null && !IsNullOrWhiteSpace(currentSlot.HubId))
+                                        else
                                         {
-                                            effectiveHubId = currentSlot.HubId;
+                                            var currentStoryHubId = _storyProgressionService != null
+                                                ? _storyProgressionService.GetCurrentStoryHubId(currentSlot, "Main Campaign")
+                                                : null;
+
+                                            if (!IsNullOrWhiteSpace(currentStoryHubId))
+                                            {
+                                                effectiveHubId = currentStoryHubId;
+                                            }
+                                            else if (currentSlot != null && !IsNullOrWhiteSpace(currentSlot.HubId))
+                                            {
+                                                effectiveHubId = currentSlot.HubId;
+                                            }
                                         }
 
                                         var transition = TryExecutePortedHubTransition(

@@ -26,6 +26,11 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
         public static MetagameplayAvailabilityContext Create(CareerSlot slot)
         {
+            return Create(slot, slot != null ? slot.MainCampaignCurrentChapter : 0);
+        }
+
+        public static MetagameplayAvailabilityContext Create(CareerSlot slot, int virtualChapter)
+        {
             var unlocks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (slot != null && slot.ActiveUnlocks != null)
             {
@@ -43,7 +48,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             {
                 StoryLine = "Main Campaign",
                 Chapter = slot != null ? slot.MainCampaignCurrentChapter : 0,
-                VirtualChapter = slot != null ? slot.MainCampaignCurrentChapter : 0,
+                VirtualChapter = virtualChapter,
                 CurrentTimeUtc = DateTime.UtcNow,
                 Unlocks = unlocks,
             };

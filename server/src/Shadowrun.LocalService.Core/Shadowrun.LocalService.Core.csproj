@@ -182,6 +182,7 @@
     <Compile Include="Simulation\LocalMissionLootController.cs" />
     <Compile Include="Simulation\EncounterActivationTracker.cs" />
     <Compile Include="Simulation\NullMetagameplayrelevantChangeObserver.cs" />
+    <Compile Include="Simulation\PortedAiAgent.cs" />
     <Compile Include="Simulation\PortedAiCommander.cs" />
     <Compile Include="Simulation\PortedAiCommanderRepository.cs" />
     <Compile Include="Simulation\ServerSimulationSession.cs" />
