@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Net.Sockets;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay.Changes;
+using Shadowrun.LocalService.Core.Metagameplay;
 using Shadowrun.LocalService.Core.Persistence;
 using Shadowrun.LocalService.Core.Protocols.MissionCommands;
 using Shadowrun.LocalService.Core.Simulation;
@@ -610,10 +611,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                             : StoryMissionstate.ReadyToReceiveRewards.ToString();
                         _userStore.UpsertCareer(activeIdentityHash, progressSlot);
 
-                        if (isVictory)
-                        {
-                            TryAdvanceMainCampaignIfEligible(activeIdentityHash, progressSlot, peer, stream, "Main Campaign", responseMsgNoBase + 9, ref cachedHubStatePayload, cachedCreationInfoPayload, false);
-                        }
                     }
                 }
                 catch
@@ -621,8 +618,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
             }
 
-            int karmaReward = 0;
-            int nuyenReward = 0;
             int lootNuyenReward = 0;
             string[] lootItemIds = new string[0];
             string[] lootTables = new string[0];
@@ -766,35 +761,24 @@ namespace Shadowrun.LocalService.Core.Protocols
                 });
             }
 
-            int found;
-            if (!leavingMidMission && TryResolveMissionCurrencyReward(completedMapName, missionOutcome, "Karma", out found) && found > 0)
-            {
-                karmaReward = found;
-            }
-
-            if (!leavingMidMission && TryResolveMissionCurrencyReward(completedMapName, missionOutcome, "Nuyen", out found) && found > 0)
-            {
-                nuyenReward = found;
-            }
-
-            var grantedUnlocks = new string[0];
-            if (!leavingMidMission)
-            {
-                string[] resolvedUnlocks;
-                if (TryResolveMissionRewardUnlocks(completedMapName, missionOutcome, out resolvedUnlocks) && resolvedUnlocks != null && resolvedUnlocks.Length > 0)
+            var resolvedMissionReward = !leavingMidMission
+                ? _missionRewardService.ResolveMissionReward("Rewards", completedMapName, missionOutcome)
+                : new MissionReward
                 {
-                    grantedUnlocks = resolvedUnlocks;
-                }
+                    GrantedUnlocks = new string[0],
+                    EarnedCurrencies = new CurrencyReward[0],
+                    ItemChanges = new ItemChange[0],
+                };
+
+            if (lootItemChanges != null && lootItemChanges.Count > 0)
+            {
+                resolvedMissionReward = _missionRewardService.MergeRewardItemChanges(resolvedMissionReward, lootItemChanges);
             }
 
             var deactivatedUnlocks = new string[0];
             if (!leavingMidMission && isVictory)
             {
-                string[] resolvedUnlocks;
-                if (TryResolveMissionUnlockDeactivationsOnVictory(completedMapName, out resolvedUnlocks) && resolvedUnlocks != null && resolvedUnlocks.Length > 0)
-                {
-                    deactivatedUnlocks = resolvedUnlocks;
-                }
+                deactivatedUnlocks = _missionRewardService.ResolveUnlockDeactivationsOnVictory(completedMapName);
             }
 
             if (lootNuyenReward > 0)
@@ -815,86 +799,12 @@ namespace Shadowrun.LocalService.Core.Protocols
             if (_userStore != null)
             {
                 rewardSlot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false) : null;
-                var appliedGrantedUnlocks = new string[0];
-                var appliedDeactivatedUnlocks = new string[0];
+                var rewardApplication = rewardSlot != null
+                    ? _missionRewardService.Apply(rewardSlot, resolvedMissionReward, deactivatedUnlocks)
+                    : new MissionRewardApplicationResult();
 
-                var appliedLootItems = 0;
-                if (rewardSlot != null && lootItemChanges != null && lootItemChanges.Count > 0)
+                if (rewardSlot != null && rewardApplication.Persisted)
                 {
-                    if (rewardSlot.ItemPossessions == null)
-                    {
-                        rewardSlot.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                    }
-
-                    for (var i = 0; i < lootItemChanges.Count; i++)
-                    {
-                        var change = lootItemChanges[i];
-                        if (change == null || IsNullOrWhiteSpace(change.ItemDefintionId) || change.Delta == 0)
-                        {
-                            continue;
-                        }
-
-                        var packedKey = change.ItemDefintionId + "|" + change.Quality.ToString(CultureInfo.InvariantCulture) + "|" + change.Flavour.ToString(CultureInfo.InvariantCulture);
-                        int existing;
-                        if (!rewardSlot.ItemPossessions.TryGetValue(packedKey, out existing))
-                        {
-                            existing = 0;
-                        }
-
-                        var next = existing + change.Delta;
-                        if (next <= 0)
-                        {
-                            if (rewardSlot.ItemPossessions.ContainsKey(packedKey))
-                            {
-                                rewardSlot.ItemPossessions.Remove(packedKey);
-                            }
-                        }
-                        else
-                        {
-                            rewardSlot.ItemPossessions[packedKey] = next;
-                        }
-                        appliedLootItems++;
-                    }
-                }
-
-                if (rewardSlot != null)
-                {
-                    appliedGrantedUnlocks = AddActiveUnlocks(rewardSlot, grantedUnlocks);
-                    appliedDeactivatedUnlocks = RemoveActiveUnlocks(rewardSlot, deactivatedUnlocks);
-                }
-
-                if (rewardSlot != null && (karmaReward > 0 || nuyenReward > 0 || appliedLootItems > 0 || appliedGrantedUnlocks.Length > 0 || appliedDeactivatedUnlocks.Length > 0))
-                {
-                    if (karmaReward > 0)
-                    {
-                        try
-                        {
-                            checked
-                            {
-                                rewardSlot.Karma = rewardSlot.Karma + karmaReward;
-                            }
-                        }
-                        catch
-                        {
-                            rewardSlot.Karma = int.MaxValue;
-                        }
-                    }
-
-                    if (nuyenReward > 0)
-                    {
-                        try
-                        {
-                            checked
-                            {
-                                rewardSlot.Nuyen = rewardSlot.Nuyen + nuyenReward;
-                            }
-                        }
-                        catch
-                        {
-                            rewardSlot.Nuyen = int.MaxValue;
-                        }
-                    }
-
                     if (!IsNullOrWhiteSpace(activeIdentityHash))
                     {
                         _userStore.UpsertCareer(activeIdentityHash, rewardSlot);
@@ -907,73 +817,31 @@ namespace Shadowrun.LocalService.Core.Protocols
                         peer = peer,
                         mapName = completedMapName,
                         outcome = missionOutcome,
-                        karmaDelta = karmaReward,
-                        karmaTotal = rewardSlot.Karma,
-                        nuyenDelta = nuyenReward,
-                        nuyenTotal = rewardSlot.Nuyen,
-                        lootItemChanges = lootItemChanges != null ? lootItemChanges.Count : 0,
-                        lootItemsApplied = appliedLootItems,
-                        grantedUnlocks = appliedGrantedUnlocks,
-                        deactivatedUnlocks = appliedDeactivatedUnlocks,
+                        karmaDelta = rewardApplication.KarmaAfter - rewardApplication.KarmaBefore,
+                        karmaTotal = rewardApplication.KarmaAfter,
+                        nuyenDelta = rewardApplication.NuyenAfter - rewardApplication.NuyenBefore,
+                        nuyenTotal = rewardApplication.NuyenAfter,
+                        lootItemChanges = rewardApplication.AppliedItemChangeCount,
+                        lootItemsApplied = rewardApplication.AppliedItemChangeCount,
+                        grantedUnlocks = rewardApplication.AppliedGrantedUnlocks,
+                        deactivatedUnlocks = rewardApplication.AppliedDeactivatedUnlocks,
                         careerIndex = activeCareerIndex,
                     });
 
-                    try
+                    if (rewardApplication.ShouldNotifyClient)
                     {
-                        var earnedCurrencies = new List<object>();
-                        if (karmaReward != 0)
-                        {
-                            earnedCurrencies.Add(new Dictionary<string, object>
-                            {
-                                { "CurrencyId", "Karma" },
-                                { "EarnedValue", karmaReward },
-                            });
-                        }
-                        if (nuyenReward != 0)
-                        {
-                            earnedCurrencies.Add(new Dictionary<string, object>
-                            {
-                                { "CurrencyId", "Nuyen" },
-                                { "EarnedValue", nuyenReward },
-                            });
-                        }
-
-                        var itemChangesPayload = new object[0];
-                        if (lootItemChanges != null && lootItemChanges.Count > 0)
-                        {
-                            var list = new List<object>();
-                            for (var i = 0; i < lootItemChanges.Count; i++)
-                            {
-                                var change = lootItemChanges[i];
-                                if (change == null || IsNullOrWhiteSpace(change.ItemDefintionId) || change.Delta == 0)
-                                {
-                                    continue;
-                                }
-
-                                list.Add(new Dictionary<string, object>
-                                {
-                                    { "ItemDefintionId", change.ItemDefintionId },
-                                    { "Delta", change.Delta },
-                                    { "Quality", change.Quality },
-                                    { "Flavour", change.Flavour },
-                                });
-                            }
-                            itemChangesPayload = list.ToArray();
-                        }
-
-                        var missionRewardJson = Json.Serialize(new Dictionary<string, object>
-                        {
-                            { "GrantedUnlocks", appliedGrantedUnlocks },
-                            { "EarnedCurrencies", earnedCurrencies.ToArray() },
-                            { "ItemChanges", itemChangesPayload },
-                        });
-
-                        var missionRewardPayload = BuildUtf16StringPayload(missionRewardJson);
-                        var missionRewardCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 35, missionRewardPayload), responseMsgNoBase + 6);
-                        SendRawFrame(stream, peer, PrefixLength(missionRewardCore), "sent MetaGameplayCommunicationObject GotMissionReward after LeaveMission");
+                        SendMissionReward(stream, peer, responseMsgNoBase + 6, rewardApplication.TransportReward, "after LeaveMission");
                     }
-                    catch
+
+                    if (rewardApplication.AppliedDeactivatedUnlocks.Length > 0)
                     {
+                        try
+                        {
+                            SendUnlocksChanged(stream, peer, responseMsgNoBase + 7, new string[0], rewardApplication.AppliedDeactivatedUnlocks, "after LeaveMission");
+                        }
+                        catch
+                        {
+                        }
                     }
                 }
             }

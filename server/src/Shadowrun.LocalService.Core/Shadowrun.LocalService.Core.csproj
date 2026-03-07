@@ -137,6 +137,8 @@
     <Compile Include="Persistence\ISessionIdentityMap.cs" />
     <Compile Include="Persistence\ExpiringSessionIdentityMap.cs" />
     <Compile Include="Metagameplay\MetagameplayAvailabilityEvaluator.cs" />
+    <Compile Include="Metagameplay\PortedMissionRewardService.cs" />
+    <Compile Include="Metagameplay\PortedStoryProgressionService.cs" />
     <Compile Include="Metagameplay\MetagameplayStaticDataIndex.cs" />
     <Compile Include="Metagameplay\PortedShopInventoryService.cs" />
     <Compile Include="Metagameplay\PortedSkillPurchaseService.cs" />

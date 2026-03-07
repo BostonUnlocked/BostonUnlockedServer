@@ -70,11 +70,6 @@ namespace Shadowrun.LocalService.Core.Protocols
         private static int CachedHenchmanCollectionCreationIndex;
         private static List<PlayerCharacterSnapshot> CachedHenchmanCollectionSnapshots;
 
-        private static readonly object ShopPriceCacheLock = new object();
-        private static readonly Dictionary<string, Dictionary<string, int>> CachedShopPrices = new Dictionary<string, Dictionary<string, int>>(StringComparer.OrdinalIgnoreCase);
-        private static DateTime CachedShopPricesLastWriteUtc;
-        private static string CachedShopPricesPath;
-
         private readonly object _coopMissionLock = new object();
         private readonly Dictionary<string, List<CoopMissionParticipant>> _coopMissionParticipants = new Dictionary<string, List<CoopMissionParticipant>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, CoopMissionSessionState> _coopMissionSessions = new Dictionary<string, CoopMissionSessionState>(StringComparer.OrdinalIgnoreCase);
@@ -682,161 +677,6 @@ namespace Shadowrun.LocalService.Core.Protocols
             CachedHenchmanCollectionSnapshots = henches.Select(h => h != null ? h.PlayerCharacterSnapshot : null).Where(s => s != null).ToList();
 
             return HenchRepoSerializer.SerializeHenchmanCollection(collection);
-        }
-
-        private static bool TryResolveShopPrice(string shopKeeper, string itemId, out int price)
-        {
-            price = 0;
-            if (IsNullOrWhiteSpace(shopKeeper) || IsNullOrWhiteSpace(itemId))
-            {
-                return false;
-            }
-
-            try
-            {
-                lock (ShopPriceCacheLock)
-                {
-                    var staticDataPath = TryFindMetagameplayStaticDataPath();
-                    if (IsNullOrWhiteSpace(staticDataPath) || !File.Exists(staticDataPath))
-                    {
-                        return false;
-                    }
-
-                    var lastWriteUtc = File.GetLastWriteTimeUtc(staticDataPath);
-                    if (!string.Equals(CachedShopPricesPath, staticDataPath, StringComparison.OrdinalIgnoreCase)
-                        || CachedShopPricesLastWriteUtc != lastWriteUtc)
-                    {
-                        CachedShopPrices.Clear();
-                        CachedShopPricesPath = staticDataPath;
-                        CachedShopPricesLastWriteUtc = lastWriteUtc;
-                    }
-
-                    Dictionary<string, int> shopMap;
-                    if (!CachedShopPrices.TryGetValue(shopKeeper, out shopMap) || shopMap == null)
-                    {
-                        shopMap = ParseShopPricesFromMetagameplayJson(staticDataPath, shopKeeper);
-                        CachedShopPrices[shopKeeper] = shopMap ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                    }
-
-                    if (shopMap != null && shopMap.TryGetValue(itemId, out price))
-                    {
-                        return true;
-                    }
-                }
-            }
-            catch
-            {
-            }
-
-            price = 0;
-            return false;
-        }
-
-        private static Dictionary<string, int> ParseShopPricesFromMetagameplayJson(string metagameplayJsonPath, string shopKeeper)
-        {
-            if (IsNullOrWhiteSpace(metagameplayJsonPath) || IsNullOrWhiteSpace(shopKeeper) || !File.Exists(metagameplayJsonPath))
-            {
-                return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            }
-
-            try
-            {
-                var text = File.ReadAllText(metagameplayJsonPath);
-                if (IsNullOrWhiteSpace(text))
-                {
-                    return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                }
-
-                var anchor = "\"InternalName\": \"" + shopKeeper + "\"";
-                var start = text.IndexOf(anchor, StringComparison.OrdinalIgnoreCase);
-                if (start < 0)
-                {
-                    return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                }
-
-                var entriesKey = "\"ShopListEntries\"";
-                var entriesStart = text.IndexOf(entriesKey, start, StringComparison.OrdinalIgnoreCase);
-                if (entriesStart < 0)
-                {
-                    return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                }
-
-                var nextShop = text.IndexOf("\"InternalName\":", entriesStart + entriesKey.Length, StringComparison.OrdinalIgnoreCase);
-                if (nextShop < 0)
-                {
-                    nextShop = text.Length;
-                }
-
-                var section = text.Substring(entriesStart, nextShop - entriesStart);
-                var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-
-                var pos = 0;
-                while (pos >= 0 && pos < section.Length)
-                {
-                    var priceIdx = section.IndexOf("\"Price\":", pos, StringComparison.OrdinalIgnoreCase);
-                    if (priceIdx < 0)
-                    {
-                        break;
-                    }
-
-                    var afterColon = section.IndexOf(':', priceIdx);
-                    if (afterColon < 0)
-                    {
-                        break;
-                    }
-
-                    afterColon++;
-                    while (afterColon < section.Length && char.IsWhiteSpace(section[afterColon])) afterColon++;
-
-                    var endNum = afterColon;
-                    while (endNum < section.Length && char.IsDigit(section[endNum])) endNum++;
-
-                    int parsedPrice;
-                    if (!int.TryParse(section.Substring(afterColon, endNum - afterColon), NumberStyles.Integer, CultureInfo.InvariantCulture, out parsedPrice))
-                    {
-                        pos = endNum;
-                        continue;
-                    }
-
-                    var itemIdx = section.IndexOf("\"ItemId\":", endNum, StringComparison.OrdinalIgnoreCase);
-                    if (itemIdx < 0)
-                    {
-                        break;
-                    }
-
-                    var itemColon = section.IndexOf(':', itemIdx);
-                    if (itemColon < 0)
-                    {
-                        break;
-                    }
-
-                    var firstQuote = section.IndexOf('"', itemColon + 1);
-                    if (firstQuote < 0)
-                    {
-                        break;
-                    }
-
-                    var secondQuote = section.IndexOf('"', firstQuote + 1);
-                    if (secondQuote < 0)
-                    {
-                        break;
-                    }
-
-                    var itemId = section.Substring(firstQuote + 1, secondQuote - firstQuote - 1);
-                    if (!IsNullOrWhiteSpace(itemId))
-                    {
-                        result[itemId] = parsedPrice;
-                    }
-
-                    pos = secondQuote + 1;
-                }
-
-                return result;
-            }
-            catch
-            {
-                return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            }
         }
 
         private static string SerializeInventoryFromSlot(CareerSlot slot)
@@ -2834,6 +2674,8 @@ namespace Shadowrun.LocalService.Core.Protocols
         private readonly CareerInfoGenerator _careerInfoGenerator;
         private readonly MatchConfigurationGenerator _matchConfigurationGenerator;
         private readonly CharacterStatePushBroker _characterStatePushBroker;
+        private readonly PortedMissionRewardService _missionRewardService;
+        private readonly PortedStoryProgressionService _storyProgressionService;
         private readonly PortedSkillPurchaseService _skillPurchaseService;
         private readonly PortedShopInventoryService _shopInventoryService;
 
@@ -2957,6 +2799,8 @@ namespace Shadowrun.LocalService.Core.Protocols
             _careerInfoGenerator = new CareerInfoGenerator(logger, _userStore);
             _matchConfigurationGenerator = new MatchConfigurationGenerator(logger);
             _characterStatePushBroker = characterStatePushBroker ?? CharacterStatePushBroker.Shared;
+            _missionRewardService = new PortedMissionRewardService(_options);
+            _storyProgressionService = new PortedStoryProgressionService(_options);
             _skillPurchaseService = new PortedSkillPurchaseService(_options);
             _shopInventoryService = new PortedShopInventoryService(_options);
         }
@@ -3297,341 +3141,88 @@ namespace Shadowrun.LocalService.Core.Protocols
             return fallbackCompletedMissions != null && fallbackCompletedMissions.Contains(missionName);
         }
 
-        private bool TryMarkCurrentChapterDialogNpcsAsInteracted(CareerSlot slot, string storylineName)
+        private void SendUnlocksChanged(NetworkStream stream, string peer, ulong msgNo, string[] activatedUnlocks, string[] deactivatedUnlocks, string reason)
         {
-            var npcIds = GetCurrentChapterDialogNpcIds(slot, storylineName);
-            if (npcIds == null || npcIds.Count == 0)
+            if (stream == null)
             {
-                return false;
+                return;
             }
 
-            if (slot.MainCampaignInteractedNpcs == null)
+            var changes = new UnlockChanges();
+            AddUnlockChangeEntries(changes.ActivatedUnlocks, activatedUnlocks);
+            AddUnlockChangeEntries(changes.DeactivatedUnlocks, deactivatedUnlocks);
+            if (changes.IsEmpty())
             {
-                slot.MainCampaignInteractedNpcs = new List<string>();
+                return;
             }
 
-            var changed = false;
-            for (var i = 0; i < npcIds.Count; i++)
+            var payload = BuildUtf16StringPayload(Json.Serialize(changes));
+            var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 28, payload), msgNo);
+            SendRawFrame(stream, peer, PrefixLength(core), "sent MetaGameplayCommunicationObject UnlocksChanged" + (IsNullOrWhiteSpace(reason) ? string.Empty : " (" + reason + ")"));
+        }
+
+        private void SendMissionReward(NetworkStream stream, string peer, ulong msgNo, MissionReward missionReward, string reason)
+        {
+            if (stream == null || missionReward == null)
             {
-                var npcId = npcIds[i];
-                if (IsNullOrWhiteSpace(npcId))
+                return;
+            }
+
+            var earnedCurrencies = new List<object>();
+            var currencies = missionReward.EarnedCurrencies ?? new CurrencyReward[0];
+            for (var i = 0; i < currencies.Length; i++)
+            {
+                var currency = currencies[i];
+                if (currency == null || currency.EarnedValue == 0)
                 {
                     continue;
                 }
 
-                if (!slot.MainCampaignInteractedNpcs.Contains(npcId))
+                earnedCurrencies.Add(new Dictionary<string, object>
                 {
-                    slot.MainCampaignInteractedNpcs.Add(npcId);
-                    changed = true;
-                }
+                    { "CurrencyId", currency.CurrencyId.ToString() },
+                    { "EarnedValue", currency.EarnedValue },
+                });
             }
 
-            return changed;
-        }
-
-        private List<string> GetCurrentChapterDialogNpcIds(CareerSlot slot, string storylineName)
-        {
-            var npcIds = new List<string>();
-            if (slot == null || IsNullOrWhiteSpace(storylineName))
+            var itemChangesPayload = new List<object>();
+            var itemChanges = missionReward.ItemChanges ?? new ItemChange[0];
+            for (var i = 0; i < itemChanges.Length; i++)
             {
-                return npcIds;
-            }
-
-            try
-            {
-                StorylineInfo storyline;
-                if (!TryGetStoryline(storylineName, out storyline) || storyline == null || storyline.Chapters == null || storyline.Chapters.Count == 0)
-                {
-                    return npcIds;
-                }
-
-                var currentIndex = slot.MainCampaignCurrentChapter;
-                if (currentIndex < 0)
-                {
-                    currentIndex = 0;
-                }
-                if (currentIndex >= storyline.Chapters.Count)
-                {
-                    currentIndex = storyline.Chapters.Count - 1;
-                }
-
-                var chapter = storyline.Chapters[currentIndex];
-                if (chapter == null || chapter.DialogNpcIds == null || chapter.DialogNpcIds.Count == 0)
-                {
-                    return npcIds;
-                }
-
-                for (var i = 0; i < chapter.DialogNpcIds.Count; i++)
-                {
-                    var npcId = chapter.DialogNpcIds[i];
-                    if (IsNullOrWhiteSpace(npcId))
-                    {
-                        continue;
-                    }
-
-                    if (!npcIds.Contains(npcId))
-                    {
-                        npcIds.Add(npcId);
-                    }
-                }
-            }
-            catch
-            {
-                npcIds.Clear();
-            }
-
-            return npcIds;
-        }
-
-        private bool TryGetRefreshTriggerChapterIndexWithDifferentHub(string storylineName, int currentIndex, string currentHub, out int triggerIndex)
-        {
-            triggerIndex = -1;
-            try
-            {
-                StorylineInfo storyline;
-                if (!TryGetStoryline(storylineName, out storyline) || storyline == null || storyline.Chapters == null || storyline.Chapters.Count == 0)
-                {
-                    return false;
-                }
-
-                var boundedCurrent = currentIndex;
-                if (boundedCurrent < 0)
-                {
-                    boundedCurrent = 0;
-                }
-                if (boundedCurrent >= storyline.Chapters.Count)
-                {
-                    boundedCurrent = storyline.Chapters.Count - 1;
-                }
-
-                var currentHubResolved = currentHub;
-                if (IsNullOrWhiteSpace(currentHubResolved))
-                {
-                    var currentChapter = storyline.Chapters[boundedCurrent];
-                    if (currentChapter != null && !IsNullOrWhiteSpace(currentChapter.Hub))
-                    {
-                        currentHubResolved = currentChapter.Hub;
-                    }
-                }
-
-                for (var i = 0; i < storyline.Chapters.Count; i++)
-                {
-                    if (i == boundedCurrent)
-                    {
-                        continue;
-                    }
-
-                    var chapter = storyline.Chapters[i];
-                    if (chapter == null || IsNullOrWhiteSpace(chapter.Hub))
-                    {
-                        continue;
-                    }
-
-                    if (!IsNullOrWhiteSpace(currentHubResolved) && string.Equals(chapter.Hub, currentHubResolved, StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    triggerIndex = i;
-                    return true;
-                }
-
-                return false;
-            }
-            catch
-            {
-                triggerIndex = -1;
-                return false;
-            }
-        }
-
-        private bool TryAdvanceMainCampaignIfEligible(string identityHash, CareerSlot slot, string peer, NetworkStream stream, string storylineName, ulong msgNoBase, ref byte[] cachedHubStatePayload, byte[] cachedCreationInfoPayload, bool nudgeClient)
-        {
-            if (slot == null)
-            {
-                return false;
-            }
-
-            StorylineInfo storyline;
-            if (!TryGetStoryline(storylineName, out storyline) || storyline == null || storyline.Chapters == null || storyline.Chapters.Count == 0)
-            {
-                return false;
-            }
-
-            var currentIndex = slot.MainCampaignCurrentChapter;
-            if (currentIndex < 0)
-            {
-                currentIndex = 0;
-            }
-            if (currentIndex >= storyline.Chapters.Count)
-            {
-                currentIndex = storyline.Chapters.Count - 1;
-            }
-
-            var chapter = storyline.Chapters[currentIndex];
-            if (chapter == null)
-            {
-                return false;
-            }
-
-            // Gate: only advance once all required missions are fully completed/claimed.
-            // If we advance at ReadyToReceiveRewards, the finished mission drops out of the active chapter,
-            // quest givers stop showing the (?) marker, and the player never redeems StoryRewards (e.g., nuyen).
-            var states = slot.MainCampaignMissionStates ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            for (var i = 0; i < chapter.RequiredMissions.Count; i++)
-            {
-                var missionName = chapter.RequiredMissions[i];
-                if (IsNullOrWhiteSpace(missionName))
-                {
-                    continue;
-                }
-                string raw;
-                states.TryGetValue(missionName, out raw);
-                var st = ParseStoryMissionStateOrDefault(raw, StoryMissionstate.Available);
-                if (st < StoryMissionstate.Completed)
-                {
-                    return false;
-                }
-            }
-
-            if (!HasAllActiveUnlocks(slot, chapter.RequiredUnlocks))
-            {
-                return false;
-            }
-
-            var nextIndex = currentIndex + 1;
-            if (nextIndex >= storyline.Chapters.Count)
-            {
-                return false;
-            }
-
-            var next = storyline.Chapters[nextIndex];
-            slot.MainCampaignCurrentChapter = nextIndex;
-            if (slot.MainCampaignInteractedNpcs != null)
-            {
-                slot.MainCampaignInteractedNpcs.Clear();
-            }
-
-            // Update hub id to the next chapter's hub (retail server moves you along the campaign hubs).
-            if (next != null && !IsNullOrWhiteSpace(next.Hub))
-            {
-                slot.HubId = next.Hub;
-            }
-
-            if (_userStore != null && !IsNullOrWhiteSpace(identityHash))
-            {
-                try { _userStore.UpsertCareer(identityHash, slot); } catch { }
-            }
-
-            // Broadcast ChapterChange via StoryprogressChanged.
-            try
-            {
-                var chapterChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.ChapterChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"" + storylineName + "\",\"NewChapterIndex\":" + nextIndex.ToString(CultureInfo.InvariantCulture) + "}";
-                var payload = BuildUtf16StringPayload(chapterChangeJson);
-                var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, payload), msgNoBase);
-                SendRawFrame(stream, peer, PrefixLength(core), "sent MetaGameplayCommunicationObject StoryprogressChanged (ChapterChange " + nextIndex.ToString(CultureInfo.InvariantCulture) + ")");
-            }
-            catch
-            {
-            }
-
-            // Refresh hub payload so subsequent RequestCurrentStorylineHub returns the correct hub.
-            try
-            {
-                var hubId = !IsNullOrWhiteSpace(slot.HubId) ? slot.HubId : DefaultHubId;
-                var characterIdentifier = !IsNullOrWhiteSpace(slot.CharacterIdentifier)
-                    ? slot.CharacterIdentifier
-                    : (Guid.NewGuid().ToString() + ":" + slot.Index.ToString(CultureInfo.InvariantCulture));
-                cachedHubStatePayload = BuildHubStatePayloadForSlot(slot, characterIdentifier, true);
-            }
-            catch
-            {
-            }
-
-            // Nudge hub/client if requested and we already have cached payloads.
-            if (nudgeClient && cachedHubStatePayload != null && cachedCreationInfoPayload != null)
-            {
-                try
-                {
-                    if (!ShouldSuppressDuplicateHubPush(peer, false, cachedHubStatePayload))
-                    {
-                        var hubStateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 37, cachedHubStatePayload), msgNoBase + 1);
-                        SendRawFrame(stream, peer, PrefixLength(hubStateCore), "sent MetaGameplayCommunicationObject SendHubCommunicationObjectToClient after ChapterChange");
-                    }
-                }
-                catch
-                {
-                }
-            }
-
-            return true;
-        }
-
-        private static bool HasAllActiveUnlocks(CareerSlot slot, List<string> requiredUnlocks)
-        {
-            if (requiredUnlocks == null || requiredUnlocks.Count <= 0)
-            {
-                return true;
-            }
-
-            if (slot == null || slot.ActiveUnlocks == null || slot.ActiveUnlocks.Count <= 0)
-            {
-                return false;
-            }
-
-            for (var i = 0; i < requiredUnlocks.Count; i++)
-            {
-                var requiredUnlock = requiredUnlocks[i];
-                if (IsNullOrWhiteSpace(requiredUnlock))
+                var change = itemChanges[i];
+                if (change == null || IsNullOrWhiteSpace(change.ItemDefintionId) || change.Delta == 0)
                 {
                     continue;
                 }
 
-                if (!slot.ActiveUnlocks.Contains(requiredUnlock))
+                itemChangesPayload.Add(new Dictionary<string, object>
                 {
-                    return false;
-                }
+                    { "ItemDefintionId", change.ItemDefintionId },
+                    { "Delta", change.Delta },
+                    { "Quality", change.Quality },
+                    { "Flavour", change.Flavour },
+                });
             }
 
-            return true;
+            var rewardJson = Json.Serialize(new Dictionary<string, object>
+            {
+                { "GrantedUnlocks", missionReward.GrantedUnlocks ?? new string[0] },
+                { "EarnedCurrencies", earnedCurrencies.ToArray() },
+                { "ItemChanges", itemChangesPayload.ToArray() },
+            });
+
+            var rewardPayload = BuildUtf16StringPayload(rewardJson);
+            var rewardCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 35, rewardPayload), msgNo);
+            SendRawFrame(stream, peer, PrefixLength(rewardCore), "sent MetaGameplayCommunicationObject GotMissionReward " + reason);
         }
 
-        private static string[] AddActiveUnlocks(CareerSlot slot, string[] unlocks)
+        private static void AddUnlockChangeEntries(List<Unlock> target, string[] unlocks)
         {
-            if (slot == null || unlocks == null || unlocks.Length <= 0)
+            if (target == null || unlocks == null || unlocks.Length <= 0)
             {
-                return new string[0];
+                return;
             }
 
-            if (slot.ActiveUnlocks == null)
-            {
-                slot.ActiveUnlocks = new List<string>();
-            }
-
-            var added = new List<string>();
-            for (var i = 0; i < unlocks.Length; i++)
-            {
-                var unlock = unlocks[i];
-                if (IsNullOrWhiteSpace(unlock) || slot.ActiveUnlocks.Contains(unlock))
-                {
-                    continue;
-                }
-
-                slot.ActiveUnlocks.Add(unlock);
-                added.Add(unlock);
-            }
-
-            return added.ToArray();
-        }
-
-        private static string[] RemoveActiveUnlocks(CareerSlot slot, string[] unlocks)
-        {
-            if (slot == null || slot.ActiveUnlocks == null || slot.ActiveUnlocks.Count <= 0 || unlocks == null || unlocks.Length <= 0)
-            {
-                return new string[0];
-            }
-
-            var removed = new List<string>();
             for (var i = 0; i < unlocks.Length; i++)
             {
                 var unlock = unlocks[i];
@@ -3640,13 +3231,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                     continue;
                 }
 
-                if (slot.ActiveUnlocks.Remove(unlock))
+                target.Add(new Unlock
                 {
-                    removed.Add(unlock);
-                }
+                    TechnicalName = unlock,
+                });
             }
-
-            return removed.ToArray();
         }
 
         private static bool TryGetUlong(IDictionary dict, string key, out ulong value)
@@ -6581,8 +6170,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             completedStoryMissions.Add(missionName);
                                         }
 
-                                        var shouldGrantStoryRewards = false;
-                                        StoryMissionstate previousState = StoryMissionstate.Available;
+                                        var storyStateUpdate = new StoryMissionStateUpdateResult();
                                         CareerSlot slotForStoryRewards = null;
                                         // Persist the requested state so it survives restarts.
                                         if (_userStore != null)
@@ -6594,40 +6182,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 {
                                                     slotForStoryRewards = slot;
 
-                                                    if (slot.MainCampaignMissionStates == null)
-                                                    {
-                                                        slot.MainCampaignMissionStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                                                    }
-
-                                                    try
-                                                    {
-                                                        string existing;
-                                                        if (slot.MainCampaignMissionStates.TryGetValue(missionName, out existing) && !IsNullOrWhiteSpace(existing))
-                                                        {
-                                                            previousState = ParseStoryMissionStateOrDefault(existing, StoryMissionstate.Available);
-                                                        }
-                                                    }
-                                                    catch
-                                                    {
-                                                        previousState = StoryMissionstate.Available;
-                                                    }
-
-                                                    // Retail-like: story rewards are redeemed when moving ReadyToReceiveRewards -> Completed.
-                                                    if (previousState == StoryMissionstate.ReadyToReceiveRewards && parsedTarget == StoryMissionstate.Completed)
-                                                    {
-                                                        shouldGrantStoryRewards = true;
-                                                    }
-
-                                                    // Store canonical enum names; our snapshot generator parses these.
-                                                    slot.MainCampaignMissionStates[missionName] = parsedTarget.ToString();
-
-                                                    // Fallback for client flows that do not emit InteractedWithNpcMessage:
-                                                    // when a chapter mission transitions to playable/completed, mark current chapter
-                                                    // dialog NPCs as interacted so repeat dialog/"new" markers are cleared.
-                                                    if (parsedTarget == StoryMissionstate.ReadyToPlay || parsedTarget == StoryMissionstate.Completed)
-                                                    {
-                                                        TryMarkCurrentChapterDialogNpcsAsInteracted(slot, "Main Campaign");
-                                                    }
+                                                    storyStateUpdate = _storyProgressionService.ApplyMissionState(slot, "Main Campaign", missionName, parsedTarget);
 
                                                     _userStore.UpsertCareer(activeIdentityHash, slot);
                                                 }
@@ -6639,113 +6194,14 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                         // If the player just redeemed story rewards in the hub, apply them now.
                                         // The StoryRewardDialog content is client-driven (from mission definition), but wallet/inventory are authoritative server-side.
-                                        int storyKarma = 0;
-                                        int storyNuyen = 0;
-                                        var storyItemChangesApplied = new List<ItemChange>();
-                                        var storyGrantedUnlocks = new string[0];
-                                        var grantedAnyStoryRewards = false;
-                                        if (shouldGrantStoryRewards && slotForStoryRewards != null)
+                                        var storyRewardApplication = new MissionRewardApplicationResult();
+                                        if (storyStateUpdate.ShouldGrantStoryRewards && slotForStoryRewards != null)
                                         {
                                             try
                                             {
-                                                int found;
-                                                if (TryResolveMissionStoryCurrencyReward(missionName, "Victory", "Karma", out found) && found != 0)
-                                                {
-                                                    storyKarma = found;
-                                                }
-                                                if (TryResolveMissionStoryCurrencyReward(missionName, "Victory", "Nuyen", out found) && found != 0)
-                                                {
-                                                    storyNuyen = found;
-                                                }
-
-                                                string[] resolvedStoryUnlocks;
-                                                if (TryResolveMissionStoryRewardUnlocks(missionName, "Victory", out resolvedStoryUnlocks) && resolvedStoryUnlocks != null && resolvedStoryUnlocks.Length > 0)
-                                                {
-                                                    storyGrantedUnlocks = AddActiveUnlocks(slotForStoryRewards, resolvedStoryUnlocks);
-                                                }
-
-                                                ItemChange[] storyItems;
-                                                if (TryResolveMissionStoryItemChanges(missionName, "Victory", out storyItems) && storyItems != null && storyItems.Length > 0)
-                                                {
-                                                    if (slotForStoryRewards.ItemPossessions == null)
-                                                    {
-                                                        slotForStoryRewards.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                                                    }
-
-                                                    for (var i = 0; i < storyItems.Length; i++)
-                                                    {
-                                                        var c = storyItems[i];
-                                                        if (c == null || IsNullOrWhiteSpace(c.ItemDefintionId) || c.Delta == 0)
-                                                        {
-                                                            continue;
-                                                        }
-
-                                                        try
-                                                        {
-                                                            storyItemChangesApplied.Add(new ItemChange(c.ItemDefintionId, c.Delta)
-                                                            {
-                                                                Quality = c.Quality,
-                                                                Flavour = c.Flavour,
-                                                            });
-                                                        }
-                                                        catch
-                                                        {
-                                                        }
-
-                                                        var packedKey = c.ItemDefintionId + "|" + c.Quality.ToString(CultureInfo.InvariantCulture) + "|" + c.Flavour.ToString(CultureInfo.InvariantCulture);
-                                                        int existing;
-                                                        if (!slotForStoryRewards.ItemPossessions.TryGetValue(packedKey, out existing))
-                                                        {
-                                                            existing = 0;
-                                                        }
-
-                                                        var next = existing + c.Delta;
-                                                        if (next <= 0)
-                                                        {
-                                                            if (slotForStoryRewards.ItemPossessions.ContainsKey(packedKey))
-                                                            {
-                                                                slotForStoryRewards.ItemPossessions.Remove(packedKey);
-                                                            }
-                                                        }
-                                                        else
-                                                        {
-                                                            slotForStoryRewards.ItemPossessions[packedKey] = next;
-                                                        }
-                                                    }
-                                                }
-
-                                                if (storyKarma != 0)
-                                                {
-                                                    try
-                                                    {
-                                                        checked
-                                                        {
-                                                            slotForStoryRewards.Karma = slotForStoryRewards.Karma + storyKarma;
-                                                        }
-                                                    }
-                                                    catch
-                                                    {
-                                                        slotForStoryRewards.Karma = int.MaxValue;
-                                                    }
-                                                }
-
-                                                if (storyNuyen != 0)
-                                                {
-                                                    try
-                                                    {
-                                                        checked
-                                                        {
-                                                            slotForStoryRewards.Nuyen = slotForStoryRewards.Nuyen + storyNuyen;
-                                                        }
-                                                    }
-                                                    catch
-                                                    {
-                                                        slotForStoryRewards.Nuyen = int.MaxValue;
-                                                    }
-                                                }
-
-                                                grantedAnyStoryRewards = (storyKarma != 0 || storyNuyen != 0 || (storyItemChangesApplied != null && storyItemChangesApplied.Count > 0) || storyGrantedUnlocks.Length > 0);
-                                                if (grantedAnyStoryRewards)
+                                                var resolvedStoryReward = _missionRewardService.ResolveMissionReward("StoryRewards", missionName, "Victory");
+                                                storyRewardApplication = _missionRewardService.Apply(slotForStoryRewards, resolvedStoryReward, new string[0]);
+                                                if (storyRewardApplication.Persisted)
                                                 {
                                                     try { _userStore.UpsertCareer(slotForStoryRewards); } catch { }
 
@@ -6755,25 +6211,21 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                         type = "story-reward",
                                                         peer = peer,
                                                         mission = missionName,
-                                                        previousState = previousState.ToString(),
+                                                        previousState = storyStateUpdate.PreviousState.ToString(),
                                                         newState = parsedTarget.ToString(),
-                                                        karmaDelta = storyKarma,
-                                                        karmaTotal = slotForStoryRewards.Karma,
-                                                        nuyenDelta = storyNuyen,
-                                                        nuyenTotal = slotForStoryRewards.Nuyen,
-                                                        grantedUnlocks = storyGrantedUnlocks,
-                                                        itemChanges = storyItemChangesApplied != null ? storyItemChangesApplied.Count : 0,
+                                                        karmaDelta = storyRewardApplication.KarmaAfter - storyRewardApplication.KarmaBefore,
+                                                        karmaTotal = storyRewardApplication.KarmaAfter,
+                                                        nuyenDelta = storyRewardApplication.NuyenAfter - storyRewardApplication.NuyenBefore,
+                                                        nuyenTotal = storyRewardApplication.NuyenAfter,
+                                                        grantedUnlocks = storyRewardApplication.AppliedGrantedUnlocks,
+                                                        itemChanges = storyRewardApplication.AppliedItemChangeCount,
                                                         careerIndex = activeCareerIndex,
                                                     });
                                                 }
                                             }
                                             catch
                                             {
-                                                storyKarma = 0;
-                                                storyNuyen = 0;
-                                                storyGrantedUnlocks = new string[0];
-                                                try { storyItemChangesApplied.Clear(); } catch { }
-                                                grantedAnyStoryRewards = false;
+                                                storyRewardApplication = new MissionRewardApplicationResult();
                                             }
                                         }
 
@@ -6799,64 +6251,9 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                         // Tell the client what it earned so PlayerCharacterController pockets currency and UI updates.
                                         // Include StoryRewards item changes so the reward dialog + inventory stay consistent.
-                                        if (grantedAnyStoryRewards && slotForStoryRewards != null)
+                                        if (storyRewardApplication.ShouldNotifyClient && slotForStoryRewards != null)
                                         {
-                                            try
-                                            {
-                                                var earnedCurrencies = new List<object>();
-                                                if (storyKarma != 0)
-                                                {
-                                                    earnedCurrencies.Add(new Dictionary<string, object>
-                                                    {
-                                                        { "CurrencyId", "Karma" },
-                                                        { "EarnedValue", storyKarma },
-                                                    });
-                                                }
-                                                if (storyNuyen != 0)
-                                                {
-                                                    earnedCurrencies.Add(new Dictionary<string, object>
-                                                    {
-                                                        { "CurrencyId", "Nuyen" },
-                                                        { "EarnedValue", storyNuyen },
-                                                    });
-                                                }
-
-                                                object[] storyItemPayload = new object[0];
-                                                if (storyItemChangesApplied != null && storyItemChangesApplied.Count > 0)
-                                                {
-                                                    var list = new List<object>();
-                                                    for (var i = 0; i < storyItemChangesApplied.Count; i++)
-                                                    {
-                                                        var c = storyItemChangesApplied[i];
-                                                        if (c == null || IsNullOrWhiteSpace(c.ItemDefintionId) || c.Delta == 0)
-                                                        {
-                                                            continue;
-                                                        }
-                                                        list.Add(new Dictionary<string, object>
-                                                        {
-                                                            { "ItemDefintionId", c.ItemDefintionId },
-                                                            { "Delta", c.Delta },
-                                                            { "Quality", c.Quality },
-                                                            { "Flavour", c.Flavour },
-                                                        });
-                                                    }
-                                                    storyItemPayload = list.ToArray();
-                                                }
-
-                                                var rewardJson = Json.Serialize(new Dictionary<string, object>
-                                                {
-                                                    { "GrantedUnlocks", storyGrantedUnlocks },
-                                                    { "EarnedCurrencies", earnedCurrencies.ToArray() },
-                                                    { "ItemChanges", storyItemPayload },
-                                                });
-
-                                                var rewardPayload = BuildUtf16StringPayload(rewardJson);
-                                                var rewardCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 35, rewardPayload), outMsgNo++);
-                                                SendRawFrame(stream, peer, PrefixLength(rewardCore), "sent MetaGameplayCommunicationObject GotMissionReward (StoryRewards redemption)");
-                                            }
-                                            catch
-                                            {
-                                            }
+                                            SendMissionReward(stream, peer, outMsgNo++, storyRewardApplication.TransportReward, "(StoryRewards redemption)");
                                         }
 
                                         // Retail-like: advance chapter once current chapter's required missions are fully completed/claimed.
@@ -6866,10 +6263,19 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         {
                                             try
                                             {
-                                                chapterAdvanced = TryAdvanceMainCampaignIfEligible(activeIdentityHash, slotForStoryRewards, peer, stream, "Main Campaign", outMsgNo, ref cachedHubStatePayload, cachedCreationInfoPayload, false);
+                                                var chapterAdvance = _storyProgressionService.TryAdvanceIfEligible(slotForStoryRewards, "Main Campaign");
+                                                chapterAdvanced = chapterAdvance.Advanced;
                                                 if (chapterAdvanced)
                                                 {
-                                                    outMsgNo = outMsgNo + 1;
+                                                    if (_userStore != null && !IsNullOrWhiteSpace(activeIdentityHash))
+                                                    {
+                                                        _userStore.UpsertCareer(activeIdentityHash, slotForStoryRewards);
+                                                    }
+
+                                                    var chapterChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.ChapterChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"NewChapterIndex\":" + chapterAdvance.NewChapterIndex.ToString(CultureInfo.InvariantCulture) + "}";
+                                                    var chapterChangePayload = BuildUtf16StringPayload(chapterChangeJson);
+                                                    var chapterChangeCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, chapterChangePayload), outMsgNo++);
+                                                    SendRawFrame(stream, peer, PrefixLength(chapterChangeCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (ChapterChange " + chapterAdvance.NewChapterIndex.ToString(CultureInfo.InvariantCulture) + ")");
                                                 }
                                             }
                                             catch
@@ -6891,7 +6297,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 var currentHubId = !IsNullOrWhiteSpace(slotForStoryRewards.HubId) ? slotForStoryRewards.HubId : DefaultHubId;
 
                                                 int triggerChapterIndex;
-                                                if (TryGetRefreshTriggerChapterIndexWithDifferentHub("Main Campaign", currentChapterIndex, currentHubId, out triggerChapterIndex))
+                                                if (_storyProgressionService.TryGetRefreshTriggerChapterIndexWithDifferentHub("Main Campaign", currentChapterIndex, currentHubId, out triggerChapterIndex))
                                                 {
                                                     var triggerChapterJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.ChapterChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"NewChapterIndex\":" + triggerChapterIndex.ToString(CultureInfo.InvariantCulture) + "}";
                                                     var triggerChapterPayload = BuildUtf16StringPayload(triggerChapterJson);

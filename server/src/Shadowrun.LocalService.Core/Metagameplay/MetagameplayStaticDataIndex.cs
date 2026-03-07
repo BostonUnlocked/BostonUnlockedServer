@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Web.Script.Serialization;
+using Cliffhanger.SRO.ServerClientCommons.Metagameplay.Changes;
 
 namespace Shadowrun.LocalService.Core.Metagameplay
 {
@@ -40,9 +41,26 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             public MetagameplayAvailabilityCondition Condition;
         }
 
+        internal sealed class StorylineInfo
+        {
+            public string TechnicalName;
+            public List<ChapterInfo> Chapters = new List<ChapterInfo>();
+        }
+
+        internal sealed class ChapterInfo
+        {
+            public int Index;
+            public string TechnicalName;
+            public string Hub;
+            public List<string> RequiredMissions = new List<string>();
+            public List<string> RequiredUnlocks = new List<string>();
+            public List<string> DialogNpcIds = new List<string>();
+        }
+
         private static readonly object CacheLock = new object();
-        private static string _cachedPath;
-        private static DateTime _cachedLastWriteUtc;
+        private static string _cachedStaticDataDir;
+        private static DateTime _cachedMetagameplayLastWriteUtc;
+        private static DateTime _cachedGlobalsLastWriteUtc;
         private static MetagameplayStaticDataIndex _cachedIndex;
         private static readonly JavaScriptSerializer Json = CreateSerializer();
 
@@ -50,6 +68,12 @@ namespace Shadowrun.LocalService.Core.Metagameplay
         public readonly Dictionary<string, List<string>> InitialSkills;
         public readonly Dictionary<string, Dictionary<string, ShopEntryInfo>> ShopEntries;
         public readonly Dictionary<string, ItemDefinitionInfo> ItemDefinitions;
+        public readonly Dictionary<string, ulong> Bodytypes;
+        public readonly Dictionary<string, StorylineInfo> Storylines;
+        public readonly Dictionary<string, int> MissionCurrencyRewards;
+        public readonly Dictionary<string, ItemChange[]> MissionItemChanges;
+        public readonly Dictionary<string, string[]> MissionRewardUnlocks;
+        public readonly Dictionary<string, string[]> MissionUnlockDeactivations;
 
         private MetagameplayStaticDataIndex()
         {
@@ -57,32 +81,46 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             InitialSkills = new Dictionary<string, List<string>>(StringComparer.Ordinal);
             ShopEntries = new Dictionary<string, Dictionary<string, ShopEntryInfo>>(StringComparer.OrdinalIgnoreCase);
             ItemDefinitions = new Dictionary<string, ItemDefinitionInfo>(StringComparer.OrdinalIgnoreCase);
+            Bodytypes = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
+            Storylines = new Dictionary<string, StorylineInfo>(StringComparer.OrdinalIgnoreCase);
+            MissionCurrencyRewards = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            MissionItemChanges = new Dictionary<string, ItemChange[]>(StringComparer.OrdinalIgnoreCase);
+            MissionRewardUnlocks = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+            MissionUnlockDeactivations = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
         }
 
         public static MetagameplayStaticDataIndex Load(string staticDataDir)
         {
-            var path = !string.IsNullOrEmpty(staticDataDir)
+            var metagameplayPath = !string.IsNullOrEmpty(staticDataDir)
                 ? Path.Combine(staticDataDir, "metagameplay.json")
                 : null;
+            var globalsPath = !string.IsNullOrEmpty(staticDataDir)
+                ? Path.Combine(staticDataDir, "globals.json")
+                : null;
 
-            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            var hasMetagameplay = !string.IsNullOrEmpty(metagameplayPath) && File.Exists(metagameplayPath);
+            var hasGlobals = !string.IsNullOrEmpty(globalsPath) && File.Exists(globalsPath);
+            if (!hasMetagameplay && !hasGlobals)
             {
                 return new MetagameplayStaticDataIndex();
             }
 
-            var lastWriteUtc = File.GetLastWriteTimeUtc(path);
+            var metagameplayLastWriteUtc = hasMetagameplay ? File.GetLastWriteTimeUtc(metagameplayPath) : default(DateTime);
+            var globalsLastWriteUtc = hasGlobals ? File.GetLastWriteTimeUtc(globalsPath) : default(DateTime);
             lock (CacheLock)
             {
                 if (_cachedIndex != null
-                    && string.Equals(_cachedPath, path, StringComparison.OrdinalIgnoreCase)
-                    && _cachedLastWriteUtc == lastWriteUtc)
+                    && string.Equals(_cachedStaticDataDir, staticDataDir, StringComparison.OrdinalIgnoreCase)
+                    && _cachedMetagameplayLastWriteUtc == metagameplayLastWriteUtc
+                    && _cachedGlobalsLastWriteUtc == globalsLastWriteUtc)
                 {
                     return _cachedIndex;
                 }
 
-                _cachedIndex = LoadFromPath(path);
-                _cachedPath = path;
-                _cachedLastWriteUtc = lastWriteUtc;
+                _cachedIndex = LoadFromPaths(metagameplayPath, globalsPath);
+                _cachedStaticDataDir = staticDataDir;
+                _cachedMetagameplayLastWriteUtc = metagameplayLastWriteUtc;
+                _cachedGlobalsLastWriteUtc = globalsLastWriteUtc;
                 return _cachedIndex;
             }
         }
@@ -172,6 +210,78 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             return ItemDefinitions.TryGetValue(itemId, out itemDefinition) && itemDefinition != null;
         }
 
+        public bool TryGetBodytypeId(ulong metatypeId, ulong genderId, out ulong bodytypeId)
+        {
+            bodytypeId = 0UL;
+            if (metatypeId == 0UL || genderId == 0UL)
+            {
+                return false;
+            }
+
+            return Bodytypes.TryGetValue(BuildBodytypeKey(metatypeId, genderId), out bodytypeId) && bodytypeId != 0UL;
+        }
+
+        public bool TryGetMissionCurrencyReward(string rewardSection, string missionName, string missionOutcome, string currencyId, out int earnedValue)
+        {
+            earnedValue = 0;
+            if (string.IsNullOrEmpty(rewardSection) || string.IsNullOrEmpty(missionName) || string.IsNullOrEmpty(missionOutcome) || string.IsNullOrEmpty(currencyId))
+            {
+                return false;
+            }
+
+            return MissionCurrencyRewards.TryGetValue(BuildMissionCurrencyRewardKey(rewardSection, missionName, missionOutcome, currencyId), out earnedValue);
+        }
+
+        public bool TryGetMissionItemChanges(string rewardSection, string missionName, string missionOutcome, out ItemChange[] itemChanges)
+        {
+            itemChanges = null;
+            if (string.IsNullOrEmpty(rewardSection) || string.IsNullOrEmpty(missionName) || string.IsNullOrEmpty(missionOutcome))
+            {
+                return false;
+            }
+
+            return MissionItemChanges.TryGetValue(BuildMissionRewardKey(rewardSection, missionName, missionOutcome), out itemChanges)
+                && itemChanges != null
+                && itemChanges.Length > 0;
+        }
+
+        public bool TryGetMissionRewardUnlocks(string rewardSection, string missionName, string missionOutcome, out string[] unlocks)
+        {
+            unlocks = null;
+            if (string.IsNullOrEmpty(rewardSection) || string.IsNullOrEmpty(missionName) || string.IsNullOrEmpty(missionOutcome))
+            {
+                return false;
+            }
+
+            return MissionRewardUnlocks.TryGetValue(BuildMissionRewardKey(rewardSection, missionName, missionOutcome), out unlocks)
+                && unlocks != null
+                && unlocks.Length > 0;
+        }
+
+        public bool TryGetMissionUnlockDeactivationsOnVictory(string missionName, out string[] unlocks)
+        {
+            unlocks = null;
+            if (string.IsNullOrEmpty(missionName))
+            {
+                return false;
+            }
+
+            return MissionUnlockDeactivations.TryGetValue(missionName, out unlocks)
+                && unlocks != null
+                && unlocks.Length > 0;
+        }
+
+        public bool TryGetStoryline(string storylineTechnicalName, out StorylineInfo storyline)
+        {
+            storyline = null;
+            if (string.IsNullOrEmpty(storylineTechnicalName))
+            {
+                return false;
+            }
+
+            return Storylines.TryGetValue(storylineTechnicalName, out storyline) && storyline != null;
+        }
+
         private static JavaScriptSerializer CreateSerializer()
         {
             var serializer = new JavaScriptSerializer();
@@ -180,51 +290,20 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             return serializer;
         }
 
-        private static MetagameplayStaticDataIndex LoadFromPath(string path)
+        private static MetagameplayStaticDataIndex LoadFromPaths(string metagameplayPath, string globalsPath)
         {
             var result = new MetagameplayStaticDataIndex();
 
             try
             {
-                var json = File.ReadAllText(path);
-                if (string.IsNullOrEmpty(json))
+                if (!string.IsNullOrEmpty(metagameplayPath) && File.Exists(metagameplayPath))
                 {
-                    return result;
+                    ParseMetagameplayFile(metagameplayPath, result);
                 }
 
-                var root = Json.DeserializeObject(json);
-                var components = TryGetObjectArray(root as IDictionary, "Components");
-                if (components == null)
+                if (!string.IsNullOrEmpty(globalsPath) && File.Exists(globalsPath))
                 {
-                    components = ToObjectArray(root);
-                }
-                if (components == null)
-                {
-                    return result;
-                }
-
-                for (var i = 0; i < components.Length; i++)
-                {
-                    var component = components[i] as IDictionary;
-                    if (component == null)
-                    {
-                        continue;
-                    }
-
-                    var typeName = GetString(component, "TypeName");
-                    if (!string.IsNullOrEmpty(typeName) && typeName.IndexOf("SkillTreeData", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        ParseSkillTreeData(component, result);
-                        continue;
-                    }
-
-                    if (!string.IsNullOrEmpty(typeName) && typeName.IndexOf("ShopListData", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        ParseShopListData(component, result);
-                        continue;
-                    }
-
-                    ParseItemDefinition(component, result);
+                    ParseGlobalsFile(globalsPath, result);
                 }
             }
             catch
@@ -232,6 +311,52 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             }
 
             return result;
+        }
+
+        private static void ParseMetagameplayFile(string path, MetagameplayStaticDataIndex result)
+        {
+            var json = File.ReadAllText(path);
+            if (string.IsNullOrEmpty(json))
+            {
+                return;
+            }
+
+            var root = Json.DeserializeObject(json);
+            var components = TryGetObjectArray(root as IDictionary, "Components");
+            if (components == null)
+            {
+                components = ToObjectArray(root);
+            }
+            if (components == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < components.Length; i++)
+            {
+                var component = components[i] as IDictionary;
+                if (component == null)
+                {
+                    continue;
+                }
+
+                var typeName = GetString(component, "TypeName");
+                if (!string.IsNullOrEmpty(typeName) && typeName.IndexOf("SkillTreeData", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    ParseSkillTreeData(component, result);
+                    continue;
+                }
+
+                if (!string.IsNullOrEmpty(typeName) && typeName.IndexOf("ShopListData", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    ParseShopListData(component, result);
+                    continue;
+                }
+
+                ParseBodytypeData(component, result);
+                ParseStorylineData(component, result);
+                ParseItemDefinition(component, result);
+            }
         }
 
         private static void ParseSkillTreeData(IDictionary component, MetagameplayStaticDataIndex result)
@@ -456,6 +581,367 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             result.ItemDefinitions[itemId] = itemDefinition;
         }
 
+        private static void ParseBodytypeData(IDictionary component, MetagameplayStaticDataIndex result)
+        {
+            var definitions = TryGetObjectArray(component, "BodytypeDefinitions");
+            if (definitions == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < definitions.Length; i++)
+            {
+                var definition = definitions[i] as IDictionary;
+                if (definition == null)
+                {
+                    continue;
+                }
+
+                var id = GetUInt64(definition, "Id", 0UL);
+                var metatype = GetUInt64(definition, "MetatypeId", 0UL);
+                var gender = GetUInt64(definition, "GenderId", 0UL);
+                if (id == 0UL || metatype == 0UL || gender == 0UL)
+                {
+                    continue;
+                }
+
+                result.Bodytypes[BuildBodytypeKey(metatype, gender)] = id;
+            }
+        }
+
+        private static void ParseStorylineData(IDictionary component, MetagameplayStaticDataIndex result)
+        {
+            var storylines = TryGetObjectArray(component, "Storylines");
+            if (storylines == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < storylines.Length; i++)
+            {
+                var storylineDict = storylines[i] as IDictionary;
+                if (storylineDict == null)
+                {
+                    continue;
+                }
+
+                var technicalName = GetString(storylineDict, "TechnicalName");
+                if (string.IsNullOrEmpty(technicalName))
+                {
+                    continue;
+                }
+
+                var info = new StorylineInfo();
+                info.TechnicalName = technicalName;
+
+                var chapters = TryGetObjectArray(storylineDict, "Chapters");
+                if (chapters != null)
+                {
+                    for (var chapterIndex = 0; chapterIndex < chapters.Length; chapterIndex++)
+                    {
+                        var chapterDict = chapters[chapterIndex] as IDictionary;
+                        if (chapterDict == null)
+                        {
+                            continue;
+                        }
+
+                        var chapter = new ChapterInfo();
+                        chapter.Index = chapterIndex;
+                        chapter.TechnicalName = GetString(chapterDict, "TechnicalName");
+                        chapter.Hub = GetString(chapterDict, "Hub");
+
+                        var requiredUnlocks = TryGetObjectArray(chapterDict, "RequiredUnlocksForNextChapter");
+                        if (requiredUnlocks != null)
+                        {
+                            for (var unlockIndex = 0; unlockIndex < requiredUnlocks.Length; unlockIndex++)
+                            {
+                                var unlockName = requiredUnlocks[unlockIndex] as string;
+                                if (!string.IsNullOrEmpty(unlockName))
+                                {
+                                    chapter.RequiredUnlocks.Add(unlockName);
+                                }
+                            }
+                        }
+
+                        var requiredMissions = TryGetObjectArray(chapterDict, "RequiredMissionsForNextChapter");
+                        if (requiredMissions != null)
+                        {
+                            for (var missionIndex = 0; missionIndex < requiredMissions.Length; missionIndex++)
+                            {
+                                var missionRef = requiredMissions[missionIndex] as IDictionary;
+                                if (missionRef == null)
+                                {
+                                    continue;
+                                }
+
+                                var missionName = GetString(missionRef, "Mission");
+                                if (!string.IsNullOrEmpty(missionName))
+                                {
+                                    chapter.RequiredMissions.Add(missionName);
+                                }
+                            }
+                        }
+
+                        var dialogs = TryGetObjectArray(chapterDict, "DialogsForChapter");
+                        if (dialogs != null)
+                        {
+                            for (var dialogIndex = 0; dialogIndex < dialogs.Length; dialogIndex++)
+                            {
+                                var dialogDef = dialogs[dialogIndex] as IDictionary;
+                                if (dialogDef == null)
+                                {
+                                    continue;
+                                }
+
+                                var npcId = GetString(dialogDef, "Id");
+                                if (!string.IsNullOrEmpty(npcId) && !chapter.DialogNpcIds.Contains(npcId))
+                                {
+                                    chapter.DialogNpcIds.Add(npcId);
+                                }
+                            }
+                        }
+
+                        info.Chapters.Add(chapter);
+                    }
+                }
+
+                result.Storylines[technicalName] = info;
+            }
+        }
+
+        private static void ParseGlobalsFile(string path, MetagameplayStaticDataIndex result)
+        {
+            var json = File.ReadAllText(path);
+            if (string.IsNullOrEmpty(json))
+            {
+                return;
+            }
+
+            var root = Json.DeserializeObject(json);
+            var components = TryGetObjectArray(root as IDictionary, "Components");
+            if (components == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < components.Length; i++)
+            {
+                var component = components[i] as IDictionary;
+                if (component == null)
+                {
+                    continue;
+                }
+
+                var missions = TryGetObjectArray(component, "MissionDefinitions");
+                if (missions == null)
+                {
+                    continue;
+                }
+
+                for (var missionIndex = 0; missionIndex < missions.Length; missionIndex++)
+                {
+                    var mission = missions[missionIndex] as IDictionary;
+                    if (mission == null)
+                    {
+                        continue;
+                    }
+
+                    var missionName = GetString(mission, "Name");
+                    if (string.IsNullOrEmpty(missionName))
+                    {
+                        continue;
+                    }
+
+                    var rewards = mission.Contains("Rewards") ? mission["Rewards"] as IDictionary : null;
+                    if (rewards != null)
+                    {
+                        TryAddMissionCurrencyRewards(result.MissionCurrencyRewards, "Rewards", missionName, rewards);
+                        TryAddMissionItemChanges(result.MissionItemChanges, "Rewards", missionName, rewards);
+                        TryAddMissionRewardUnlocks(result.MissionRewardUnlocks, "Rewards", missionName, rewards);
+                    }
+
+                    var storyRewards = mission.Contains("StoryRewards") ? mission["StoryRewards"] as IDictionary : null;
+                    if (storyRewards != null)
+                    {
+                        TryAddMissionCurrencyRewards(result.MissionCurrencyRewards, "StoryRewards", missionName, storyRewards);
+                        TryAddMissionItemChanges(result.MissionItemChanges, "StoryRewards", missionName, storyRewards);
+                        TryAddMissionRewardUnlocks(result.MissionRewardUnlocks, "StoryRewards", missionName, storyRewards);
+                    }
+
+                    TryAddMissionUnlockDeactivations(result.MissionUnlockDeactivations, missionName, mission);
+                }
+            }
+        }
+
+        private static void TryAddMissionCurrencyRewards(Dictionary<string, int> map, string rewardSection, string missionName, IDictionary rewardDef)
+        {
+            if (map == null || string.IsNullOrEmpty(rewardSection) || string.IsNullOrEmpty(missionName) || rewardDef == null)
+            {
+                return;
+            }
+
+            var currencyRewards = TryGetObjectArray(rewardDef, "MissionCurrencyReward");
+            if (currencyRewards == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < currencyRewards.Length; i++)
+            {
+                var reward = currencyRewards[i] as IDictionary;
+                if (reward == null)
+                {
+                    continue;
+                }
+
+                var currencyId = GetString(reward, "CurrencyId");
+                var outcome = GetString(reward, "MissionOutcome");
+                if (string.IsNullOrEmpty(currencyId) || string.IsNullOrEmpty(outcome))
+                {
+                    continue;
+                }
+
+                map[BuildMissionCurrencyRewardKey(rewardSection, missionName, outcome, currencyId)] = GetInt32(reward, "EarnedValue", 0);
+            }
+        }
+
+        private static void TryAddMissionItemChanges(Dictionary<string, ItemChange[]> map, string rewardSection, string missionName, IDictionary rewardDef)
+        {
+            if (map == null || string.IsNullOrEmpty(rewardSection) || string.IsNullOrEmpty(missionName) || rewardDef == null)
+            {
+                return;
+            }
+
+            var itemChanges = TryGetObjectArray(rewardDef, "ItemChanges");
+            if (itemChanges == null || itemChanges.Length == 0)
+            {
+                return;
+            }
+
+            var perOutcome = new Dictionary<string, List<ItemChange>>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < itemChanges.Length; i++)
+            {
+                var itemChange = itemChanges[i] as IDictionary;
+                if (itemChange == null)
+                {
+                    continue;
+                }
+
+                var itemId = GetString(itemChange, "ItemDefintionId");
+                var outcome = GetString(itemChange, "MissionOutcome");
+                if (string.IsNullOrEmpty(outcome))
+                {
+                    outcome = "Victory";
+                }
+
+                var delta = GetInt32(itemChange, "Delta", 0);
+                if (string.IsNullOrEmpty(itemId) || delta == 0)
+                {
+                    continue;
+                }
+
+                List<ItemChange> bucket;
+                if (!perOutcome.TryGetValue(outcome, out bucket) || bucket == null)
+                {
+                    bucket = new List<ItemChange>();
+                    perOutcome[outcome] = bucket;
+                }
+
+                try
+                {
+                    bucket.Add(new ItemChange(itemId, delta)
+                    {
+                        Quality = GetInt32(itemChange, "Quality", 0),
+                        Flavour = GetInt32(itemChange, "Flavour", -1),
+                    });
+                }
+                catch
+                {
+                }
+            }
+
+            foreach (var entry in perOutcome)
+            {
+                if (!string.IsNullOrEmpty(entry.Key) && entry.Value != null && entry.Value.Count > 0)
+                {
+                    map[BuildMissionRewardKey(rewardSection, missionName, entry.Key)] = entry.Value.ToArray();
+                }
+            }
+        }
+
+        private static void TryAddMissionRewardUnlocks(Dictionary<string, string[]> map, string rewardSection, string missionName, IDictionary rewardDef)
+        {
+            if (map == null || string.IsNullOrEmpty(rewardSection) || string.IsNullOrEmpty(missionName) || rewardDef == null)
+            {
+                return;
+            }
+
+            var unlocks = TryGetObjectArray(rewardDef, "GrantedUnlocks");
+            if (unlocks == null || unlocks.Length == 0)
+            {
+                return;
+            }
+
+            var values = new List<string>();
+            for (var i = 0; i < unlocks.Length; i++)
+            {
+                var unlock = unlocks[i] as string;
+                if (!string.IsNullOrEmpty(unlock) && !values.Contains(unlock))
+                {
+                    values.Add(unlock);
+                }
+            }
+
+            if (values.Count > 0)
+            {
+                map[BuildMissionRewardKey(rewardSection, missionName, "Victory")] = values.ToArray();
+            }
+        }
+
+        private static void TryAddMissionUnlockDeactivations(Dictionary<string, string[]> map, string missionName, IDictionary mission)
+        {
+            if (map == null || string.IsNullOrEmpty(missionName) || mission == null)
+            {
+                return;
+            }
+
+            var unlocks = TryGetObjectArray(mission, "UnlocksDeactivatedOnVictory");
+            if (unlocks == null || unlocks.Length == 0)
+            {
+                return;
+            }
+
+            var values = new List<string>();
+            for (var i = 0; i < unlocks.Length; i++)
+            {
+                var unlock = unlocks[i] as string;
+                if (!string.IsNullOrEmpty(unlock) && !values.Contains(unlock))
+                {
+                    values.Add(unlock);
+                }
+            }
+
+            if (values.Count > 0)
+            {
+                map[missionName] = values.ToArray();
+            }
+        }
+
+        private static string BuildBodytypeKey(ulong metatypeId, ulong genderId)
+        {
+            return metatypeId.ToString(CultureInfo.InvariantCulture) + "|" + genderId.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private static string BuildMissionRewardKey(string rewardSection, string missionName, string missionOutcome)
+        {
+            return rewardSection + "|" + missionName + "|" + missionOutcome;
+        }
+
+        private static string BuildMissionCurrencyRewardKey(string rewardSection, string missionName, string missionOutcome, string currencyId)
+        {
+            return BuildMissionRewardKey(rewardSection, missionName, missionOutcome) + "|" + currencyId;
+        }
+
         private static object[] TryGetObjectArray(IDictionary dict, string key)
         {
             if (dict == null || string.IsNullOrEmpty(key) || !dict.Contains(key))
@@ -510,6 +996,23 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             try
             {
                 return Convert.ToInt32(dict[key], CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                return defaultValue;
+            }
+        }
+
+        private static ulong GetUInt64(IDictionary dict, string key, ulong defaultValue)
+        {
+            if (dict == null || string.IsNullOrEmpty(key) || !dict.Contains(key) || dict[key] == null)
+            {
+                return defaultValue;
+            }
+
+            try
+            {
+                return Convert.ToUInt64(dict[key], CultureInfo.InvariantCulture);
             }
             catch
             {
