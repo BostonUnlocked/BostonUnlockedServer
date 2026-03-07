@@ -367,7 +367,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             _storyProgressionService = new PortedStoryProgressionService(_options);
             _skillPurchaseService = new PortedSkillPurchaseService(_options);
             _shopInventoryService = new PortedShopInventoryService(_options);
-            _portedHubInstanceManager = new PortedHubInstanceManager(new PortedHubRepository(new PortedHubLoader()), false);
+            _portedHubInstanceManager = new PortedHubInstanceManager(new PortedHubRepository(new PortedHubLoader(_options != null ? _options.StreamingAssetsDir : null)), false);
         }
 
         private void TryFlushPendingCharacterStatePushes(Guid identityGuid, string identityHash, int activeCareerIndex, string peer, NetworkStream stream)

@@ -297,7 +297,7 @@ namespace Shadowrun.LocalService.Core.Simulation
             var turnObserver = new TurnObserver();
             simulation.AddTurnPhaseListener(turnObserver);
 
-            var encounterActivationTracker = new EncounterActivationTracker(logger, peer, gameworldInstance.EntitySystem);
+            var encounterActivationTracker = new EncounterActivationTracker(logger, peer, gameworldInstance.EntitySystem, gameworldInstance.LineOfSightEvaluator);
             if (gameworldInstance.InMissionEventObserver != null)
             {
                 gameworldInstance.InMissionEventObserver.Add(encounterActivationTracker);

@@ -2,28 +2,34 @@ using System.Collections.Generic;
 using Cliffhanger.SRO.ServerClientCommons.Gameworld;
 using Cliffhanger.SRO.ServerClientCommons.GameLogic.Components;
 using Cliffhanger.SRO.ServerClientCommons.Gameworld.Communication;
+using Cliffhanger.SRO.ServerClientCommons.Gameworld.Map;
 using SRO.Core.Compatibility.Math;
 
 namespace Shadowrun.LocalService.Core.Simulation
 {
     internal sealed class EncounterActivationTracker : IInMissionEventReceiver
     {
-        private readonly HashSet<string> _engagedSpawnManagerTags = new HashSet<string>();
         private readonly RequestLogger _logger;
         private readonly string _peer;
         private readonly EntitySystem _entitySystem;
-        private readonly object _sync = new object();
+        private readonly PortedAiCommanderRepository _portedAiCommanderRepository;
 
         public EncounterActivationTracker()
-            : this(null, null, null)
+            : this(null, null, null, null)
         {
         }
 
         public EncounterActivationTracker(RequestLogger logger, string peer, EntitySystem entitySystem)
+            : this(logger, peer, entitySystem, null)
+        {
+        }
+
+        public EncounterActivationTracker(RequestLogger logger, string peer, EntitySystem entitySystem, ILineOfSightEvaluator lineOfSightEvaluator)
         {
             _logger = logger;
             _peer = peer;
             _entitySystem = entitySystem;
+            _portedAiCommanderRepository = new PortedAiCommanderRepository(entitySystem, lineOfSightEvaluator);
         }
 
         public bool IsGroupEngaged(string spawnManagerTag)
@@ -33,85 +39,51 @@ namespace Shadowrun.LocalService.Core.Simulation
                 return true;
             }
 
-            lock (_sync)
-            {
-                return _engagedSpawnManagerTags.Contains(spawnManagerTag);
-            }
+            return _portedAiCommanderRepository != null && _portedAiCommanderRepository.IsGroupInCombat(spawnManagerTag);
         }
 
         public string[] GetEngagedTagSnapshot()
         {
-            lock (_sync)
-            {
-                if (_engagedSpawnManagerTags.Count == 0)
-                {
-                    return new string[0];
-                }
-
-                var result = new string[_engagedSpawnManagerTags.Count];
-                _engagedSpawnManagerTags.CopyTo(result);
-                return result;
-            }
+            return _portedAiCommanderRepository != null
+                ? _portedAiCommanderRepository.GetEngagedTagSnapshot()
+                : new string[0];
         }
 
         public bool TryEngageSpawnTagFromCurrentPlayerVisibility(string spawnManagerTag)
         {
-            if (_entitySystem == null || string.IsNullOrEmpty(spawnManagerTag))
+            if (_portedAiCommanderRepository == null || string.IsNullOrEmpty(spawnManagerTag))
             {
                 return false;
             }
 
-            if (IsGroupEngaged(spawnManagerTag))
-            {
-                return true;
-            }
-
-            foreach (var candidate in _entitySystem.GetAllEntities())
-            {
-                if (candidate == null || IsAiControlled(candidate))
-                {
-                    continue;
-                }
-
-                DetectionComponent detection;
-                if (!_entitySystem.TryGetComponent<DetectionComponent>(candidate, out detection) || detection == null)
-                {
-                    continue;
-                }
-
-                foreach (var visibleEntity in detection.VisibleAgents)
-                {
-                    string visibleSpawnManagerTag;
-                    var visibleHasSpawnInfo = TryGetSpawnManagerTag(visibleEntity, out visibleSpawnManagerTag);
-                    if (!visibleHasSpawnInfo || !string.Equals(visibleSpawnManagerTag, spawnManagerTag))
-                    {
-                        continue;
-                    }
-
-                    AddEngagedTag(spawnManagerTag, "player-current-visibility", candidate, visibleEntity);
-                    return true;
-                }
-            }
-
-            return false;
+            return _portedAiCommanderRepository.TryProcessCombatStateForSpawnTag(spawnManagerTag);
         }
 
         public void MoveToCombatState(string spawnManagerTag)
         {
-            if (string.IsNullOrEmpty(spawnManagerTag))
+            if (string.IsNullOrEmpty(spawnManagerTag) || _portedAiCommanderRepository == null)
             {
                 return;
             }
 
-            AddEngagedTag(spawnManagerTag, "move-to-combat-state", null, null);
+            _portedAiCommanderRepository.MoveToCombatState(spawnManagerTag);
         }
 
         public void Despawn(Entity entity)
         {
+            if (_portedAiCommanderRepository != null)
+            {
+                _portedAiCommanderRepository.UnregisterAiControlledEntity(entity);
+            }
         }
 
         public void Spawn(Entity entity, Team targetTeam)
         {
+            if (_portedAiCommanderRepository != null)
+            {
+                _portedAiCommanderRepository.RegisterAiControlledEntity(entity);
+            }
+
             if (_logger == null || _entitySystem == null)
             {
                 return;
@@ -122,13 +94,6 @@ namespace Shadowrun.LocalService.Core.Simulation
                 CharacterSpawnInfoComponent spawnInfo;
                 var hasSpawnInfo = _entitySystem.TryGetComponent<CharacterSpawnInfoComponent>(entity, out spawnInfo);
                 var spawnManagerTag = hasSpawnInfo && spawnInfo != null ? spawnInfo.SpawnManagerTag : null;
-                var engagedBySpawnVisibility = false;
-                var spawnVisibleToPlayerIds = new List<int>();
-
-                if (!string.IsNullOrEmpty(spawnManagerTag) && !IsGroupEngaged(spawnManagerTag))
-                {
-                    engagedBySpawnVisibility = TryEngageOnSpawnVisibility(entity, spawnManagerTag, spawnVisibleToPlayerIds);
-                }
 
                 _logger.Log(new
                 {
@@ -142,8 +107,6 @@ namespace Shadowrun.LocalService.Core.Simulation
                     hasSpawnInfo = hasSpawnInfo,
                     spawnManagerTag = spawnManagerTag,
                     engagedAtSpawn = !string.IsNullOrEmpty(spawnManagerTag) ? (bool?)IsGroupEngaged(spawnManagerTag) : null,
-                    engagedBySpawnVisibility = engagedBySpawnVisibility,
-                    spawnVisibleToPlayerIds = spawnVisibleToPlayerIds.ToArray(),
                 });
             }
             catch
@@ -153,6 +116,11 @@ namespace Shadowrun.LocalService.Core.Simulation
 
         public void Move(Entity entity, IntVector2D fromPosition, IntVector2D targetPosition)
         {
+            if (_portedAiCommanderRepository != null)
+            {
+                _portedAiCommanderRepository.Move(entity, fromPosition, targetPosition);
+            }
+
             if (_logger == null || _entitySystem == null)
             {
                 return;
@@ -161,34 +129,6 @@ namespace Shadowrun.LocalService.Core.Simulation
             try
             {
                 var sourceAiControlled = IsAiControlled(entity);
-                var newlyEngaged = new List<string>();
-                var visibleTargets = new List<object>();
-
-                DetectionComponent detection = null;
-                var hasDetection = entity != null && _entitySystem.TryGetComponent<DetectionComponent>(entity, out detection) && detection != null;
-                if (!sourceAiControlled && hasDetection)
-                {
-                    foreach (var visibleEntity in detection.VisibleAgents)
-                    {
-                        string visibleSpawnManagerTag;
-                        var visibleHasSpawnInfo = TryGetSpawnManagerTag(visibleEntity, out visibleSpawnManagerTag);
-                        visibleTargets.Add(new
-                        {
-                            entityId = visibleEntity != null ? (int?)visibleEntity.Id : null,
-                            hasSpawnInfo = visibleHasSpawnInfo,
-                            spawnManagerTag = visibleSpawnManagerTag,
-                        });
-
-                        if (!string.IsNullOrEmpty(visibleSpawnManagerTag))
-                        {
-                            if (AddEngagedTag(visibleSpawnManagerTag, "player-move-visibility", entity, visibleEntity))
-                            {
-                                newlyEngaged.Add(visibleSpawnManagerTag);
-                            }
-                        }
-                    }
-                }
-
                 _logger.Log(new
                 {
                     ts = RequestLogger.UtcNowIso(),
@@ -202,11 +142,6 @@ namespace Shadowrun.LocalService.Core.Simulation
                     fromY = fromPosition.Y,
                     toX = targetPosition.X,
                     toY = targetPosition.Y,
-                    hasDetection = hasDetection,
-                    visibleCount = visibleTargets.Count,
-                    visibleTargets = visibleTargets.ToArray(),
-                    engagedByMoveCount = newlyEngaged.Count,
-                    engagedByMoveTags = newlyEngaged.ToArray(),
                 });
             }
             catch
@@ -216,6 +151,11 @@ namespace Shadowrun.LocalService.Core.Simulation
 
         public void Action(Entity entity, Entity[] targets, IntVector2D targetPosition, ulong skillId)
         {
+            if (_portedAiCommanderRepository != null)
+            {
+                _portedAiCommanderRepository.Skill(entity, targets);
+            }
+
             if (_logger == null || _entitySystem == null)
             {
                 return;
@@ -241,11 +181,6 @@ namespace Shadowrun.LocalService.Core.Simulation
                             hasSpawnInfo = targetHasSpawnInfo,
                             spawnManagerTag = targetSpawnManagerTag,
                         });
-
-                        if (!sourceAiControlled && !string.IsNullOrEmpty(targetSpawnManagerTag))
-                        {
-                            AddEngagedTag(targetSpawnManagerTag, "player-action-target", entity, target);
-                        }
                     }
                 }
 
@@ -274,6 +209,11 @@ namespace Shadowrun.LocalService.Core.Simulation
 
         public void ChangeTeam(Entity entity, Team targetTeam)
         {
+            if (_portedAiCommanderRepository != null)
+            {
+                _portedAiCommanderRepository.ChangeTeam(entity, targetTeam);
+            }
+
             if (_logger == null || _entitySystem == null)
             {
                 return;
@@ -301,47 +241,6 @@ namespace Shadowrun.LocalService.Core.Simulation
             catch
             {
             }
-        }
-
-        private bool AddEngagedTag(string spawnManagerTag, string reason, Entity sourceEntity, Entity targetEntity)
-        {
-            if (string.IsNullOrEmpty(spawnManagerTag))
-            {
-                return false;
-            }
-
-            var isNew = false;
-            lock (_sync)
-            {
-                if (_engagedSpawnManagerTags.Add(spawnManagerTag))
-                {
-                    isNew = true;
-                }
-            }
-
-            try
-            {
-                var engagedTags = GetEngagedTagSnapshot();
-                _logger.Log(new
-                {
-                    ts = RequestLogger.UtcNowIso(),
-                    type = "sim",
-                    peer = _peer,
-                    action = "encounter-activation",
-                    status = isNew ? "engaged" : "already-engaged",
-                    reason = reason,
-                    spawnManagerTag = spawnManagerTag,
-                    sourceEntityId = sourceEntity != null ? (int?)sourceEntity.Id : null,
-                    targetEntityId = targetEntity != null ? (int?)targetEntity.Id : null,
-                    engagedCount = engagedTags.Length,
-                    engagedTags = engagedTags,
-                });
-            }
-            catch
-            {
-            }
-
-            return isNew;
         }
 
         private bool TryGetSpawnManagerTag(Entity entity, out string spawnManagerTag)
@@ -376,45 +275,6 @@ namespace Shadowrun.LocalService.Core.Simulation
             }
 
             return control.IsAIControlled;
-        }
-
-        private bool TryEngageOnSpawnVisibility(Entity spawnedEntity, string spawnManagerTag, List<int> visibleToPlayerIds)
-        {
-            if (_entitySystem == null || spawnedEntity == null || string.IsNullOrEmpty(spawnManagerTag))
-            {
-                return false;
-            }
-
-            var spawnedEntityId = spawnedEntity.Id;
-            foreach (var candidate in _entitySystem.GetAllEntities())
-            {
-                if (candidate == null || IsAiControlled(candidate))
-                {
-                    continue;
-                }
-
-                DetectionComponent detection;
-                if (!_entitySystem.TryGetComponent<DetectionComponent>(candidate, out detection) || detection == null)
-                {
-                    continue;
-                }
-
-                foreach (var visibleEntity in detection.VisibleAgents)
-                {
-                    if (visibleEntity == null || visibleEntity.Id != spawnedEntityId)
-                    {
-                        continue;
-                    }
-
-                    visibleToPlayerIds.Add((int)candidate.Id);
-                    if (AddEngagedTag(spawnManagerTag, "player-visibility-at-spawn", candidate, spawnedEntity))
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            return false;
         }
     }
 }
