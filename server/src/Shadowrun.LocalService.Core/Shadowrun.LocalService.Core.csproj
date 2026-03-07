@@ -152,6 +152,7 @@
     <Compile Include="Protocols\APlayTcpStub.cs" />
     <Compile Include="Protocols\APlayTcpStub.MissionCommands.cs" />
     <Compile Include="Protocols\APlayTcpStub.StaticData.cs" />
+    <Compile Include="Protocols\APlayTcpStub.StoryProgression.cs" />
     <Compile Include="Protocols\CoopGroupHostRegistry.cs" />
     <Compile Include="Protocols\HubPresenceRegistry.cs" />
     <Compile Include="Protocols\MissionCommands\MissionCommandKind.cs" />
