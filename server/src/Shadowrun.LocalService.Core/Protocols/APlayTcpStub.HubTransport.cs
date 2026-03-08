@@ -204,6 +204,8 @@ namespace Shadowrun.LocalService.Core.Protocols
             {
                 _hubPeerStreams[peer] = stream;
             }
+
+            ConnectedPeerRegistry.MarkConnected(peer);
         }
 
         private void UnregisterHubPeerStream(string peer, NetworkStream stream)
@@ -221,6 +223,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                     _hubPeerStreams.Remove(peer);
                 }
             }
+
+            ConnectedPeerRegistry.MarkDisconnected(peer);
 
             ClearHubAnnouncementsForPeer(peer);
         }

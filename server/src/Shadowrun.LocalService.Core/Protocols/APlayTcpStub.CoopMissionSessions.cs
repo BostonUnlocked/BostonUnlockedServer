@@ -473,6 +473,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                 list.Add(new CoopMissionParticipant(peer, stream));
             }
+
+            MissionRuntimeRegistry.MarkCoopMissionParticipantJoined(coopGroupName, peer);
         }
 
         private void UnregisterCoopMissionParticipant(string coopGroupName, string peer)
@@ -481,6 +483,8 @@ namespace Shadowrun.LocalService.Core.Protocols
             {
                 return;
             }
+
+            MissionRuntimeRegistry.MarkCoopMissionParticipantLeft(coopGroupName, peer);
 
             lock (_coopMissionLock)
             {
@@ -497,33 +501,71 @@ namespace Shadowrun.LocalService.Core.Protocols
                         list.RemoveAt(i);
                     }
                 }
+            }
 
-                if (list.Count == 0)
+            TryStopEmptyCoopMissionGroup(coopGroupName, "participant-empty");
+        }
+
+        private void TryStopEmptyCoopMissionGroup(string coopGroupName, string reason)
+        {
+            if (IsNullOrWhiteSpace(coopGroupName))
+            {
+                return;
+            }
+
+            CoopMissionSessionState session = null;
+            lock (_coopMissionLock)
+            {
+                List<CoopMissionParticipant> list;
+                if (_coopMissionParticipants.TryGetValue(coopGroupName, out list) && list != null && list.Count > 0)
                 {
-                    _coopMissionParticipants.Remove(coopGroupName);
-                    _coopMissionHenchSelections.Remove(coopGroupName);
+                    return;
+                }
 
-                    CoopMissionSessionState session;
-                    if (_coopMissionSessions.TryGetValue(coopGroupName, out session) && session != null)
+                _coopMissionParticipants.Remove(coopGroupName);
+                _coopMissionHenchSelections.Remove(coopGroupName);
+
+                if (_coopMissionSessions.TryGetValue(coopGroupName, out session) && session != null)
+                {
+                    _coopMissionSessions.Remove(coopGroupName);
+                }
+            }
+
+            if (session == null)
+            {
+                MissionRuntimeRegistry.MarkCoopMissionEnded(coopGroupName);
+                return;
+            }
+
+            try
+            {
+                lock (session.SyncRoot)
+                {
+                    if (session.Simulation != null)
                     {
-                        _coopMissionSessions.Remove(coopGroupName);
-                        try
-                        {
-                            lock (session.SyncRoot)
-                            {
-                                if (session.Simulation != null)
-                                {
-                                    session.Simulation.Stop();
-                                    session.Simulation = null;
-                                    MissionRuntimeRegistry.MarkCoopMissionEnded(coopGroupName);
-                                }
-                            }
-                        }
-                        catch
-                        {
-                        }
+                        session.Simulation.Stop();
+                        session.Simulation = null;
                     }
                 }
+            }
+            catch
+            {
+            }
+
+            MissionRuntimeRegistry.MarkCoopMissionEnded(coopGroupName);
+
+            try
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "sim-cleanup",
+                    coopGroupName = coopGroupName,
+                    reason = reason ?? string.Empty,
+                });
+            }
+            catch
+            {
             }
         }
 

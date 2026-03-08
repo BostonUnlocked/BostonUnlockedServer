@@ -167,6 +167,7 @@
     <Compile Include="Protocols\APlayTcpStub.HenchmanCompatibility.cs" />
     <Compile Include="Protocols\APlayTcpStub.HubReadyFallback.cs" />
     <Compile Include="Protocols\APlayTcpStub.HubTransport.cs" />
+    <Compile Include="Protocols\APlayTcpStub.MissionCleanup.cs" />
     <Compile Include="Protocols\APlayTcpStub.MissionLaunch.cs" />
     <Compile Include="Protocols\APlayTcpStub.MissionCommands.cs" />
     <Compile Include="Protocols\APlayTcpStub.ProtocolCodec.cs" />
@@ -175,6 +176,7 @@
     <Compile Include="Protocols\APlayTcpStub.SocketHost.cs" />
     <Compile Include="Protocols\APlayTcpStub.StaticData.cs" />
     <Compile Include="Protocols\APlayTcpStub.StoryProgression.cs" />
+    <Compile Include="Protocols\ConnectedPeerRegistry.cs" />
     <Compile Include="Protocols\CoopGroupHostRegistry.cs" />
     <Compile Include="Protocols\HubPresenceRegistry.cs" />
     <Compile Include="Protocols\MissionCommands\MissionCommandKind.cs" />

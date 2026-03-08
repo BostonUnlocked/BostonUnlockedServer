@@ -386,6 +386,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             _skillPurchaseService = new PortedSkillPurchaseService(_options);
             _shopInventoryService = new PortedShopInventoryService(_options);
             _portedHubInstanceManager = new PortedHubInstanceManager(new PortedHubRepository(new PortedHubLoader(_options != null ? _options.StreamingAssetsDir : null)), false);
+            _missionCleanupTimer = new Timer(SweepDisconnectedMissionSessions, null, MissionCleanupInterval, MissionCleanupInterval);
         }
 
         private void TryFlushPendingCharacterStatePushes(Guid identityGuid, string identityHash, int activeCareerIndex, string peer, NetworkStream stream)
@@ -2643,6 +2644,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                         if (simulationSession != null)
                                         {
+                                            RegisterSoloMissionSession(peer, simulationSession);
                                             MissionRuntimeRegistry.MarkSoloMissionStarted(peer);
                                         }
                                     }
@@ -2710,7 +2712,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                         {
                             if (simulationSession != null && IsNullOrWhiteSpace(currentCoopGroupName))
                             {
-                                MissionRuntimeRegistry.MarkSoloMissionEnded(peer);
+                                StopAndForgetSoloMission(peer, "socket-closed");
+                                simulationSession = null;
+                                simulationSessionSync = null;
                             }
 
                             cancelHubReadyFallback("socket-closed");
@@ -2733,6 +2737,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                     if (!IsNullOrWhiteSpace(currentCoopGroupName))
                     {
                         UnregisterCoopMissionParticipant(currentCoopGroupName, peer);
+                    }
+                    else
+                    {
+                        StopAndForgetSoloMission(peer, "connection-teardown");
                     }
 
                     cancelHubReadyFallback("connection-teardown");

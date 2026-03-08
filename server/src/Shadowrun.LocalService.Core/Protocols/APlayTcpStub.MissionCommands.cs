@@ -906,13 +906,12 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             try
             {
-                simulationSession.Stop();
+                StopAndForgetSoloMission(peer, "leave-mission");
             }
             catch
             {
             }
 
-            MissionRuntimeRegistry.MarkSoloMissionEnded(peer);
             simulationSession = null;
             simulationSessionSync = null;
         }

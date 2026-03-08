@@ -818,6 +818,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
             }
 
+            public int GetOnlineAccountCount()
+            {
+                lock (_lock)
+                {
+                    return _connIdsByAccountId.Count;
+                }
+            }
+
             // ----- Groups & invitations (minimal for party chat) -----
 
             public Group CreateGroup(Guid creatorAccountId, string groupName, int capacity, bool isPersistent)

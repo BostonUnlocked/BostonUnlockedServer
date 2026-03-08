@@ -1262,6 +1262,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             RegisterChatCommand(map, new HelpChatCommand());
             RegisterChatCommand(map, new AnnounceChatCommand());
             RegisterChatCommand(map, new ActiveMissionsChatCommand());
+            RegisterChatCommand(map, new OnlinePlayersChatCommand());
             RegisterChatCommand(map, new SetAvailableMissionCommand());
             RegisterChatCommand(map, new SetBalanceCommand("setkarma", true));
             RegisterChatCommand(map, new SetBalanceCommand("setnuyen", false));
@@ -1921,7 +1922,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 var isAdmin = owner.IsChatCommandAuthorized(context.SenderAccountId);
                 if (isAdmin)
                 {
-                    return ChatCommandResult.Ok("Commands: /help, /announce {message}, /activemissions, /setavailablemission {MissionId} [Available], /setkarma {X}, /setnuyen {X}, /additem {ItemCode} [Variant]");
+                    return ChatCommandResult.Ok("Commands: /help, /announce {message}, /activemissions, /onlineplayers, /setavailablemission {MissionId} [Available], /setkarma {X}, /setnuyen {X}, /additem {ItemCode} [Variant]");
                 }
 
                 return ChatCommandResult.Ok("Commands: /help");
@@ -1982,6 +1983,23 @@ namespace Shadowrun.LocalService.Core.Protocols
             {
                 var count = MissionRuntimeRegistry.GetActiveMissionCount();
                 return ChatCommandResult.Ok("Active missions in progress: " + count.ToString());
+            }
+        }
+
+        private sealed class OnlinePlayersChatCommand : IChatCommand
+        {
+            public string Name { get { return "onlineplayers"; } }
+            public bool RequiresAdmin { get { return true; } }
+
+            public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
+            {
+                if (owner == null || owner._chatAndFriends == null)
+                {
+                    return ChatCommandResult.Fail("Chat service is unavailable.");
+                }
+
+                var count = owner._chatAndFriends.GetOnlineAccountCount();
+                return ChatCommandResult.Ok("Players currently logged in: " + count.ToString());
             }
         }
 
