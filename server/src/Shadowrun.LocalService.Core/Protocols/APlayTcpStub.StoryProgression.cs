@@ -72,6 +72,25 @@ namespace Shadowrun.LocalService.Core.Protocols
                         }
                     }
 
+                    if (!storyStateUpdate.Accepted)
+                    {
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "story-state-ignored",
+                            peer = peer,
+                            mission = missionName,
+                            previousState = storyStateUpdate.PreviousState.ToString(),
+                            requestedState = parsedTarget.ToString(),
+                            careerIndex = activeCareerIndex,
+                        });
+
+                        var echoPayloadIgnored = BuildUtf16StringPayload(rawMessage);
+                        var echoCoreIgnored = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 1, echoPayloadIgnored), outMsgNo++);
+                        SendRawFrame(stream, peer, PrefixLength(echoCoreIgnored), "echoed MetaGameplayCommunicationObject Message (SetStoryMissionStateMessage ignored)");
+                        return true;
+                    }
+
                     var storyRewardApplication = new MissionRewardApplicationResult();
                     if (storyStateUpdate.ShouldGrantStoryRewards && slotForStoryRewards != null)
                     {
@@ -174,7 +193,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                     }
 
                     if (slotForStoryRewards != null
-                        && (storyRewardApplication.ShouldNotifyClient || parsedTarget == StoryMissionstate.Completed || chapterAdvanced))
+                        && (storyRewardApplication.ShouldNotifyClient
+                            || parsedTarget == StoryMissionstate.ReadyToPlay
+                            || parsedTarget == StoryMissionstate.Completed
+                            || chapterAdvanced))
                     {
                         try
                         {

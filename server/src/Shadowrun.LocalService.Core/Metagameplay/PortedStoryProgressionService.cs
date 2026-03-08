@@ -8,6 +8,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
     internal sealed class StoryMissionStateUpdateResult
     {
         public bool Persisted;
+        public bool Accepted;
         public StoryMissionstate PreviousState = StoryMissionstate.Available;
         public StoryMissionstate TargetState = StoryMissionstate.Available;
         public bool ShouldGrantStoryRewards;
@@ -54,8 +55,14 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 result.PreviousState = ParseStoryMissionStateOrDefault(existing, StoryMissionstate.Available);
             }
 
+            if (!IsNextStateValid(result.PreviousState, targetState))
+            {
+                return result;
+            }
+
             result.ShouldGrantStoryRewards = result.PreviousState == StoryMissionstate.ReadyToReceiveRewards && targetState == StoryMissionstate.Completed;
             slot.MainCampaignMissionStates[missionName] = targetState.ToString();
+            result.Accepted = true;
 
             if (targetState == StoryMissionstate.ReadyToPlay || targetState == StoryMissionstate.Completed)
             {
@@ -64,6 +71,11 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
             result.Persisted = true;
             return result;
+        }
+
+        private static bool IsNextStateValid(StoryMissionstate previousState, StoryMissionstate nextState)
+        {
+            return ((int)previousState + 1) == (int)nextState;
         }
 
         public StoryChapterAdvanceResult TryAdvanceIfEligible(CareerSlot slot, string storylineName)

@@ -114,6 +114,19 @@ namespace Shadowrun.LocalService.Core.Protocols
                 var snapshot = BuildMappedPlayerCharacterSnapshotForHub(identityGuid, characterIdentifier, characterName, slot);
                 if (snapshot != null)
                 {
+                    var currentHubName = resolvedHubInstance != null
+                        ? GetHubNameFromHubInstanceId(resolvedHubInstance.HubId)
+                        : null;
+                    if (!forceNewHubInstanceId
+                        && resolvedHubInstance != null
+                        && !IsNullOrWhiteSpace(resolvedHubInstance.HubId)
+                        && string.Equals(currentHubName, resolvedHubId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        resolvedHubId = resolvedHubInstance.HubId;
+                        _portedHubInstanceManager.UpdatePlayerCharacterSnapshot(snapshot);
+                        return BuildMetaHubPushPayload(HubEntityId, resolvedHubInstance.SerializedHubState());
+                    }
+
                     PortedHubTransitionResult transition = forceNewHubInstanceId
                         ? _portedHubInstanceManager.ExecuteRequestExactHubInstance(requestedHubId, snapshot, resolvedHubInstance)
                         : TryExecutePortedHubTransition(requestedHubId, identityGuid, characterIdentifier, characterName, slot, resolvedHubInstance);
