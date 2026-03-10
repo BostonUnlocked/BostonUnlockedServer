@@ -866,6 +866,11 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                     if (slotForSnapshot != null)
                     {
+                        var snapshotCharacterIdentifier = !IsNullOrWhiteSpace(slotForSnapshot.CharacterIdentifier)
+                            ? slotForSnapshot.CharacterIdentifier
+                            : (activeIdentityGuid.ToString() + ":" + activeCareerIndex.ToString(CultureInfo.InvariantCulture));
+                        RetireDuplicateHubSessionForCharacter(peer, snapshotCharacterIdentifier, "leave-mission-hub-refresh-pre-transition");
+
                         string resolvedHubInstanceId;
                         PortedHubInstance resolvedHubInstance;
                         cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(

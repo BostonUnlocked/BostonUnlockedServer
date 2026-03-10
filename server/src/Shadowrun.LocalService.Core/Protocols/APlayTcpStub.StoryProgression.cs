@@ -177,6 +177,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                         try
                         {
+                            var storyCharacterIdentifier = slotForStoryRewards != null && !IsNullOrWhiteSpace(slotForStoryRewards.CharacterIdentifier)
+                                ? slotForStoryRewards.CharacterIdentifier
+                                : (activeIdentityGuid.ToString() + ":" + activeCareerIndex.ToString(CultureInfo.InvariantCulture));
+                            RetireDuplicateHubSessionForCharacter(peer, storyCharacterIdentifier, "storyprogress-hub-refresh-pre-transition");
+
                             var forceNewHubInstanceId = (parsedTarget == StoryMissionstate.Completed || chapterAdvanced);
                             cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
                                 slotForStoryRewards,

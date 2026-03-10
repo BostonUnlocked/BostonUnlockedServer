@@ -10,6 +10,7 @@ using Cliffhanger.SRO.ServerClientCommons;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay.Hub;
 using SRO.Core.Compatibility.Math;
+using Shadowrun.LocalService.Core.Metagameplay;
 using Shadowrun.LocalService.Core.Persistence;
 
 namespace Shadowrun.LocalService.Core.Protocols
@@ -87,6 +88,38 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             return _hubPresenceRegistry.TryGetParticipantForPeer(peer, out participant) && participant != null;
+        }
+
+        private bool RetireDuplicateHubSessionForCharacter(string replacementPeer, string characterId, string reason)
+        {
+            if (IsNullOrWhiteSpace(characterId))
+            {
+                return false;
+            }
+
+            string existingPeer;
+            if (!_hubPresenceRegistry.TryGetPeerForCharacter(characterId, out existingPeer)
+                || IsNullOrWhiteSpace(existingPeer)
+                || string.Equals(existingPeer, replacementPeer, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var total = Interlocked.Increment(ref _hubDuplicateSessionRetiredTotal);
+            _logger.Log(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "hub-duplicate-session-retired",
+                reason = reason ?? string.Empty,
+                characterId = characterId,
+                replacementPeer = replacementPeer ?? string.Empty,
+                retiredPeer = existingPeer,
+                total = total,
+            });
+
+            RemoveHubPresenceWithBroadcast(existingPeer, null, reason ?? string.Empty);
+            UnregisterHubPeerStream(existingPeer, null);
+            return true;
         }
 
         private bool TryResolveHubIdForCharacter(string characterId, out string hubId)
@@ -1114,25 +1147,88 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
-        private void RemoveHubPresenceWithBroadcast(string peer)
+        private HubStateUpdate RemoveParticipantFromAuthoritativeHub(HubPresenceRegistry.Participant participant, PortedHubInstance fallbackHubInstance, out string removedHubId)
+        {
+            removedHubId = null;
+            if (participant == null || IsNullOrWhiteSpace(participant.CharacterId) || _portedHubInstanceManager == null)
+            {
+                removedHubId = ResolveParticipantHubId(participant, null);
+                return null;
+            }
+
+            PortedHubInstance hubInstance = null;
+            if (!IsNullOrWhiteSpace(participant.CharacterId))
+            {
+                hubInstance = _portedHubInstanceManager.RequestHubInstance(participant.CharacterId);
+            }
+
+            if (hubInstance == null && !IsNullOrWhiteSpace(participant.HubId))
+            {
+                hubInstance = _portedHubInstanceManager.RequestHubInstanceByHubId(participant.HubId);
+            }
+
+            if (hubInstance == null)
+            {
+                hubInstance = fallbackHubInstance;
+            }
+
+            if (hubInstance == null)
+            {
+                removedHubId = ResolveParticipantHubId(participant, null);
+                return null;
+            }
+
+            removedHubId = hubInstance.HubId;
+            return _portedHubInstanceManager.RemoveCharacterFromHub(hubInstance, participant.CharacterId);
+        }
+
+        private void RemoveHubPresenceWithBroadcast(string peer, PortedHubInstance fallbackHubInstance, string reason)
         {
             if (IsNullOrWhiteSpace(peer))
             {
                 return;
             }
 
+            HubPresenceRegistry.Participant existing;
+            var hasExisting = _hubPresenceRegistry.TryGetParticipantForPeer(peer, out existing) && existing != null;
+            HubStateUpdate leaveUpdate = null;
+            string removedHubId = null;
+            if (hasExisting)
+            {
+                leaveUpdate = RemoveParticipantFromAuthoritativeHub(existing, fallbackHubInstance, out removedHubId);
+            }
+
             ClearHubAnnouncementsForPeer(peer);
 
-            HubPresenceRegistry.Participant existing;
-            if (_hubPresenceRegistry.TryGetParticipantForPeer(peer, out existing)
-                && existing != null
-                && !IsNullOrWhiteSpace(existing.HubId)
-                && !IsNullOrWhiteSpace(existing.CharacterId))
+            if (leaveUpdate != null && !IsNullOrWhiteSpace(leaveUpdate.RemovedCharacter))
             {
-                BroadcastHubStateRemove(existing.HubId, peer, existing.CharacterId);
+                BroadcastHubStateRemove(leaveUpdate.InstanceId, peer, leaveUpdate.RemovedCharacter);
+            }
+            else if (hasExisting && !IsNullOrWhiteSpace(removedHubId) && !IsNullOrWhiteSpace(existing.CharacterId))
+            {
+                BroadcastHubStateRemove(removedHubId, peer, existing.CharacterId);
+            }
+
+            if (hasExisting)
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "hub-retire",
+                    reason = reason ?? string.Empty,
+                    peer = peer,
+                    characterId = existing.CharacterId ?? string.Empty,
+                    hubId = removedHubId ?? string.Empty,
+                    hadAuthoritativeLeaveUpdate = leaveUpdate != null,
+                });
             }
 
             _hubPresenceRegistry.RemovePeer(peer);
+        }
+
+        private void RemoveHubPresenceWithBroadcast(string peer)
+        {
+            RemoveHubPresenceWithBroadcast(peer, null, string.Empty);
         }
 
         private void RegisterOrUpdateHubPresenceWithDuplicateRetire(
@@ -1149,26 +1245,7 @@ namespace Shadowrun.LocalService.Core.Protocols
         {
             if (!IsNullOrWhiteSpace(characterId))
             {
-                string existingPeer;
-                if (_hubPresenceRegistry.TryGetPeerForCharacter(characterId, out existingPeer)
-                    && !IsNullOrWhiteSpace(existingPeer)
-                    && !string.Equals(existingPeer, peer, StringComparison.OrdinalIgnoreCase))
-                {
-                    var total = Interlocked.Increment(ref _hubDuplicateSessionRetiredTotal);
-                    _logger.Log(new
-                    {
-                        ts = RequestLogger.UtcNowIso(),
-                        type = "hub-duplicate-session-retired",
-                        reason = reason ?? string.Empty,
-                        characterId = characterId,
-                        replacementPeer = peer ?? string.Empty,
-                        retiredPeer = existingPeer,
-                        total = total,
-                    });
-
-                    RemoveHubPresenceWithBroadcast(existingPeer);
-                    UnregisterHubPeerStream(existingPeer, null);
-                }
+                RetireDuplicateHubSessionForCharacter(peer, characterId, reason ?? string.Empty);
             }
 
             _hubPresenceRegistry.RegisterOrUpdate(

@@ -1115,6 +1115,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                     var previousCharacterId = movementParticipant.CharacterId;
                                                     var updatedHubId = ResolveParticipantHubId(movementParticipant, movementHubId);
 
+                                                    RetireDuplicateHubSessionForCharacter(peer, movedCharacterId, "hub-move-character-shift-pre-register");
+
                                                     RegisterOrUpdateHubPresenceWithDuplicateRetire(
                                                         peer,
                                                         movementParticipant.AccountId,
@@ -1851,6 +1853,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 activeCharacterName = slot.CharacterName;
                                             }
 
+                                            var refreshedCharacterIdentifier = !IsNullOrWhiteSpace(slot.CharacterIdentifier)
+                                                ? slot.CharacterIdentifier
+                                                : (activeIdentityGuid.ToString() + ":" + slotIndex.ToString(CultureInfo.InvariantCulture));
+                                            RetireDuplicateHubSessionForCharacter(peer, refreshedCharacterIdentifier, "character-change-hub-refresh-pre-transition");
+
                                             string refreshedHubId;
                                             cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
                                                 slot,
@@ -2061,6 +2068,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         ? routedSlot.CharacterName
                                         : activeCharacterName;
 
+                                    RetireDuplicateHubSessionForCharacter(peer, routedCharacterIdentifier, "request-story-hub-for-pre-transition");
+
                                     var transition = TryExecutePortedHubTransition(
                                         routedHubId,
                                         activeIdentityGuid,
@@ -2094,11 +2103,17 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     var previousHubId = ResolveParticipantHubId(previousParticipant, null);
                                     var currentParticipantHubId = ResolveParticipantHubId(currentParticipant, routedHubId);
 
-                                    var shouldBroadcastAdd = previousParticipant == null
-                                        || !string.Equals(previousHubId, routedHubId, StringComparison.OrdinalIgnoreCase)
-                                        || !string.Equals(previousParticipant.CharacterId, routedCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
+                                    var shouldBroadcastAdd = transition != null
+                                        ? transition.JoinUpdate != null
+                                        : previousParticipant == null
+                                            || !string.Equals(previousHubId, routedHubId, StringComparison.OrdinalIgnoreCase)
+                                            || !string.Equals(previousParticipant.CharacterId, routedCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
 
-                                    if (previousParticipant != null
+                                    if (transition != null && transition.LeaveUpdate != null && !IsNullOrWhiteSpace(transition.LeaveUpdate.RemovedCharacter))
+                                    {
+                                        BroadcastHubStateRemove(transition.LeaveUpdate.InstanceId, peer, transition.LeaveUpdate.RemovedCharacter);
+                                    }
+                                    else if (previousParticipant != null
                                         && !IsNullOrWhiteSpace(previousHubId)
                                         && !IsNullOrWhiteSpace(previousParticipant.CharacterId)
                                         && !string.Equals(previousHubId, routedHubId, StringComparison.OrdinalIgnoreCase))
@@ -2110,6 +2125,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     {
                                         if (shouldBroadcastAdd)
                                         {
+                                            ClearHubAnnouncementForAllPeers(currentParticipantHubId, currentParticipant.CharacterId);
                                             ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
                                         }
 
@@ -2300,6 +2316,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             }
                                         }
 
+                                        RetireDuplicateHubSessionForCharacter(peer, currentCharacterIdentifier, "request-current-storyline-hub-pre-transition");
+
                                         var transition = TryExecutePortedHubTransition(
                                             effectiveHubId,
                                             activeIdentityGuid,
@@ -2335,14 +2353,20 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         var previousHubId = ResolveParticipantHubId(previousParticipant, null);
                                         var currentParticipantHubId = ResolveParticipantHubId(currentParticipant, effectiveHubId);
 
-                                        var shouldBroadcastAdd = previousParticipant == null
-                                            || !string.Equals(previousHubId, effectiveHubId, StringComparison.OrdinalIgnoreCase)
-                                            || !string.Equals(previousParticipant.CharacterId, currentCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
+                                            var shouldBroadcastAdd = transition != null
+                                                ? transition.JoinUpdate != null
+                                                : previousParticipant == null
+                                                    || !string.Equals(previousHubId, effectiveHubId, StringComparison.OrdinalIgnoreCase)
+                                                    || !string.Equals(previousParticipant.CharacterId, currentCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
 
-                                        if (previousParticipant != null
-                                            && !IsNullOrWhiteSpace(previousHubId)
-                                            && !IsNullOrWhiteSpace(previousParticipant.CharacterId)
-                                            && !string.Equals(previousHubId, effectiveHubId, StringComparison.OrdinalIgnoreCase))
+                                            if (transition != null && transition.LeaveUpdate != null && !IsNullOrWhiteSpace(transition.LeaveUpdate.RemovedCharacter))
+                                            {
+                                                BroadcastHubStateRemove(transition.LeaveUpdate.InstanceId, peer, transition.LeaveUpdate.RemovedCharacter);
+                                            }
+                                            else if (previousParticipant != null
+                                                && !IsNullOrWhiteSpace(previousHubId)
+                                                && !IsNullOrWhiteSpace(previousParticipant.CharacterId)
+                                                && !string.Equals(previousHubId, effectiveHubId, StringComparison.OrdinalIgnoreCase))
                                         {
                                             BroadcastHubStateRemove(previousHubId, peer, previousParticipant.CharacterId);
                                         }
@@ -2351,6 +2375,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         {
                                             if (shouldBroadcastAdd)
                                             {
+                                                    ClearHubAnnouncementForAllPeers(currentParticipantHubId, currentParticipant.CharacterId);
                                                 ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
                                             }
 
@@ -2494,6 +2519,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 {
                                                     activeCharacterName = slot.CharacterName;
                                                 }
+
+                                                var committedCharacterIdentifier = !IsNullOrWhiteSpace(slot.CharacterIdentifier)
+                                                    ? slot.CharacterIdentifier
+                                                    : (activeIdentityGuid.ToString() + ":" + activeCareerIndex.ToString(CultureInfo.InvariantCulture));
+                                                RetireDuplicateHubSessionForCharacter(peer, committedCharacterIdentifier, "character-commit-hub-refresh-pre-transition");
 
                                                 // Refresh cached hub payload (used later when client requests hub state).
                                                 string refreshedHubId;

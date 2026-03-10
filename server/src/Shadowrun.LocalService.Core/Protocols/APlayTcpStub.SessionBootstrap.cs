@@ -318,6 +318,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                 ? slot.CharacterIdentifier
                 : (identityGuid.ToString() + ":" + careerIndex.ToString());
 
+            RetireDuplicateHubSessionForCharacter(peer, characterIdentifier, "career-enter-bootstrap-pre-transition");
+
             cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
                 slot,
                 identityGuid,
