@@ -259,7 +259,7 @@ namespace Shadowrun.LocalService.Core.AILogic
                 }
 
                 _lastSkill = selectedSkill;
-                return SelectSkillByAvailabilityOrId(selectedSkill.SkillId);
+                return (ulong)selectedSkill.SkillId;
             }
 
             private bool ApplyFilter(ConditionalSkill skill, ActivityParameters activityParameters)

@@ -20,11 +20,16 @@ namespace Shadowrun.LocalService.Core.AILogic
         public bool? DebugChosenEnemyControlAi { get; set; }
         public bool? DebugChosenEnemyIsPlayersPlayerCharacter { get; set; }
         public bool? DebugChosenEnemyInteractiveObject { get; set; }
+        public string DebugChosenTargetRelationship { get; set; }
         public string DebugEnemyPick { get; set; }
         public string DebugEnemyReason { get; set; }
         public int? DebugEnemyX { get; set; }
         public int? DebugEnemyY { get; set; }
         public int? DebugEnemyCandidateCount { get; set; }
+        public int? DebugAttackCandidateCount { get; set; }
+        public int? DebugAttackEvaluatedTargetCount { get; set; }
+        public bool? DebugAttackUsedSelfTarget { get; set; }
+        public string DebugAttackFailureReason { get; set; }
         public int? DebugReachableCellCount { get; set; }
         public int? DebugReducingCellCount { get; set; }
         public bool? DebugAvoidedImmediateBacktrack { get; set; }

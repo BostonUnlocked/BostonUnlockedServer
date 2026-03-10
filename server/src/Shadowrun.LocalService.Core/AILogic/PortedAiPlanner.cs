@@ -141,7 +141,7 @@ namespace Shadowrun.LocalService.Core.AILogic
             int skillIndex;
             IntVector2D targetPosition;
             float score;
-            if (!attackPlanner.TryPlanAttack(skillId, out weaponIndex, out skillIndex, out targetPosition, out score))
+            if (!attackPlanner.TryPlanAttack(skillId, baseDiagnostics, out weaponIndex, out skillIndex, out targetPosition, out score))
             {
                 return false;
             }
@@ -164,6 +164,23 @@ namespace Shadowrun.LocalService.Core.AILogic
                 DebugHasLoadout = diagnostics.DebugHasLoadout,
                 DebugSelectedWeaponIndex = diagnostics.DebugSelectedWeaponIndex,
                 DebugSelectedWeaponSkillCount = diagnostics.DebugSelectedWeaponSkillCount,
+                DebugChosenEnemyId = diagnostics.DebugChosenEnemyId,
+                DebugChosenEnemyTeamId = diagnostics.DebugChosenEnemyTeamId,
+                DebugChosenEnemyTeamAi = diagnostics.DebugChosenEnemyTeamAi,
+                DebugChosenEnemyControlPlayerId = diagnostics.DebugChosenEnemyControlPlayerId,
+                DebugChosenEnemyControlAi = diagnostics.DebugChosenEnemyControlAi,
+                DebugChosenEnemyIsPlayersPlayerCharacter = diagnostics.DebugChosenEnemyIsPlayersPlayerCharacter,
+                DebugChosenEnemyInteractiveObject = diagnostics.DebugChosenEnemyInteractiveObject,
+                DebugChosenTargetRelationship = diagnostics.DebugChosenTargetRelationship,
+                DebugEnemyPick = diagnostics.DebugEnemyPick,
+                DebugEnemyReason = diagnostics.DebugEnemyReason,
+                DebugEnemyX = diagnostics.DebugEnemyX,
+                DebugEnemyY = diagnostics.DebugEnemyY,
+                DebugEnemyCandidateCount = diagnostics.DebugEnemyCandidateCount,
+                DebugAttackCandidateCount = diagnostics.DebugAttackCandidateCount,
+                DebugAttackEvaluatedTargetCount = diagnostics.DebugAttackEvaluatedTargetCount,
+                DebugAttackUsedSelfTarget = diagnostics.DebugAttackUsedSelfTarget,
+                DebugAttackFailureReason = diagnostics.DebugAttackFailureReason,
                 DebugShotChanceToHit = diagnostics.DebugShotChanceToHit,
             });
             return true;
@@ -306,11 +323,16 @@ namespace Shadowrun.LocalService.Core.AILogic
                 DebugChosenEnemyControlAi = source.DebugChosenEnemyControlAi,
                 DebugChosenEnemyIsPlayersPlayerCharacter = source.DebugChosenEnemyIsPlayersPlayerCharacter,
                 DebugChosenEnemyInteractiveObject = source.DebugChosenEnemyInteractiveObject,
+                DebugChosenTargetRelationship = source.DebugChosenTargetRelationship,
                 DebugEnemyPick = source.DebugEnemyPick,
                 DebugEnemyReason = source.DebugEnemyReason,
                 DebugEnemyX = source.DebugEnemyX,
                 DebugEnemyY = source.DebugEnemyY,
                 DebugEnemyCandidateCount = source.DebugEnemyCandidateCount,
+                DebugAttackCandidateCount = source.DebugAttackCandidateCount,
+                DebugAttackEvaluatedTargetCount = source.DebugAttackEvaluatedTargetCount,
+                DebugAttackUsedSelfTarget = source.DebugAttackUsedSelfTarget,
+                DebugAttackFailureReason = source.DebugAttackFailureReason,
                 DebugReachableCellCount = source.DebugReachableCellCount,
                 DebugReducingCellCount = source.DebugReducingCellCount,
                 DebugAvoidedImmediateBacktrack = source.DebugAvoidedImmediateBacktrack,

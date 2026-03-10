@@ -1,5 +1,6 @@
 using System.Linq;
 using Cliffhanger.SRO.ServerClientCommons.ArtificialIntelligence;
+using Cliffhanger.SRO.ServerClientCommons.ArtificialIntelligence.Serialization;
 using Cliffhanger.SRO.ServerClientCommons.Gameworld;
 using Cliffhanger.SRO.ServerClientCommons.Gameworld.Locomotion;
 using SRO.Core.Compatibility.Math;
@@ -8,7 +9,7 @@ namespace Shadowrun.LocalService.Core.AILogic
 {
     internal sealed class PortedAIMovementPlanner
     {
-        private const float ImprovementThreshold = 0.025f;
+        private const float ImprovementFraction = 0.025f;
 
         private readonly IGameworldInstance _gameworld;
         private readonly Entity _agent;
@@ -59,6 +60,10 @@ namespace Shadowrun.LocalService.Core.AILogic
             }
 
             var found = false;
+            var bestScore = float.MinValue;
+            var maxPositiveWeight = SumPositiveWeights(config.MovementAssessments);
+            var minNegativeWeight = SumNegativeWeights(config.MovementAssessments);
+            var improvement = ImprovementFraction * (maxPositiveWeight - minNegativeWeight);
             foreach (var cell in ranges.SprintRange.ReachableCells)
             {
                 if (cell == currentPosition)
@@ -67,7 +72,12 @@ namespace Shadowrun.LocalService.Core.AILogic
                 }
 
                 var candidateScore = _movementScorer.ScorePosition(context, config.MovementAssessments, _agent, cell);
-                if (candidateScore < baseline + ImprovementThreshold)
+                if (candidateScore > bestScore)
+                {
+                    bestScore = candidateScore;
+                }
+
+                if (candidateScore <= baseline + improvement)
                 {
                     continue;
                 }
@@ -80,7 +90,58 @@ namespace Shadowrun.LocalService.Core.AILogic
                 }
             }
 
-            return found;
+            if (!found)
+            {
+                return false;
+            }
+
+            var pruneLimit = System.Math.Max(bestScore - improvement, baseline + improvement);
+            if (score <= pruneLimit)
+            {
+                targetPosition = IntVector2D.Zero;
+                score = 0f;
+                return false;
+            }
+
+            return true;
+        }
+
+        private static float SumPositiveWeights(System.Collections.Generic.IEnumerable<AWeightedAssessmentDefinition> assessments)
+        {
+            if (assessments == null)
+            {
+                return 0f;
+            }
+
+            float sum = 0f;
+            foreach (var assessment in assessments)
+            {
+                if (assessment != null && assessment.Weight > 0f)
+                {
+                    sum += assessment.Weight;
+                }
+            }
+
+            return sum;
+        }
+
+        private static float SumNegativeWeights(System.Collections.Generic.IEnumerable<AWeightedAssessmentDefinition> assessments)
+        {
+            if (assessments == null)
+            {
+                return 0f;
+            }
+
+            float sum = 0f;
+            foreach (var assessment in assessments)
+            {
+                if (assessment != null && assessment.Weight < 0f)
+                {
+                    sum += assessment.Weight;
+                }
+            }
+
+            return sum;
         }
     }
 }

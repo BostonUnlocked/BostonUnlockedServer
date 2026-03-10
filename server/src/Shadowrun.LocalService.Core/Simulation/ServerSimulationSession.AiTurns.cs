@@ -210,11 +210,16 @@ namespace Shadowrun.LocalService.Core.Simulation
                         debugChosenEnemyControlAi = diagnostics.DebugChosenEnemyControlAi,
                         debugChosenEnemyIsPlayersPlayerCharacter = diagnostics.DebugChosenEnemyIsPlayersPlayerCharacter,
                         debugChosenEnemyInteractiveObject = diagnostics.DebugChosenEnemyInteractiveObject,
+                        debugChosenTargetRelationship = diagnostics.DebugChosenTargetRelationship,
                         debugEnemyPick = diagnostics.DebugEnemyPick,
                         debugEnemyReason = diagnostics.DebugEnemyReason,
                         debugEnemyX = diagnostics.DebugEnemyX,
                         debugEnemyY = diagnostics.DebugEnemyY,
                         debugEnemyCandidateCount = diagnostics.DebugEnemyCandidateCount,
+                        debugAttackCandidateCount = diagnostics.DebugAttackCandidateCount,
+                        debugAttackEvaluatedTargetCount = diagnostics.DebugAttackEvaluatedTargetCount,
+                        debugAttackUsedSelfTarget = diagnostics.DebugAttackUsedSelfTarget,
+                        debugAttackFailureReason = diagnostics.DebugAttackFailureReason,
                         debugReachableCellCount = diagnostics.DebugReachableCellCount,
                         debugReducingCellCount = diagnostics.DebugReducingCellCount,
                         debugAvoidedImmediateBacktrack = diagnostics.DebugAvoidedImmediateBacktrack,
@@ -578,6 +583,31 @@ namespace Shadowrun.LocalService.Core.Simulation
                 {
                     sb.Append(";shotCth=");
                     sb.Append(diagnostics.DebugShotChanceToHit.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
+                }
+                if (!string.IsNullOrEmpty(diagnostics.DebugChosenTargetRelationship))
+                {
+                    sb.Append(";targetRelation=");
+                    sb.Append(diagnostics.DebugChosenTargetRelationship);
+                }
+                if (diagnostics.DebugAttackUsedSelfTarget.HasValue)
+                {
+                    sb.Append(";selfTarget=");
+                    sb.Append(diagnostics.DebugAttackUsedSelfTarget.Value ? "true" : "false");
+                }
+                if (diagnostics.DebugAttackCandidateCount.HasValue)
+                {
+                    sb.Append(";attackCandidates=");
+                    sb.Append(diagnostics.DebugAttackCandidateCount.Value);
+                }
+                if (diagnostics.DebugAttackEvaluatedTargetCount.HasValue)
+                {
+                    sb.Append(";attackEvaluated=");
+                    sb.Append(diagnostics.DebugAttackEvaluatedTargetCount.Value);
+                }
+                if (!string.IsNullOrEmpty(diagnostics.DebugAttackFailureReason))
+                {
+                    sb.Append(";attackFailure=");
+                    sb.Append(diagnostics.DebugAttackFailureReason);
                 }
             }
 
