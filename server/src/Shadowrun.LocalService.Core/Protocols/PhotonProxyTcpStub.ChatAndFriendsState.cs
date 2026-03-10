@@ -826,6 +826,49 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
             }
 
+            public Guid[] GetOnlineAccountIds()
+            {
+                lock (_lock)
+                {
+                    if (_connIdsByAccountId.Count == 0)
+                    {
+                        return new Guid[0];
+                    }
+
+                    var accountIds = new Guid[_connIdsByAccountId.Count];
+                    _connIdsByAccountId.Keys.CopyTo(accountIds, 0);
+                    return accountIds;
+                }
+            }
+
+            public Guid[] GetGroupMemberAccountIds(Guid accountId)
+            {
+                if (accountId == Guid.Empty)
+                {
+                    return new Guid[0];
+                }
+
+                lock (_lock)
+                {
+                    foreach (var rec in _groupsById.Values)
+                    {
+                        if (rec == null || rec.Group == null || rec.MemberAccountIds == null || rec.MemberAccountIds.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        if (!rec.MemberAccountIds.Contains(accountId))
+                        {
+                            continue;
+                        }
+
+                        return rec.MemberAccountIds.ToArray();
+                    }
+                }
+
+                return new Guid[0];
+            }
+
             // ----- Groups & invitations (minimal for party chat) -----
 
             public Group CreateGroup(Guid creatorAccountId, string groupName, int capacity, bool isPersistent)

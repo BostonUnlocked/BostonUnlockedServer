@@ -69,9 +69,10 @@ namespace Shadowrun.LocalService.Host
 			userStore.RunDisplayNameFormatMigrationOnStartup();
 			var sessionIdentityMap = new ExpiringSessionIdentityMap();
 			var characterStatePushBroker = new CharacterStatePushBroker();
+			var hubPresenceRegistry = new HubPresenceRegistry();
 			var httpServer = new HttpStubServer(options, logger, userStore, sessionIdentityMap, null);
-			var aplayStub = new APlayTcpStub(options, logger, userStore, sessionIdentityMap, characterStatePushBroker);
-			var photonStub = new PhotonProxyTcpStub(options, logger, userStore, sessionIdentityMap, characterStatePushBroker);
+			var aplayStub = new APlayTcpStub(options, logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry);
+			var photonStub = new PhotonProxyTcpStub(options, logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry);
 
 			Exception httpError = null;
 			Exception aplayError = null;

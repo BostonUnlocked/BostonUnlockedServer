@@ -24,26 +24,33 @@ public sealed partial class PhotonProxyTcpStub
     private readonly HashSet<Guid> _chatAdminAccountIds;
     private readonly Dictionary<string, IChatCommand> _chatCommands;
     private readonly CharacterStatePushBroker _characterStatePushBroker;
+    private readonly HubPresenceRegistry _hubPresenceRegistry;
 
     private readonly ClientSerializer _serializer = new ClientSerializer();
 
     public PhotonProxyTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore)
-        : this(options, logger, userStore, null, null)
+        : this(options, logger, userStore, null, null, null)
     {
     }
 
     public PhotonProxyTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap)
-        : this(options, logger, userStore, sessionIdentityMap, null)
+        : this(options, logger, userStore, sessionIdentityMap, null, null)
     {
     }
 
     public PhotonProxyTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap, CharacterStatePushBroker characterStatePushBroker)
+        : this(options, logger, userStore, sessionIdentityMap, characterStatePushBroker, null)
+    {
+    }
+
+    public PhotonProxyTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap, CharacterStatePushBroker characterStatePushBroker, HubPresenceRegistry hubPresenceRegistry)
     {
         _options = options;
         _logger = logger;
         _userStore = userStore;
         _sessionIdentityMap = sessionIdentityMap;
         _characterStatePushBroker = characterStatePushBroker ?? CharacterStatePushBroker.Shared;
+        _hubPresenceRegistry = hubPresenceRegistry ?? new HubPresenceRegistry();
 
         _friendsStore = new FriendsStore(options, logger);
         _chatAndFriends = new ChatAndFriendsState(this);

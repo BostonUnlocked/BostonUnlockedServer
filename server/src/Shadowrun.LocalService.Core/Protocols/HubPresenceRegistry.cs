@@ -3,9 +3,9 @@ using System.Collections.Generic;
 
 namespace Shadowrun.LocalService.Core.Protocols
 {
-    internal sealed class HubPresenceRegistry
+    public sealed class HubPresenceRegistry
     {
-        internal sealed class Participant
+        public sealed class Participant
         {
             public string Peer;
             public Guid AccountId;
@@ -157,6 +157,68 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
+        public bool TryGetParticipantForAccount(Guid accountId, out Participant participant)
+        {
+            participant = null;
+            if (accountId == Guid.Empty)
+            {
+                return false;
+            }
+
+            lock (_lock)
+            {
+                HashSet<string> peers;
+                if (!_peersByAccount.TryGetValue(accountId, out peers) || peers == null || peers.Count == 0)
+                {
+                    return false;
+                }
+
+                foreach (var peer in peers)
+                {
+                    Participant p;
+                    if (_byPeer.TryGetValue(peer, out p) && p != null)
+                    {
+                        participant = CloneParticipant(p);
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        public Participant[] SnapshotParticipants()
+        {
+            lock (_lock)
+            {
+                if (_byPeer.Count == 0)
+                {
+                    return new Participant[0];
+                }
+
+                var snapshot = new Participant[_byPeer.Count];
+                var index = 0;
+                foreach (var participant in _byPeer.Values)
+                {
+                    if (participant == null)
+                    {
+                        continue;
+                    }
+
+                    snapshot[index++] = CloneParticipant(participant);
+                }
+
+                if (index == snapshot.Length)
+                {
+                    return snapshot;
+                }
+
+                var trimmed = new Participant[index];
+                Array.Copy(snapshot, trimmed, index);
+                return trimmed;
+            }
+        }
+
         public void RemovePeer(string peer)
         {
             if (IsNullOrWhiteSpace(peer))
@@ -229,6 +291,26 @@ namespace Shadowrun.LocalService.Core.Protocols
             {
                 _peerByCharacterId[p.CharacterId] = p.Peer;
             }
+        }
+
+        private static Participant CloneParticipant(Participant source)
+        {
+            if (source == null)
+            {
+                return null;
+            }
+
+            var copy = new Participant();
+            copy.Peer = source.Peer;
+            copy.AccountId = source.AccountId;
+            copy.IdentityHash = source.IdentityHash;
+            copy.CareerIndex = source.CareerIndex;
+            copy.CharacterId = source.CharacterId;
+            copy.CharacterName = source.CharacterName;
+            copy.HubId = source.HubId;
+            copy.X = source.X;
+            copy.Y = source.Y;
+            return copy;
         }
 
         private static bool IsNullOrWhiteSpace(string value)

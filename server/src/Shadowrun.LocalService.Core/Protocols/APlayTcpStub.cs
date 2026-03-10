@@ -276,7 +276,7 @@ namespace Shadowrun.LocalService.Core.Protocols
         private const int CreationInfoDedupWindowMs = 10000;
         private readonly object _hubPushDedupLock = new object();
         private readonly Dictionary<string, HubPushDedupState> _hubPushDedupByPeer = new Dictionary<string, HubPushDedupState>(StringComparer.OrdinalIgnoreCase);
-        private readonly HubPresenceRegistry _hubPresenceRegistry = new HubPresenceRegistry();
+        private readonly HubPresenceRegistry _hubPresenceRegistry;
         private readonly object _hubPeerStreamsLock = new object();
         private readonly Dictionary<string, NetworkStream> _hubPeerStreams = new Dictionary<string, NetworkStream>(StringComparer.OrdinalIgnoreCase);
         private readonly object _hubAnnouncedByPeerLock = new object();
@@ -365,21 +365,26 @@ namespace Shadowrun.LocalService.Core.Protocols
         }
 
         public APlayTcpStub(LocalServiceOptions options, RequestLogger logger)
-            : this(options, logger, new LocalUserStore(options, logger), null, null)
+            : this(options, logger, new LocalUserStore(options, logger), null, null, null)
         {
         }
 
         public APlayTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore)
-            : this(options, logger, userStore, null, null)
+            : this(options, logger, userStore, null, null, null)
         {
         }
 
         public APlayTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap)
-            : this(options, logger, userStore, sessionIdentityMap, null)
+            : this(options, logger, userStore, sessionIdentityMap, null, null)
         {
         }
 
         public APlayTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap, CharacterStatePushBroker characterStatePushBroker)
+            : this(options, logger, userStore, sessionIdentityMap, characterStatePushBroker, null)
+        {
+        }
+
+        public APlayTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap, CharacterStatePushBroker characterStatePushBroker, HubPresenceRegistry hubPresenceRegistry)
         {
             _options = options;
             _logger = logger;
@@ -393,6 +398,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             _skillPurchaseService = new PortedSkillPurchaseService(_options);
             _shopInventoryService = new PortedShopInventoryService(_options);
             _portedHubInstanceManager = new PortedHubInstanceManager(new PortedHubRepository(new PortedHubLoader(_options != null ? _options.StreamingAssetsDir : null)), false);
+            _hubPresenceRegistry = hubPresenceRegistry ?? new HubPresenceRegistry();
             _missionCleanupTimer = new Timer(SweepDisconnectedMissionSessions, null, MissionCleanupInterval, MissionCleanupInterval);
         }
 
