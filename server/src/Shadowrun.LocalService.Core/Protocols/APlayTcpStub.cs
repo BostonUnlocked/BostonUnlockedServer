@@ -73,6 +73,13 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return null;
             }
 
+            var authoritativeCurrentHubInstance = currentHubInstance;
+            var hubInstanceForCharacter = _portedHubInstanceManager.RequestHubInstance(characterIdentifier);
+            if (hubInstanceForCharacter != null)
+            {
+                authoritativeCurrentHubInstance = hubInstanceForCharacter;
+            }
+
             var snapshot = BuildMappedPlayerCharacterSnapshotForHub(identityGuid, characterIdentifier, characterName, slot);
             if (snapshot == null)
             {
@@ -82,10 +89,10 @@ namespace Shadowrun.LocalService.Core.Protocols
             var exactTargetHub = _portedHubInstanceManager.RequestHubInstanceByHubId(requestedHubId);
             if (exactTargetHub != null)
             {
-                return _portedHubInstanceManager.ExecuteRequestHubInstance(exactTargetHub, snapshot, currentHubInstance);
+                return _portedHubInstanceManager.ExecuteRequestHubInstance(exactTargetHub, snapshot, authoritativeCurrentHubInstance);
             }
 
-            return _portedHubInstanceManager.ExecuteRequestHubInstance(GetHubNameFromHubInstanceId(requestedHubId), snapshot, currentHubInstance, new GroupStatus());
+            return _portedHubInstanceManager.ExecuteRequestHubInstance(GetHubNameFromHubInstanceId(requestedHubId), snapshot, authoritativeCurrentHubInstance, new GroupStatus());
         }
 
         private byte[] BuildPortedHubStatePayloadForSlot(CareerSlot slot, Guid identityGuid, int careerIndex, bool forceNewHubInstanceId, PortedHubInstance currentHubInstance, out string resolvedHubId, out PortedHubInstance resolvedHubInstance)
