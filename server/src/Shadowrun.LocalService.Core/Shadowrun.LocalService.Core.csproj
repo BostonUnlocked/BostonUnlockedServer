@@ -143,6 +143,7 @@
     <Compile Include="Persistence\ISessionIdentityMap.cs" />
     <Compile Include="Persistence\ExpiringSessionIdentityMap.cs" />
     <Compile Include="Metagameplay\MetagameplayAvailabilityEvaluator.cs" />
+    <Compile Include="Metagameplay\LocalMetagameplaySnapshotFactory.cs" />
     <Compile Include="Metagameplay\PortedHubInstance.cs" />
     <Compile Include="Metagameplay\PortedHubInstanceManager.cs" />
     <Compile Include="Metagameplay\PortedHubLoadBalancing.cs" />

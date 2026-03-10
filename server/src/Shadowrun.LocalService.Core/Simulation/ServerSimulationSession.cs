@@ -24,6 +24,7 @@ using SRO.Core.Compatibility.Logging;
 using SRO.Core.Compatibility.Math;
 using SRO.Core.Compatibility.Utilities;
 using Shadowrun.LocalService.Core.AILogic;
+using Shadowrun.LocalService.Core.Persistence;
 
 namespace Shadowrun.LocalService.Core.Simulation
 {
@@ -96,9 +97,18 @@ namespace Shadowrun.LocalService.Core.Simulation
             _aiPlanner = aiPlanner;
         }
 
-        internal LocalMissionLootController.LootGrant[] DrainPendingLoot()
+        internal LocalMissionLootController.LootGrant[] ResolvePendingLootForParticipant(string participantKey, LocalUserStore userStore, Guid identityGuid, CareerSlot slot)
         {
-            return _lootController != null ? _lootController.DrainPending() : new LocalMissionLootController.LootGrant[0];
+            return _lootController != null
+                ? _lootController.ResolveLootForParticipant(participantKey, userStore, identityGuid, slot)
+                : new LocalMissionLootController.LootGrant[0];
+        }
+
+        internal LocalMissionLootController.LootGrant[] ResolvePendingLootPreviewsForParticipant(string participantKey, LocalUserStore userStore, Guid identityGuid, CareerSlot slot)
+        {
+            return _lootController != null
+                ? _lootController.ResolvePreviewLootForParticipant(participantKey, userStore, identityGuid, slot)
+                : new LocalMissionLootController.LootGrant[0];
         }
 
         internal string[] DrainPendingLootPreviews()
@@ -211,42 +221,12 @@ namespace Shadowrun.LocalService.Core.Simulation
             var pendingLootPreviews = new List<string>();
             var lootController = new LocalMissionLootController(
                 staticData,
-                random,
+                seed0,
+                seed1,
+                seed2,
+                seed3,
                 storyLine,
                 chapter,
-                delegate(LocalMissionLootController.LootGrant grant)
-                {
-                    if (grant == null)
-                    {
-                        return;
-                    }
-
-                    if (!string.IsNullOrEmpty(grant.ItemId))
-                    {
-                        lock (lootPreviewLock)
-                        {
-                            pendingLootPreviews.Add(grant.ItemId);
-                        }
-                    }
-
-                    try
-                    {
-                        logger.Log(new
-                        {
-                            ts = RequestLogger.UtcNowIso(),
-                            type = "mission-loot-grant",
-                            peer = peer,
-                            lootTable = grant.LootTable,
-                            itemId = grant.ItemId,
-                            delta = grant.Delta,
-                            sellPrice = grant.SellPrice,
-                            nuyen = grant.Nuyen,
-                        });
-                    }
-                    catch
-                    {
-                    }
-                },
                 delegate(string lootTable)
                 {
                     try

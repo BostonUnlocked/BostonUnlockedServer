@@ -563,49 +563,178 @@ namespace Shadowrun.LocalService.Core.Protocols
             return Concat(BitConverter.GetBytes(raw.Length), raw);
         }
 
-        private void SendPendingLootPreviews(ServerSimulationSession simulationSession, System.Net.Sockets.NetworkStream stream, string peer, ulong msgNoBase)
+        private void SendPendingLootPreviews(
+            ServerSimulationSession simulationSession,
+            System.Net.Sockets.NetworkStream stream,
+            string peer,
+            ulong msgNoBase,
+            string currentCoopGroupName,
+            string activeIdentityHash,
+            Guid activeIdentityGuid,
+            int activeCareerIndex)
         {
             if (simulationSession == null || stream == null)
             {
                 return;
             }
 
-            string[] previews;
+            if (!IsNullOrWhiteSpace(currentCoopGroupName))
+            {
+                RegisterCoopMissionParticipant(currentCoopGroupName, peer, stream, activeIdentityHash, activeIdentityGuid, activeCareerIndex);
+
+                var participants = GetCoopMissionParticipantsSnapshot(currentCoopGroupName);
+                var sent = 0;
+                for (var i = 0; i < participants.Length; i++)
+                {
+                    var participant = participants[i];
+                    if (participant == null || participant.Stream == null)
+                    {
+                        continue;
+                    }
+
+                    sent += SendResolvedLootPreviewsForParticipant(
+                        simulationSession,
+                        participant.Stream,
+                        participant.Peer,
+                        msgNoBase,
+                        participant.IdentityHash,
+                        participant.IdentityGuid,
+                        participant.CareerIndex,
+                        "live-mission-coop");
+                }
+
+                if (sent == 0)
+                {
+                    SendResolvedLootPreviewsForParticipant(
+                        simulationSession,
+                        stream,
+                        peer,
+                        msgNoBase,
+                        activeIdentityHash,
+                        activeIdentityGuid,
+                        activeCareerIndex,
+                        "live-mission-coop-fallback");
+                }
+
+                return;
+            }
+
+            SendResolvedLootPreviewsForParticipant(
+                simulationSession,
+                stream,
+                peer,
+                msgNoBase,
+                activeIdentityHash,
+                activeIdentityGuid,
+                activeCareerIndex,
+                "live-mission-solo");
+        }
+
+        private int SendResolvedLootPreviewsForParticipant(
+            ServerSimulationSession simulationSession,
+            NetworkStream stream,
+            string peer,
+            ulong msgNoBase,
+            string identityHash,
+            Guid identityGuid,
+            int careerIndex,
+            string reason)
+        {
+            if (simulationSession == null || stream == null)
+            {
+                return 0;
+            }
+
+            CareerSlot slot = null;
+            if (_userStore != null && !IsNullOrWhiteSpace(identityHash))
+            {
+                try
+                {
+                    slot = _userStore.GetOrCreateCareer(identityHash, careerIndex, false);
+                }
+                catch
+                {
+                    slot = null;
+                }
+            }
+
+            var participantKey = BuildMissionParticipantKey(identityHash, identityGuid, careerIndex);
+            LocalMissionLootController.LootGrant[] previews;
             try
             {
-                previews = simulationSession.DrainPendingLootPreviews();
+                previews = simulationSession.ResolvePendingLootPreviewsForParticipant(participantKey, _userStore, identityGuid, slot);
             }
             catch
             {
-                return;
+                return 0;
             }
 
             if (previews == null || previews.Length == 0)
             {
-                return;
+                return 0;
             }
 
-            var idx = 0;
+            var lootItemChanges = new List<ItemChange>(previews.Length);
             for (var i = 0; i < previews.Length; i++)
             {
-                var itemId = previews[i];
-                if (IsNullOrWhiteSpace(itemId))
+                var preview = previews[i];
+                if (preview == null || IsNullOrWhiteSpace(preview.ItemId) || preview.Delta <= 0)
+                {
+                    continue;
+                }
+
+                lootItemChanges.Add(new ItemChange(preview.ItemId, preview.Delta)
+                {
+                    Quality = preview.Quality,
+                    Flavour = preview.Flavour,
+                });
+            }
+
+            if (lootItemChanges.Count == 0)
+            {
+                return 0;
+            }
+
+            var sent = SendLootPreviewItems(stream, peer, msgNoBase, lootItemChanges, reason);
+            return sent;
+        }
+
+        private static string BuildMissionParticipantKey(string identityHash, Guid identityGuid, int careerIndex)
+        {
+            return !IsNullOrWhiteSpace(identityHash)
+                ? identityHash + ":" + careerIndex.ToString(CultureInfo.InvariantCulture)
+                : identityGuid.ToString() + ":" + careerIndex.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private int SendLootPreviewItems(NetworkStream stream, string peer, ulong msgNoBase, IList<ItemChange> lootItemChanges, string reason)
+        {
+            if (stream == null || lootItemChanges == null || lootItemChanges.Count == 0)
+            {
+                return 0;
+            }
+
+            var sent = 0;
+            for (var i = 0; i < lootItemChanges.Count; i++)
+            {
+                var change = lootItemChanges[i];
+                if (change == null || IsNullOrWhiteSpace(change.ItemDefintionId) || change.Delta <= 0)
                 {
                     continue;
                 }
 
                 try
                 {
-                    // MetaGameplayCommunicationObject.onLootPreview(string item)
-                    var payload = BuildUtf16StringPayload(itemId);
-                    var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 30, payload), msgNoBase + (ulong)idx);
-                    SendRawFrame(stream, peer, PrefixLength(core), "sent MetaGameplayCommunicationObject LootPreview (itemId=" + itemId + ")");
-                    idx++;
+                    var payload = BuildUtf16StringPayload(change.ItemDefintionId);
+                    var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 30, payload), msgNoBase + (ulong)sent);
+                    SendRawFrame(stream, peer, PrefixLength(core), "sent MetaGameplayCommunicationObject LootPreview (itemId=" + change.ItemDefintionId + ")" + (IsNullOrWhiteSpace(reason) ? string.Empty : " (" + reason + ")"));
+                    sent++;
                 }
                 catch
                 {
                 }
             }
+
+            return sent;
         }
 
         private static StoryMissionstate ParseStoryMissionStateOrDefault(string value, StoryMissionstate fallback)
@@ -1529,7 +1658,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 });
 
                                 currentCoopGroupName = coopGroupName;
-                                RegisterCoopMissionParticipant(coopGroupName, peer, stream);
+                                RegisterCoopMissionParticipant(coopGroupName, peer, stream, activeIdentityHash, activeIdentityGuid, activeCareerIndex);
                                 UpdateCoopMissionHenchSelections(coopGroupName, activeIdentityGuid, coopParsedSelections);
 
                                 var requestMsgNoBase = direct.Value.MsgNo + 250;

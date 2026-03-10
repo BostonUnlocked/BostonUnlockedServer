@@ -18,7 +18,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                 CoopGroupName = coopGroupName;
                 SyncRoot = new object();
                 CreatedUtc = DateTime.UtcNow;
-                LootSnapshot = null;
                 LootAppliedToParticipants = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
             }
 
@@ -33,7 +32,6 @@ namespace Shadowrun.LocalService.Core.Protocols
             public uint Seed3;
             public string CompressedMatchConfiguration;
             public ServerSimulationSession Simulation;
-            public LocalMissionLootController.LootGrant[] LootSnapshot;
             public Dictionary<string, bool> LootAppliedToParticipants;
         }
 
@@ -389,7 +387,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                     coopSession.Seed2 = seed2;
                     coopSession.Seed3 = seed3;
                     coopSession.CompressedMatchConfiguration = compressedMatchConfiguration;
-                    coopSession.LootSnapshot = null;
                     if (coopSession.LootAppliedToParticipants == null)
                     {
                         coopSession.LootAppliedToParticipants = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
@@ -447,7 +444,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             return null;
         }
 
-        private void RegisterCoopMissionParticipant(string coopGroupName, string peer, NetworkStream stream)
+        private void RegisterCoopMissionParticipant(string coopGroupName, string peer, NetworkStream stream, string identityHash, Guid identityGuid, int careerIndex)
         {
             if (IsNullOrWhiteSpace(coopGroupName) || stream == null)
             {
@@ -471,10 +468,29 @@ namespace Shadowrun.LocalService.Core.Protocols
                     }
                 }
 
-                list.Add(new CoopMissionParticipant(peer, stream));
+                list.Add(new CoopMissionParticipant(peer, stream, identityHash, identityGuid, careerIndex));
             }
 
             MissionRuntimeRegistry.MarkCoopMissionParticipantJoined(coopGroupName, peer);
+        }
+
+        private CoopMissionParticipant[] GetCoopMissionParticipantsSnapshot(string coopGroupName)
+        {
+            if (IsNullOrWhiteSpace(coopGroupName))
+            {
+                return new CoopMissionParticipant[0];
+            }
+
+            lock (_coopMissionLock)
+            {
+                List<CoopMissionParticipant> list;
+                if (!_coopMissionParticipants.TryGetValue(coopGroupName, out list) || list == null || list.Count == 0)
+                {
+                    return new CoopMissionParticipant[0];
+                }
+
+                return list.ToArray();
+            }
         }
 
         private void UnregisterCoopMissionParticipant(string coopGroupName, string peer)

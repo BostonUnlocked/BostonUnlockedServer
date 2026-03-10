@@ -80,6 +80,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                         responseMsgNoBase,
                         gameworldEntityId,
                         gameClientEntityId,
+                        activeIdentityHash,
+                        activeIdentityGuid,
+                        activeCareerIndex,
                         currentCoopGroupName,
                         simulationSession,
                         simulationSessionSync);
@@ -93,6 +96,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                         responseMsgNoBase,
                         gameworldEntityId,
                         gameClientEntityId,
+                        activeIdentityHash,
+                        activeIdentityGuid,
+                        activeCareerIndex,
                         currentCoopGroupName,
                         simulationSession,
                         simulationSessionSync);
@@ -215,6 +221,9 @@ namespace Shadowrun.LocalService.Core.Protocols
             ulong responseMsgNoBase,
             ulong gameworldEntityId,
             ulong gameClientEntityId,
+            string activeIdentityHash,
+            Guid activeIdentityGuid,
+            int activeCareerIndex,
             string currentCoopGroupName,
             ServerSimulationSession simulationSession,
             object simulationSessionSync)
@@ -277,7 +286,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             TryBroadcastAiTurnActions(stream, peer, currentCoopGroupName, gameworldEntityId, responseMsgNoBase + 3, aiActions);
-            SendPendingLootPreviews(simulationSession, stream, peer, responseMsgNoBase + 900);
+            SendPendingLootPreviews(simulationSession, stream, peer, responseMsgNoBase + 900, currentCoopGroupName, activeIdentityHash, activeIdentityGuid, activeCareerIndex);
         }
 
         private void HandleActivateActiveSkillMissionCommand(
@@ -287,6 +296,9 @@ namespace Shadowrun.LocalService.Core.Protocols
             ulong responseMsgNoBase,
             ulong gameworldEntityId,
             ulong gameClientEntityId,
+            string activeIdentityHash,
+            Guid activeIdentityGuid,
+            int activeCareerIndex,
             string currentCoopGroupName,
             ServerSimulationSession simulationSession,
             object simulationSessionSync)
@@ -415,7 +427,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             TryBroadcastAiTurnActions(stream, peer, currentCoopGroupName, gameworldEntityId, responseMsgNoBase + 3, aiActions);
-            SendPendingLootPreviews(simulationSession, stream, peer, responseMsgNoBase + 950);
+            SendPendingLootPreviews(simulationSession, stream, peer, responseMsgNoBase + 950, currentCoopGroupName, activeIdentityHash, activeIdentityGuid, activeCareerIndex);
         }
 
         private bool IsMissionAgentCommandAuthorized(string peer, ServerSimulationSession simulationSession, ulong gameClientEntityId, ParsedMissionCommandRequest request)
@@ -623,6 +635,19 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
             }
 
+            CareerSlot rewardSlot = null;
+            if (_userStore != null)
+            {
+                try
+                {
+                    rewardSlot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false) : null;
+                }
+                catch
+                {
+                    rewardSlot = null;
+                }
+            }
+
             int lootNuyenReward = 0;
             string[] lootItemIds = new string[0];
             string[] lootTables = new string[0];
@@ -633,6 +658,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                 {
                     LocalMissionLootController.LootGrant[] grants = null;
                     var coopLootAppliedAlready = false;
+                    var participantKey = !IsNullOrWhiteSpace(activeIdentityHash)
+                        ? activeIdentityHash + ":" + activeCareerIndex.ToString(CultureInfo.InvariantCulture)
+                        : activeIdentityGuid.ToString() + ":" + activeCareerIndex.ToString(CultureInfo.InvariantCulture);
 
                     if (!IsNullOrWhiteSpace(currentCoopGroupName))
                     {
@@ -650,13 +678,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 {
                                     coopSession.LootAppliedToParticipants = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
                                 }
-
-                                if (coopSession.LootSnapshot == null)
-                                {
-                                    coopSession.LootSnapshot = simulationSession.DrainPendingLoot();
-                                }
-
-                                var participantKey = (activeIdentityHash ?? string.Empty) + ":" + activeCareerIndex.ToString(CultureInfo.InvariantCulture);
                                 bool already;
                                 if (coopSession.LootAppliedToParticipants.TryGetValue(participantKey, out already) && already)
                                 {
@@ -666,7 +687,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 else
                                 {
                                     coopSession.LootAppliedToParticipants[participantKey] = true;
-                                    grants = coopSession.LootSnapshot ?? new LocalMissionLootController.LootGrant[0];
+                                    grants = simulationSession.ResolvePendingLootForParticipant(participantKey, _userStore, activeIdentityGuid, rewardSlot);
                                 }
                             }
                         }
@@ -674,7 +695,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                     if (grants == null)
                     {
-                        grants = simulationSession.DrainPendingLoot();
+                        grants = simulationSession.ResolvePendingLootForParticipant(participantKey, _userStore, activeIdentityGuid, rewardSlot);
                     }
 
                     if (grants != null && grants.Length > 0)
@@ -731,6 +752,18 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                         lootItemIds = items.ToArray();
                         lootTables = tables.ToArray();
+
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "mission-loot-grants-resolved",
+                            peer = peer,
+                            mapName = completedMapName,
+                            participantKey = participantKey,
+                            coopGroupName = currentCoopGroupName,
+                            grants = grants.Length,
+                            itemIds = lootItemIds,
+                        });
 
                         _logger.Log(new
                         {
@@ -800,10 +833,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                 });
             }
 
-            CareerSlot rewardSlot = null;
             if (_userStore != null)
             {
-                rewardSlot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false) : null;
                 var rewardApplication = rewardSlot != null
                     ? _missionRewardService.Apply(rewardSlot, resolvedMissionReward, deactivatedUnlocks)
                     : new MissionRewardApplicationResult();
@@ -835,14 +866,15 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                     if (rewardApplication.ShouldNotifyClient)
                     {
-                        SendMissionReward(stream, peer, responseMsgNoBase + 6, rewardApplication.TransportReward, "after LeaveMission");
+                        var lootPreviewCount = SendLootPreviewItems(stream, peer, responseMsgNoBase + 5, lootItemChanges, "after LeaveMission");
+                        SendMissionReward(stream, peer, responseMsgNoBase + 6 + (ulong)lootPreviewCount, rewardApplication.TransportReward, "after LeaveMission");
                     }
 
                     if (rewardApplication.AppliedDeactivatedUnlocks.Length > 0)
                     {
                         try
                         {
-                            SendUnlocksChanged(stream, peer, responseMsgNoBase + 7, new string[0], rewardApplication.AppliedDeactivatedUnlocks, "after LeaveMission");
+                            SendUnlocksChanged(stream, peer, responseMsgNoBase + 20, new string[0], rewardApplication.AppliedDeactivatedUnlocks, "after LeaveMission");
                         }
                         catch
                         {

@@ -888,11 +888,17 @@ namespace Shadowrun.LocalService.Core.Protocols
         {
             public readonly string Peer;
             public readonly NetworkStream Stream;
+            public readonly string IdentityHash;
+            public readonly Guid IdentityGuid;
+            public readonly int CareerIndex;
 
-            public CoopMissionParticipant(string peer, NetworkStream stream)
+            public CoopMissionParticipant(string peer, NetworkStream stream, string identityHash, Guid identityGuid, int careerIndex)
             {
                 Peer = peer;
                 Stream = stream;
+                IdentityHash = identityHash;
+                IdentityGuid = identityGuid;
+                CareerIndex = careerIndex;
             }
         }
     }
