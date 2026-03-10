@@ -48,10 +48,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 if (!IsNullOrWhiteSpace(missionName) && !IsNullOrWhiteSpace(targetState))
                 {
                     var parsedTarget = ParseStoryMissionStateOrDefault(targetState, StoryMissionstate.Available);
-                    if (parsedTarget >= StoryMissionstate.ReadyToReceiveRewards)
-                    {
-                        completedStoryMissions.Add(missionName);
-                    }
+                    var isRepeatableMission = IsRepeatableMission(missionName);
 
                     var storyStateUpdate = new StoryMissionStateUpdateResult();
                     CareerSlot slotForStoryRewards = null;
@@ -70,6 +67,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                         catch
                         {
                         }
+                    }
+
+                    if (storyStateUpdate.Accepted && !isRepeatableMission && parsedTarget >= StoryMissionstate.ReadyToReceiveRewards)
+                    {
+                        completedStoryMissions.Add(missionName);
                     }
 
                     if (!storyStateUpdate.Accepted)

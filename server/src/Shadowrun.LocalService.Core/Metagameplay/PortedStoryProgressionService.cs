@@ -37,12 +37,14 @@ namespace Shadowrun.LocalService.Core.Metagameplay
         {
             var result = new StoryMissionStateUpdateResult();
             result.TargetState = targetState;
-            result.MarkedCompletedEnough = targetState >= StoryMissionstate.ReadyToReceiveRewards;
 
             if (slot == null || string.IsNullOrEmpty(storylineName) || string.IsNullOrEmpty(missionName))
             {
                 return result;
             }
+
+            var isRepeatableMission = IsRepeatableMission(missionName);
+            result.MarkedCompletedEnough = !isRepeatableMission && targetState >= StoryMissionstate.ReadyToReceiveRewards;
 
             if (slot.MainCampaignMissionStates == null)
             {
@@ -53,6 +55,18 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             if (slot.MainCampaignMissionStates.TryGetValue(missionName, out existing) && !string.IsNullOrEmpty(existing))
             {
                 result.PreviousState = ParseStoryMissionStateOrDefault(existing, StoryMissionstate.Available);
+            }
+
+            if (isRepeatableMission && result.PreviousState >= StoryMissionstate.ReadyToReceiveRewards)
+            {
+                result.PreviousState = StoryMissionstate.ReadyToPlay;
+                slot.MainCampaignMissionStates[missionName] = StoryMissionstate.ReadyToPlay.ToString();
+                result.Persisted = true;
+            }
+
+            if (isRepeatableMission && targetState == StoryMissionstate.ReadyToReceiveRewards)
+            {
+                return result;
             }
 
             if (!IsNextStateValid(result.PreviousState, targetState))
@@ -71,6 +85,40 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
             result.Persisted = true;
             return result;
+        }
+
+        public bool NormalizeRepeatableMissionStates(CareerSlot slot)
+        {
+            if (slot == null || slot.MainCampaignMissionStates == null || slot.MainCampaignMissionStates.Count == 0)
+            {
+                return false;
+            }
+
+            var changed = false;
+            var missionNames = new List<string>(slot.MainCampaignMissionStates.Keys);
+            for (var i = 0; i < missionNames.Count; i++)
+            {
+                var missionName = missionNames[i];
+                if (string.IsNullOrEmpty(missionName) || !IsRepeatableMission(missionName))
+                {
+                    continue;
+                }
+
+                string rawState;
+                if (!slot.MainCampaignMissionStates.TryGetValue(missionName, out rawState) || string.IsNullOrEmpty(rawState))
+                {
+                    continue;
+                }
+
+                var parsedState = ParseStoryMissionStateOrDefault(rawState, StoryMissionstate.Available);
+                if (parsedState >= StoryMissionstate.ReadyToReceiveRewards)
+                {
+                    slot.MainCampaignMissionStates[missionName] = StoryMissionstate.ReadyToPlay.ToString();
+                    changed = true;
+                }
+            }
+
+            return changed;
         }
 
         private static bool IsNextStateValid(StoryMissionstate previousState, StoryMissionstate nextState)
@@ -395,6 +443,11 @@ namespace Shadowrun.LocalService.Core.Metagameplay
         private bool TryGetStoryline(string storylineName, out MetagameplayStaticDataIndex.StorylineInfo storyline)
         {
             return MetagameplayStaticDataIndex.Load(_options != null ? _options.StaticDataDir : null).TryGetStoryline(storylineName, out storyline);
+        }
+
+        private bool IsRepeatableMission(string missionName)
+        {
+            return MetagameplayStaticDataIndex.Load(_options != null ? _options.StaticDataDir : null).IsMissionRepeatable(missionName);
         }
 
         private static bool HasAllActiveUnlocks(CareerSlot slot, List<string> requiredUnlocks)

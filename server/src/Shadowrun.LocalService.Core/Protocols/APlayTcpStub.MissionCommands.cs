@@ -605,8 +605,9 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             var isVictory = string.Equals(missionOutcome, "Victory", StringComparison.OrdinalIgnoreCase);
             var completedMapName = !IsNullOrWhiteSpace(currentMissionMapName) ? currentMissionMapName : "1_010_Prologue";
+            var isRepeatableMission = IsRepeatableMission(completedMapName);
 
-            if (isVictory)
+            if (isVictory && !isRepeatableMission)
             {
                 completedStoryMissions.Add(completedMapName);
             }
@@ -625,7 +626,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                         progressSlot.MainCampaignMissionStates[completedMapName] = !isVictory
                             ? StoryMissionstate.ReadyToPlay.ToString()
-                            : StoryMissionstate.ReadyToReceiveRewards.ToString();
+                            : (isRepeatableMission ? StoryMissionstate.ReadyToPlay.ToString() : StoryMissionstate.ReadyToReceiveRewards.ToString());
                         _userStore.UpsertCareer(activeIdentityHash, progressSlot);
 
                     }

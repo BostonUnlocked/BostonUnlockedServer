@@ -760,6 +760,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return false;
             }
 
+            if (IsRepeatableMission(missionName))
+            {
+                return false;
+            }
+
             try
             {
                 if (_userStore != null && !IsNullOrWhiteSpace(identityHash))

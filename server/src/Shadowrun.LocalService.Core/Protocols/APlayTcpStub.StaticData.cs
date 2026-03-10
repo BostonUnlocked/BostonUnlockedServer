@@ -20,6 +20,11 @@ namespace Shadowrun.LocalService.Core.Protocols
             return MetagameplayStaticDataIndex.Load(_options != null ? _options.StaticDataDir : null);
         }
 
+        private bool IsRepeatableMission(string missionName)
+        {
+            return !string.IsNullOrEmpty(missionName) && GetMetagameplayStaticDataIndex().IsMissionRepeatable(missionName);
+        }
+
         private bool TryResolveBodytypeId(ulong metatypeId, ulong genderId, out ulong bodytypeId)
         {
             return GetMetagameplayStaticDataIndex().TryGetBodytypeId(metatypeId, genderId, out bodytypeId);

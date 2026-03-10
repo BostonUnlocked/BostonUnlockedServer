@@ -266,6 +266,17 @@ namespace Shadowrun.LocalService.Core.Protocols
                     slot.PendingPersistenceCreation = false;
                 }
 
+                if (_storyProgressionService != null)
+                {
+                    try
+                    {
+                        _storyProgressionService.NormalizeRepeatableMissionStates(slot);
+                    }
+                    catch
+                    {
+                    }
+                }
+
                 _userStore.UpsertCareer(identityHash, slot);
                 _userStore.SetLastCareerIndex(identityHash, careerIndex);
             }
@@ -286,7 +297,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                         continue;
                     }
-                    if (string.Equals(kvp.Value, "Completed", StringComparison.OrdinalIgnoreCase))
+                    if (!IsRepeatableMission(kvp.Key) && string.Equals(kvp.Value, "Completed", StringComparison.OrdinalIgnoreCase))
                     {
                         completedStoryMissions.Add(kvp.Key);
                     }

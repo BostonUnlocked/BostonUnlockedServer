@@ -75,6 +75,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
         public readonly Dictionary<string, ItemChange[]> MissionItemChanges;
         public readonly Dictionary<string, string[]> MissionRewardUnlocks;
         public readonly Dictionary<string, string[]> MissionUnlockDeactivations;
+        public readonly HashSet<string> RepeatableMissions;
 
         private MetagameplayStaticDataIndex()
         {
@@ -88,6 +89,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             MissionItemChanges = new Dictionary<string, ItemChange[]>(StringComparer.OrdinalIgnoreCase);
             MissionRewardUnlocks = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
             MissionUnlockDeactivations = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+            RepeatableMissions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
 
         public static MetagameplayStaticDataIndex Load(string staticDataDir)
@@ -281,6 +283,11 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             }
 
             return Storylines.TryGetValue(storylineTechnicalName, out storyline) && storyline != null;
+        }
+
+        public bool IsMissionRepeatable(string missionName)
+        {
+            return !string.IsNullOrEmpty(missionName) && RepeatableMissions.Contains(missionName);
         }
 
         private static JavaScriptSerializer CreateSerializer()
@@ -836,6 +843,11 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                         continue;
                     }
 
+                    if (GetBoolean(mission, "Repeatable", false))
+                    {
+                        result.RepeatableMissions.Add(missionName);
+                    }
+
                     var rewards = mission.Contains("Rewards") ? mission["Rewards"] as IDictionary : null;
                     if (rewards != null)
                     {
@@ -1085,6 +1097,35 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             {
                 return defaultValue;
             }
+        }
+
+        private static bool GetBoolean(IDictionary dict, string key, bool defaultValue)
+        {
+            if (dict == null || string.IsNullOrEmpty(key) || !dict.Contains(key) || dict[key] == null)
+            {
+                return defaultValue;
+            }
+
+            try
+            {
+                var value = dict[key];
+                if (value is bool)
+                {
+                    return (bool)value;
+                }
+
+                var s = value as string;
+                bool parsed;
+                if (!string.IsNullOrEmpty(s) && bool.TryParse(s, out parsed))
+                {
+                    return parsed;
+                }
+            }
+            catch
+            {
+            }
+
+            return defaultValue;
         }
 
         private static ulong GetUInt64(IDictionary dict, string key, ulong defaultValue)
