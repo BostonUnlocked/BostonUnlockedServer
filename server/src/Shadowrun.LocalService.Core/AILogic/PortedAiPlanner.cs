@@ -115,15 +115,6 @@ namespace Shadowrun.LocalService.Core.AILogic
                         return attackPlan;
                     }
                 }
-
-                var genericMovementPlanner = new GenericAiMovementPlanner(_gameworld, candidate);
-                IntVector2D fallbackMoveTarget;
-                AiPlanningDiagnostics moveDiagnostics;
-                if (genericMovementPlanner.TryPlanAdvance(out fallbackMoveTarget, out moveDiagnostics))
-                {
-                    CopyUnsetDiagnostics(moveDiagnostics, diagnostics);
-                    return PlannedAiAction.CreateMove(candidate, fallbackMoveTarget, moveDiagnostics);
-                }
             }
 
             return PlannedAiAction.CreateEndTurn(fallbackAgent, AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, fallbackAgent), "no-action", "no-target", Simulation.ServerSimulationSession.EndActorTurnSkillId);

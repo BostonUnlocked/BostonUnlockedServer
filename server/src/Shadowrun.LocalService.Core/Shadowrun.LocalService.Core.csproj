@@ -130,7 +130,6 @@
     <Compile Include="AILogic\PortedAiPlanner.cs" />
     <Compile Include="AILogic\SkillSelectionStrategyFactory.cs" />
     <Compile Include="AILogic\Valuations\WalkDistanceToEnemies.cs" />
-    <Compile Include="AILogic\GenericAiMovementPlanner.cs" />
     <Compile Include="Persistence\LocalUserStore.cs" />
     <Compile Include="Persistence\LocalUserStore.IO.cs" />
     <Compile Include="Persistence\LocalAccountStore.cs" />

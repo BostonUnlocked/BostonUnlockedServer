@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Cliffhanger.SRO.ServerClientCommons;
 using Cliffhanger.SRO.ServerClientCommons.ArtificialIntelligence;
+using Cliffhanger.SRO.ServerClientCommons.GameLogic;
 using Cliffhanger.SRO.ServerClientCommons.GameLogic.Components;
 using Cliffhanger.SRO.ServerClientCommons.Gameworld;
 using Cliffhanger.SRO.ServerClientCommons.Gameworld.Locomotion;
@@ -237,6 +238,12 @@ namespace Shadowrun.LocalService.Core.AILogic
                 if (_gameworld.EntitySystem.TryGetComponent<GameplayPropertiesComponent>(other, out gameplayProperties)
                     && gameplayProperties != null
                     && gameplayProperties.InteractiveObject)
+                {
+                    continue;
+                }
+
+                if (!_gameworld.EntitySystem.HasComponent<AttributeBackedStatusValueContainer>(other)
+                    || _gameworld.EntitySystem.IsAgentDeadOrDespawned(other))
                 {
                     continue;
                 }
