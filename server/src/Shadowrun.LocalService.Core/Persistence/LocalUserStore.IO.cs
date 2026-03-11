@@ -78,7 +78,7 @@ namespace Shadowrun.LocalService.Core.Persistence
         {
             var fresh = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
             fresh["IdentityHash"] = IsGuidish(identityHash) ? NormalizeGuidish(identityHash) : null;
-            fresh["DisplayName"] = BuildAnonymizedDisplayName("OfflineRunner");
+            fresh["DisplayName"] = BuildAnonymizedDisplayName(identityHash);
             fresh["Careers"] = null;
             fresh["LastCareerIndex"] = 0;
             return fresh;

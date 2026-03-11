@@ -66,7 +66,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 var identity = GetString(account, AccountStoreLegacyIdentityHashKey);
                 if (IsGuidish(identity))
                 {
-                    if (EnsureDisplayNameIsAnonymized(account, "OfflineRunner"))
+                    if (EnsureDisplayNameIsAnonymized(account, identity))
                     {
                         SaveAccountNoThrow(account);
                     }
@@ -78,7 +78,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 account[AccountStoreLegacyIdentityHashKey] = created;
                 if (IsNullOrWhiteSpace(GetString(account, "DisplayName")))
                 {
-                    account["DisplayName"] = BuildAnonymizedDisplayName("OfflineRunner");
+                    account["DisplayName"] = BuildAnonymizedDisplayName(created);
                 }
                 if (account["Careers"] == null)
                 {
@@ -100,8 +100,6 @@ namespace Shadowrun.LocalService.Core.Persistence
             lock (_syncRoot)
             {
                 var steamKey = steamId64.ToString(CultureInfo.InvariantCulture);
-                var steamDisplayNameSource = "Steam:" + steamKey;
-                var steamDisplayName = BuildAnonymizedDisplayName(steamDisplayNameSource);
 
                 var store = LoadAccountStoreNoThrow(true);
                 var steamIdentities = GetOrCreateDict(store, AccountStoreSteamIdentitiesKey);
@@ -117,19 +115,12 @@ namespace Shadowrun.LocalService.Core.Persistence
                     if (existingAccount == null)
                     {
                         var createdAccount = BuildFreshAccountForIdentity(normalized);
-                        createdAccount["DisplayName"] = steamDisplayName;
                         createdAccount["Careers"] = BuildDefaultCareers(normalized);
                         accounts[normalized] = createdAccount;
                     }
                     else
                     {
-                        var existingDisplayName = GetString(existingAccount, "DisplayName");
-                        if (IsNullOrWhiteSpace(existingDisplayName) || string.Equals(existingDisplayName, "OfflineRunner", StringComparison.OrdinalIgnoreCase))
-                        {
-                            existingAccount["DisplayName"] = steamDisplayName;
-                        }
-
-                        EnsureDisplayNameIsAnonymized(existingAccount, steamDisplayNameSource);
+                        EnsureDisplayNameIsAnonymized(existingAccount, normalized);
                     }
 
                     SaveAccountStoreNoThrow(store);
@@ -158,13 +149,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                             var acct = GetDict(accounts, normalized);
                             if (acct != null)
                             {
-                                var existingDisplayName = GetString(acct, "DisplayName");
-                                if (IsNullOrWhiteSpace(existingDisplayName) || string.Equals(existingDisplayName, "OfflineRunner", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    acct["DisplayName"] = steamDisplayName;
-                                }
-
-                                EnsureDisplayNameIsAnonymized(acct, steamDisplayNameSource);
+                                EnsureDisplayNameIsAnonymized(acct, normalized);
                             }
 
                             SaveAccountStoreNoThrow(store);
@@ -182,7 +167,6 @@ namespace Shadowrun.LocalService.Core.Persistence
 
                 var accountsForCreate = GetOrCreateDict(store, AccountStoreAccountsKey);
                 var createdAccountForStore = BuildFreshAccountForIdentity(created);
-                createdAccountForStore["DisplayName"] = steamDisplayName;
                 createdAccountForStore["Careers"] = BuildDefaultCareers(created);
                 accountsForCreate[created] = createdAccountForStore;
 
@@ -251,10 +235,6 @@ namespace Shadowrun.LocalService.Core.Persistence
                 var createdIdentity = NormalizeGuidish(Guid.NewGuid().ToString());
                 var createdAccount = BuildFreshAccountForIdentity(createdIdentity);
                 createdAccount["Careers"] = BuildDefaultCareers(createdIdentity);
-
-                var normalizedTag = NormalizeDisplayNameTag(tag);
-                var displayNameSource = !IsNullOrWhiteSpace(normalizedTag) ? normalizedTag : normalizedEmail;
-                createdAccount["DisplayName"] = BuildAnonymizedDisplayName(displayNameSource);
 
                 string hash;
                 string salt;
@@ -368,7 +348,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             lock (_syncRoot)
             {
                 var account = LoadAccountForIdentityNoThrow(identityHash, true) ?? LoadAccountNoThrow();
-                var changed = EnsureDisplayNameIsAnonymized(account, "OfflineRunner");
+                var changed = EnsureDisplayNameIsAnonymized(account, identityHash);
                 var displayName = GetString(account, "DisplayName");
                 if (changed)
                 {
@@ -413,13 +393,14 @@ namespace Shadowrun.LocalService.Core.Persistence
 
                 foreach (DictionaryEntry entry in accounts)
                 {
+                    var identityHash = entry.Key as string;
                     var account = entry.Value as IDictionary;
                     if (account == null)
                     {
                         continue;
                     }
 
-                    if (EnsureDisplayNameIsAnonymized(account, "OfflineRunner"))
+                    if (EnsureDisplayNameIsAnonymized(account, identityHash))
                     {
                         updatedCount++;
                         changed = true;
@@ -459,12 +440,14 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         private static string BuildAnonymizedDisplayName(string source)
         {
-            var basis = IsNullOrWhiteSpace(source) ? "OfflineRunner" : source.Trim();
-            var bytes = Encoding.UTF8.GetBytes(basis);
-            var sha = SHA256.Create();
-            var hash = sha.ComputeHash(bytes);
-            var base64 = Convert.ToBase64String(hash);
-            return base64.Length <= 8 ? base64 : base64.Substring(0, 8);
+            var normalizedIdentity = IsGuidish(source) ? NormalizeGuidish(source) : null;
+            if (IsNullOrWhiteSpace(normalizedIdentity))
+            {
+                return "OfflineRunner";
+            }
+
+            var dash = normalizedIdentity.IndexOf('-');
+            return dash > 0 ? normalizedIdentity.Substring(0, dash) : normalizedIdentity;
         }
 
         private static bool IsAnonymizedDisplayName(string value)
@@ -487,21 +470,27 @@ namespace Shadowrun.LocalService.Core.Persistence
             return true;
         }
 
-        private static bool EnsureDisplayNameIsAnonymized(IDictionary account, string fallbackSource)
+        private static bool EnsureDisplayNameIsAnonymized(IDictionary account, string identityHash)
         {
             if (account == null)
             {
                 return false;
             }
 
+            var normalizedIdentity = IsGuidish(identityHash) ? NormalizeGuidish(identityHash) : GetString(account, AccountStoreLegacyIdentityHashKey);
+            if (IsGuidish(normalizedIdentity))
+            {
+                normalizedIdentity = NormalizeGuidish(normalizedIdentity);
+            }
+
+            var expected = BuildAnonymizedDisplayName(normalizedIdentity);
             var current = GetString(account, "DisplayName");
-            if (IsAnonymizedDisplayName(current))
+            if (string.Equals(current, expected, StringComparison.Ordinal))
             {
                 return false;
             }
 
-            var source = !IsNullOrWhiteSpace(current) ? current : fallbackSource;
-            account["DisplayName"] = BuildAnonymizedDisplayName(source);
+            account["DisplayName"] = expected;
             return true;
         }
 
@@ -565,7 +554,7 @@ namespace Shadowrun.LocalService.Core.Persistence
         {
             var fresh = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
             fresh[AccountStoreLegacyIdentityHashKey] = IsGuidish(identityHash) ? NormalizeGuidish(identityHash) : null;
-            fresh["DisplayName"] = BuildAnonymizedDisplayName("OfflineRunner");
+            fresh["DisplayName"] = BuildAnonymizedDisplayName(identityHash);
             fresh["Careers"] = null;
             fresh["LastCareerIndex"] = 0;
             return fresh;

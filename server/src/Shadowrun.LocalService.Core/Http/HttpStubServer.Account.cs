@@ -289,12 +289,12 @@ namespace Shadowrun.LocalService.Core.Http
                     }
 
                     var stored = _playerInfoRepository.Get(identityHash, requestedGameName);
-                    SanitizeStoredDisplayNames(stored);
+                    SanitizeStoredDisplayNames(identityHash, stored);
                     if (stored != null && _userStore != null && !stored.ContainsKey("LauncherDisplayName"))
                     {
                         stored["LauncherDisplayName"] = _userStore.GetDisplayName(identityHash);
                     }
-                    var responseInfo = BuildPlayerInfoResponse(stored, requestedKeys);
+                    var responseInfo = BuildPlayerInfoResponse(stored, requestedKeys, identityHash);
 
                     results.Add(new Dictionary<string, object>
                     {
@@ -360,7 +360,7 @@ namespace Shadowrun.LocalService.Core.Http
                 }
 
                 var playerInfoUpdates = ParsePlayerInfoUpdates(dict);
-                SanitizePlayerInfoUpdates(playerInfoUpdates);
+                SanitizePlayerInfoUpdates(identityHash, playerInfoUpdates);
                 TryValidatePlayerCharacterBlob(identityHash, gameName, playerInfoUpdates);
 
                 string displayName;
@@ -519,18 +519,18 @@ namespace Shadowrun.LocalService.Core.Http
             return results;
         }
 
-        private static object[] BuildPlayerInfoResponse(Dictionary<string, string> stored, List<string> requestedKeys)
+        private static object[] BuildPlayerInfoResponse(Dictionary<string, string> stored, List<string> requestedKeys, string identityHash)
         {
             if (stored == null)
             {
                 stored = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             }
 
-            SanitizeStoredDisplayNames(stored);
+            SanitizeStoredDisplayNames(identityHash, stored);
 
             if (!stored.ContainsKey("LauncherDisplayName"))
             {
-                stored["LauncherDisplayName"] = "OfflineRunner";
+                stored["LauncherDisplayName"] = BuildStableDisplayName(identityHash);
             }
 
             var items = new List<object>();
@@ -575,62 +575,62 @@ namespace Shadowrun.LocalService.Core.Http
             return items.ToArray();
         }
 
-        private static void SanitizePlayerInfoUpdates(Dictionary<string, string> updates)
+        private static void SanitizePlayerInfoUpdates(string identityHash, Dictionary<string, string> updates)
         {
             if (updates == null)
             {
                 return;
             }
 
+            var stableDisplayName = BuildStableDisplayName(identityHash);
             string displayName;
             if (updates.TryGetValue("DisplayName", out displayName) && !IsNullOrWhiteSpace(displayName))
             {
                 var semi = displayName.IndexOf(';');
-                var accountPart = semi >= 0 ? displayName.Substring(0, semi) : displayName;
                 var characterPart = semi >= 0 && semi + 1 < displayName.Length ? displayName.Substring(semi + 1) : null;
-                var anonymized = AnonymizeDisplayName(accountPart);
-                updates["DisplayName"] = semi >= 0 ? (anonymized + ";" + (characterPart ?? string.Empty)) : anonymized;
+                updates["DisplayName"] = semi >= 0 ? (stableDisplayName + ";" + (characterPart ?? string.Empty)) : stableDisplayName;
             }
 
             string launcherDisplayName;
             if (updates.TryGetValue("LauncherDisplayName", out launcherDisplayName) && !IsNullOrWhiteSpace(launcherDisplayName))
             {
-                updates["LauncherDisplayName"] = AnonymizeDisplayName(launcherDisplayName);
+                updates["LauncherDisplayName"] = stableDisplayName;
             }
         }
 
-        private static void SanitizeStoredDisplayNames(Dictionary<string, string> stored)
+        private static void SanitizeStoredDisplayNames(string identityHash, Dictionary<string, string> stored)
         {
             if (stored == null)
             {
                 return;
             }
 
+            var stableDisplayName = BuildStableDisplayName(identityHash);
             string launcherDisplayName;
             if (stored.TryGetValue("LauncherDisplayName", out launcherDisplayName) && !IsNullOrWhiteSpace(launcherDisplayName))
             {
-                stored["LauncherDisplayName"] = AnonymizeDisplayName(launcherDisplayName);
+                stored["LauncherDisplayName"] = stableDisplayName;
             }
 
             string displayName;
             if (stored.TryGetValue("DisplayName", out displayName) && !IsNullOrWhiteSpace(displayName))
             {
                 var semi = displayName.IndexOf(';');
-                var accountPart = semi >= 0 ? displayName.Substring(0, semi) : displayName;
                 var characterPart = semi >= 0 && semi + 1 < displayName.Length ? displayName.Substring(semi + 1) : null;
-                var anonymized = AnonymizeDisplayName(accountPart);
-                stored["DisplayName"] = semi >= 0 ? (anonymized + ";" + (characterPart ?? string.Empty)) : anonymized;
+                stored["DisplayName"] = semi >= 0 ? (stableDisplayName + ";" + (characterPart ?? string.Empty)) : stableDisplayName;
             }
         }
 
-        private static string AnonymizeDisplayName(string source)
+        private static string BuildStableDisplayName(string identityHash)
         {
-            var basis = IsNullOrWhiteSpace(source) ? "OfflineRunner" : source.Trim();
-            var bytes = Encoding.UTF8.GetBytes(basis);
-            var sha = SHA256.Create();
-            var hash = sha.ComputeHash(bytes);
-            var base64 = Convert.ToBase64String(hash);
-            return base64.Length <= 8 ? base64 : base64.Substring(0, 8);
+            if (!IsGuidish(identityHash))
+            {
+                return "OfflineRunner";
+            }
+
+            var normalizedIdentity = NormalizeGuidish(identityHash);
+            var dash = normalizedIdentity.IndexOf('-');
+            return dash > 0 ? normalizedIdentity.Substring(0, dash) : normalizedIdentity;
         }
 
         private static Dictionary<string, string> ParsePlayerInfoUpdates(IDictionary requestDict)

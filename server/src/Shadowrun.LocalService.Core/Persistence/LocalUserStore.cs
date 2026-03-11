@@ -146,12 +146,14 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         private static string BuildAnonymizedDisplayName(string source)
         {
-            var basis = IsNullOrWhiteSpace(source) ? "OfflineRunner" : source.Trim();
-            var bytes = Encoding.UTF8.GetBytes(basis);
-            var sha = SHA256.Create();
-            var hash = sha.ComputeHash(bytes);
-            var base64 = Convert.ToBase64String(hash);
-            return base64.Length <= 8 ? base64 : base64.Substring(0, 8);
+            var normalizedIdentity = IsGuidish(source) ? NormalizeGuidish(source) : null;
+            if (IsNullOrWhiteSpace(normalizedIdentity))
+            {
+                return "OfflineRunner";
+            }
+
+            var dash = normalizedIdentity.IndexOf('-');
+            return dash > 0 ? normalizedIdentity.Substring(0, dash) : normalizedIdentity;
         }
 
         private static bool IsAnonymizedDisplayName(string value)
@@ -174,21 +176,27 @@ namespace Shadowrun.LocalService.Core.Persistence
             return true;
         }
 
-        private static bool EnsureDisplayNameIsAnonymized(IDictionary account, string fallbackSource)
+        private static bool EnsureDisplayNameIsAnonymized(IDictionary account, string identityHash)
         {
             if (account == null)
             {
                 return false;
             }
 
+            var normalizedIdentity = IsGuidish(identityHash) ? NormalizeGuidish(identityHash) : GetString(account, AccountStoreLegacyIdentityHashKey);
+            if (IsGuidish(normalizedIdentity))
+            {
+                normalizedIdentity = NormalizeGuidish(normalizedIdentity);
+            }
+
+            var expected = BuildAnonymizedDisplayName(normalizedIdentity);
             var current = GetString(account, "DisplayName");
-            if (IsAnonymizedDisplayName(current))
+            if (string.Equals(current, expected, StringComparison.Ordinal))
             {
                 return false;
             }
 
-            var source = !IsNullOrWhiteSpace(current) ? current : fallbackSource;
-            account["DisplayName"] = BuildAnonymizedDisplayName(source);
+            account["DisplayName"] = expected;
             return true;
         }
 
@@ -241,6 +249,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 var rootChanged = false;
                 foreach (DictionaryEntry identityEntry in root)
                 {
+                    var identityHash = identityEntry.Key as string;
                     var byIdentity = identityEntry.Value as IDictionary;
                     if (byIdentity == null)
                     {
@@ -255,7 +264,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                             continue;
                         }
 
-                        if (MigratePlayerInfoDisplayNamesForGameNoLock(byGame, ref updatedCountLocal))
+                        if (MigratePlayerInfoDisplayNamesForGameNoLock(identityHash, byGame, ref updatedCountLocal))
                         {
                             rootChanged = true;
                         }
@@ -269,7 +278,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             return changed;
         }
 
-        private static bool MigratePlayerInfoDisplayNamesForGameNoLock(IDictionary byGame, ref int updatedCount)
+        private static bool MigratePlayerInfoDisplayNamesForGameNoLock(string identityHash, IDictionary byGame, ref int updatedCount)
         {
             if (byGame == null)
             {
@@ -277,10 +286,11 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
 
             var changed = false;
+            var expected = BuildAnonymizedDisplayName(identityHash);
             var launcherDisplayName = GetString(byGame, "LauncherDisplayName");
-            if (!IsNullOrWhiteSpace(launcherDisplayName) && !IsAnonymizedDisplayName(launcherDisplayName))
+            if (!string.Equals(launcherDisplayName, expected, StringComparison.Ordinal))
             {
-                byGame["LauncherDisplayName"] = BuildAnonymizedDisplayName(launcherDisplayName);
+                byGame["LauncherDisplayName"] = expected;
                 updatedCount++;
                 changed = true;
             }
@@ -292,23 +302,19 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
 
             var semi = displayName.IndexOf(';');
-            var accountPart = semi >= 0 ? displayName.Substring(0, semi) : displayName;
-            if (IsAnonymizedDisplayName(accountPart))
+            var rewrittenDisplayName = expected;
+            if (semi >= 0)
+            {
+                var suffix = semi + 1 < displayName.Length ? displayName.Substring(semi + 1) : string.Empty;
+                rewrittenDisplayName = expected + ";" + suffix;
+            }
+
+            if (string.Equals(displayName, rewrittenDisplayName, StringComparison.Ordinal))
             {
                 return changed;
             }
 
-            var anonymized = BuildAnonymizedDisplayName(accountPart);
-            if (semi >= 0)
-            {
-                var suffix = semi + 1 < displayName.Length ? displayName.Substring(semi + 1) : string.Empty;
-                byGame["DisplayName"] = anonymized + ";" + suffix;
-            }
-            else
-            {
-                byGame["DisplayName"] = anonymized;
-            }
-
+            byGame["DisplayName"] = rewrittenDisplayName;
             updatedCount++;
             return true;
         }
