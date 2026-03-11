@@ -443,6 +443,16 @@ namespace Shadowrun.LocalService.Core.Persistence
             return _playerInfoStore.Set(identityHash, gameName, updates);
         }
 
+        public List<KeyValuePair<string, Dictionary<string, string>>> SearchPlayerInfo(string gameName, string searchString)
+        {
+            if (_playerInfoStore == null)
+            {
+                return new List<KeyValuePair<string, Dictionary<string, string>>>();
+            }
+
+            return _playerInfoStore.Search(gameName, searchString);
+        }
+
         public List<CareerSlot> GetCareers()
         {
             return _careerStore != null ? _careerStore.GetCareers(GetOrCreateIdentityHash()) : new List<CareerSlot>();

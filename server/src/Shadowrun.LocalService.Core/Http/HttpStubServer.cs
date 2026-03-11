@@ -370,6 +370,7 @@ namespace Shadowrun.LocalService.Core.Http
         {
             Dictionary<string, string> Get(string identityHash, string gameName);
             PlayerInfoChanges Set(string identityHash, string gameName, Dictionary<string, string> updates);
+            List<KeyValuePair<string, Dictionary<string, string>>> Search(string gameName, string searchString);
         }
 
         public sealed class PlayerInfoChanges

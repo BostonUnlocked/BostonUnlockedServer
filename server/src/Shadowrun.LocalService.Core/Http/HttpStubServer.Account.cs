@@ -328,6 +328,66 @@ namespace Shadowrun.LocalService.Core.Http
                 });
             }
 
+            if (EndsWith(path, "/Accounts/PlayerActivity/SearchByPlayer"))
+            {
+                var dict = TryParseJsonDictionary(bodyBytes);
+                var requestedSearchString = GetString(dict, "SearchString");
+                var requestedKeys = ParseRequestedKeys(bodyBytes);
+                var requestedGameName = ParseRequestedGameName(bodyBytes);
+                if (IsNullOrWhiteSpace(requestedGameName))
+                {
+                    requestedGameName = "SRO";
+                }
+
+                var matches = _playerInfoRepository != null
+                    ? _playerInfoRepository.Search(requestedGameName, requestedSearchString)
+                    : new List<KeyValuePair<string, Dictionary<string, string>>>();
+
+                var results = new List<object>();
+                for (var i = 0; i < matches.Count; i++)
+                {
+                    var identityHash = matches[i].Key;
+                    var stored = matches[i].Value ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+                    SanitizeStoredDisplayNames(identityHash, stored);
+                    if (_userStore != null && !stored.ContainsKey("LauncherDisplayName"))
+                    {
+                        stored["LauncherDisplayName"] = _userStore.GetDisplayName(identityHash);
+                    }
+
+                    results.Add(new Dictionary<string, object>
+                    {
+                        { "IdentityHash", identityHash },
+                        { "PlayerInfo", BuildPlayerInfoResponse(stored, requestedKeys, identityHash) },
+                        { "Code", 0 },
+                        { "Message", "OK" },
+                    });
+                }
+
+                try
+                {
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "http-playerinfo-search",
+                        path = "/AccountSystem/Accounts/PlayerActivity/SearchByPlayer",
+                        search = requestedSearchString,
+                        gameName = requestedGameName,
+                        returned = results.Count,
+                    });
+                }
+                catch
+                {
+                }
+
+                return JsonResponse(200, new Dictionary<string, object>
+                {
+                    { "PlayerInfoResults", results.ToArray() },
+                    { "Code", 0 },
+                    { "Message", "OK" },
+                });
+            }
+
             if (EndsWith(path, "/Accounts/PlayerActivity/SetPlayerInfo"))
             {
                 var dict = TryParseJsonDictionary(bodyBytes);
