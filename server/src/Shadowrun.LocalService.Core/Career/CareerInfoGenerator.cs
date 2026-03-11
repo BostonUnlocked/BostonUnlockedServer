@@ -5,6 +5,7 @@ using System.Text;
 using Cliffhanger.SRO.ServerClientCommons;
 using Cliffhanger.SRO.ServerClientCommons.Definitions;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay;
+using Shadowrun.LocalService.Core.Metagameplay;
 using Shadowrun.LocalService.Core.Persistence;
 
 namespace Shadowrun.LocalService.Core.Career
@@ -17,18 +18,27 @@ namespace Shadowrun.LocalService.Core.Career
 
         private readonly RequestLogger _logger;
         private readonly LocalUserStore _userStore;
+        private readonly EffectiveUnlockResolver _unlockResolver;
+        private readonly PortedStorySnapshotBuilder _storySnapshotBuilder;
         private readonly object _cacheLock = new object();
         private readonly Dictionary<string, string> _cache = new Dictionary<string, string>(StringComparer.Ordinal);
 
         public CareerInfoGenerator(RequestLogger logger)
-            : this(logger, null)
+            : this(logger, null, null)
         {
         }
 
         public CareerInfoGenerator(RequestLogger logger, LocalUserStore userStore)
+            : this(logger, userStore, null)
+        {
+        }
+
+        public CareerInfoGenerator(RequestLogger logger, LocalUserStore userStore, LocalServiceOptions options)
         {
             _logger = logger;
             _userStore = userStore;
+            _unlockResolver = new EffectiveUnlockResolver(userStore, options);
+            _storySnapshotBuilder = new PortedStorySnapshotBuilder(options);
         }
 
         public string GetZippedCareerInfo()
@@ -139,7 +149,7 @@ namespace Shadowrun.LocalService.Core.Career
 #pragma warning restore 618
                 var unlock = BuildUnlockContainer(identityGuid, slot);
                 var inventory = BuildInventoryFromSlot(slot);
-                var story = BuildStoryProgress(slot);
+                var story = _storySnapshotBuilder.BuildStoryProgress(slot);
                 var mgd = new MetagameplayData(string.Empty, unlock, string.Empty, inventory, story);
                 var ci = new CreationInfo(pendingPersistenceCreation, false);
 
@@ -260,7 +270,7 @@ namespace Shadowrun.LocalService.Core.Career
 
         private string BuildCouponUnlockCacheKey(Guid identityGuid)
         {
-            var unlocks = GetCouponUnlocksForIdentity(identityGuid);
+            var unlocks = _unlockResolver.GetAllActiveUnlocks(identityGuid, null);
             if (unlocks.Count <= 0)
             {
                 return string.Empty;
@@ -272,7 +282,7 @@ namespace Shadowrun.LocalService.Core.Career
 
         private string BuildCareerUnlocksCacheKey(Guid identityGuid, CareerSlot slot)
         {
-            var unlocks = GetAllActiveUnlocks(identityGuid, slot);
+            var unlocks = _unlockResolver.GetAllActiveUnlocks(identityGuid, slot);
             if (unlocks.Count <= 0)
             {
                 return string.Empty;
@@ -284,24 +294,7 @@ namespace Shadowrun.LocalService.Core.Career
 
         private UnlockContainer BuildUnlockContainer(Guid identityGuid, CareerSlot slot)
         {
-            var container = new UnlockContainer();
-            var unlocks = GetAllActiveUnlocks(identityGuid, slot);
-            for (var i = 0; i < unlocks.Count; i++)
-            {
-                var technicalName = unlocks[i];
-                if (IsNullOrWhiteSpace(technicalName))
-                {
-                    continue;
-                }
-
-                container.Add(new Unlock
-                {
-                    TechnicalName = technicalName,
-                    Active = true,
-                });
-            }
-
-            return container;
+            return _unlockResolver.BuildUnlockContainer(identityGuid, slot);
         }
 
         private List<string> GetAllActiveUnlocks(Guid identityGuid, CareerSlot slot)

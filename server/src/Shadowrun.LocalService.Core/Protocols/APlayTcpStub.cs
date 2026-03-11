@@ -98,7 +98,7 @@ namespace Shadowrun.LocalService.Core.Protocols
         private byte[] BuildPortedHubStatePayloadForSlot(CareerSlot slot, Guid identityGuid, int careerIndex, bool forceNewHubInstanceId, PortedHubInstance currentHubInstance, out string resolvedHubId, out PortedHubInstance resolvedHubInstance)
         {
             var storylineHubId = _storyProgressionService != null
-                ? _storyProgressionService.GetCurrentStoryHubId(slot, "Main Campaign")
+                ? _storyProgressionService.GetCurrentStoryHubId(identityGuid, slot, "Main Campaign")
                 : null;
             resolvedHubId = !IsNullOrWhiteSpace(storylineHubId)
                 ? storylineHubId
@@ -390,13 +390,13 @@ namespace Shadowrun.LocalService.Core.Protocols
             _logger = logger;
             _userStore = userStore ?? new LocalUserStore(options, logger);
             _sessionIdentityMap = sessionIdentityMap;
-            _careerInfoGenerator = new CareerInfoGenerator(logger, _userStore);
+            _careerInfoGenerator = new CareerInfoGenerator(logger, _userStore, _options);
             _matchConfigurationGenerator = new MatchConfigurationGenerator(logger);
             _characterStatePushBroker = characterStatePushBroker ?? CharacterStatePushBroker.Shared;
             _missionRewardService = new PortedMissionRewardService(_options);
-            _storyProgressionService = new PortedStoryProgressionService(_options);
+            _storyProgressionService = new PortedStoryProgressionService(_options, _userStore);
             _skillPurchaseService = new PortedSkillPurchaseService(_options);
-            _shopInventoryService = new PortedShopInventoryService(_options);
+            _shopInventoryService = new PortedShopInventoryService(_options, _userStore);
             _portedHubInstanceManager = new PortedHubInstanceManager(new PortedHubRepository(new PortedHubLoader(_options != null ? _options.StreamingAssetsDir : null)), false);
             _hubPresenceRegistry = hubPresenceRegistry ?? new HubPresenceRegistry();
             _missionCleanupTimer = new Timer(SweepDisconnectedMissionSessions, null, MissionCleanupInterval, MissionCleanupInterval);
@@ -1715,6 +1715,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     continue;
                                 }
 
+                                UpdateCoopMissionExpectedParticipantCount(coopSession, CountExpectedCoopParticipants(memberListRaw, activeIdentityGuid));
+
                                 simulationSessionSync = coopSession.SyncRoot;
                                 simulationSession = AcquireCoopMissionSimulation(
                                     coopSession,
@@ -1742,8 +1744,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     missionInstanceEntityId,
                                     missionCommandEntityId,
                                     "sent MetaGameplayCommunicationObject StartMissionAccepted (coop map=" + mapName + ")");
-
-                                SendMissionStartForClients(stream, peer, stopEvent, requestMsgNoBase, missionInstanceEntityId, "sent MissionInstanceCommunicationObject StartMissionForClients (coop)");
 
                                 continue;
                             }
@@ -1851,7 +1851,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     var slot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, slotIndex, false) : null;
                                     if (slot != null)
                                     {
-                                        var appliedShopChanges = _shopInventoryService.Apply(slot, requestedChanges);
+                                        var appliedShopChanges = _shopInventoryService.Apply(activeIdentityGuid, slot, requestedChanges);
 
                                         if (appliedShopChanges.Persisted)
                                         {
@@ -2174,7 +2174,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     if (requestedHostAccountId != Guid.Empty && requestedHostAccountId == activeIdentityGuid)
                                     {
                                         var currentStoryHubId = routedSlot != null && _storyProgressionService != null
-                                            ? _storyProgressionService.GetCurrentStoryHubId(routedSlot, "Main Campaign")
+                                            ? _storyProgressionService.GetCurrentStoryHubId(activeIdentityGuid, routedSlot, "Main Campaign")
                                             : null;
                                         routedHubId = !IsNullOrWhiteSpace(currentStoryHubId)
                                             ? currentStoryHubId
@@ -2450,7 +2450,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         else
                                         {
                                             var currentStoryHubId = _storyProgressionService != null
-                                                ? _storyProgressionService.GetCurrentStoryHubId(currentSlot, "Main Campaign")
+                                                ? _storyProgressionService.GetCurrentStoryHubId(activeIdentityGuid, currentSlot, "Main Campaign")
                                                 : null;
 
                                             if (!IsNullOrWhiteSpace(currentStoryHubId))
@@ -2822,7 +2822,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         if (simulationSession != null)
                                         {
                                             RegisterSoloMissionSession(peer, simulationSession);
-                                            MissionRuntimeRegistry.MarkSoloMissionStarted(peer);
                                         }
                                     }
                                     catch (Exception ex)
@@ -2852,8 +2851,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         missionInstanceEntityId,
                                         missionCommandEntityId,
                                         "sent MetaGameplayCommunicationObject StartMissionAccepted (map=" + mapName + ")");
-
-                                    SendMissionStartForClients(stream, peer, stopEvent, requestMsgNoBase, missionInstanceEntityId, "sent MissionInstanceCommunicationObject StartMissionForClients");
                                 }
                             }
 
@@ -2867,6 +2864,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     shared.Value.Data,
                                     direct.Value.MsgNo,
                                     gameworldEntityId,
+                                    missionInstanceEntityId,
                                     gameClientEntityId,
                                     activeIdentityHash,
                                     activeIdentityGuid,

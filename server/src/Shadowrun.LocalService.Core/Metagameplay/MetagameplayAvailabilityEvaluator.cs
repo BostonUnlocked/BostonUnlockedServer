@@ -31,12 +31,16 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
         public static MetagameplayAvailabilityContext Create(CareerSlot slot, int virtualChapter)
         {
+            return Create(slot, virtualChapter, slot != null ? slot.ActiveUnlocks : null);
+        }
+
+        public static MetagameplayAvailabilityContext Create(CareerSlot slot, int virtualChapter, IEnumerable<string> effectiveUnlocks)
+        {
             var unlocks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (slot != null && slot.ActiveUnlocks != null)
+            if (effectiveUnlocks != null)
             {
-                for (var i = 0; i < slot.ActiveUnlocks.Count; i++)
+                foreach (var unlock in effectiveUnlocks)
                 {
-                    var unlock = slot.ActiveUnlocks[i];
                     if (!string.IsNullOrEmpty(unlock))
                     {
                         unlocks.Add(unlock);

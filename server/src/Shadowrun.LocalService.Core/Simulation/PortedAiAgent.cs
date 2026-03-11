@@ -26,9 +26,14 @@ namespace Shadowrun.LocalService.Core.Simulation
             get { return _entity; }
         }
 
-        public PlannedAiAction Act(IAiPlanner planner, IGameworldInstance gameworld)
+        public PlannedAiAction Act(IAiPlanner planner, IGameworldInstance gameworld, bool forceEndTurnForInactiveGroup)
         {
             var gridPosition = AiAgentSnapshotFactory.TryGetGridPositionOrDefault(gameworld, _entity);
+
+            if (forceEndTurnForInactiveGroup)
+            {
+                return PlannedAiAction.CreateEndTurn(_entity, gridPosition, "inactive-group", "inactive-group", ServerSimulationSession.EndActorTurnSkillId);
+            }
 
             switch (_state)
             {

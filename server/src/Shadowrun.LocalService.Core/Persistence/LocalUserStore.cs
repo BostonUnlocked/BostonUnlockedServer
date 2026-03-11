@@ -583,6 +583,7 @@ namespace Shadowrun.LocalService.Core.Persistence
         public Dictionary<string, string> MainCampaignMissionStates;
         public List<string> MainCampaignInteractedNpcs;
         public List<string> ActiveUnlocks;
+        public Dictionary<string, int> RepeatableUnlockSequencePositions;
 
         // Minimal persistent inventory for hub shops (items bought/sold).
         // Key format: "{ItemId}|{Quality}|{Flavour}" (quality/flavour default to 0/-1).
@@ -622,6 +623,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             dict["MainCampaignMissionStates"] = MainCampaignMissionStates ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             dict["MainCampaignInteractedNpcs"] = MainCampaignInteractedNpcs ?? new List<string>();
             dict["ActiveUnlocks"] = ActiveUnlocks ?? new List<string>();
+            dict["RepeatableUnlockSequencePositions"] = RepeatableUnlockSequencePositions ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             dict["ItemPossessions"] = ItemPossessions ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             dict["AppliedCouponItemPackages"] = AppliedCouponItemPackages ?? new List<string>();
             return dict;
@@ -908,6 +910,38 @@ namespace Shadowrun.LocalService.Core.Persistence
                 slot.ActiveUnlocks = new List<string>();
             }
 
+            slot.RepeatableUnlockSequencePositions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                if (dict.Contains("RepeatableUnlockSequencePositions") && dict["RepeatableUnlockSequencePositions"] != null)
+                {
+                    var asDict = dict["RepeatableUnlockSequencePositions"] as IDictionary;
+                    if (asDict != null)
+                    {
+                        foreach (DictionaryEntry entry in asDict)
+                        {
+                            var key = entry.Key as string;
+                            if (IsNullOrWhiteSpace(key) || entry.Value == null)
+                            {
+                                continue;
+                            }
+
+                            try
+                            {
+                                slot.RepeatableUnlockSequencePositions[key] = Convert.ToInt32(entry.Value, CultureInfo.InvariantCulture);
+                            }
+                            catch
+                            {
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                slot.RepeatableUnlockSequencePositions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            }
+
             if (slot.CharacterName == null) slot.CharacterName = string.Empty;
             if (slot.Portrait == null) slot.Portrait = string.Empty;
             if (slot.PortraitPath == null) slot.PortraitPath = string.Empty;
@@ -926,6 +960,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             if (slot.MainCampaignMissionStates == null) slot.MainCampaignMissionStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (slot.MainCampaignInteractedNpcs == null) slot.MainCampaignInteractedNpcs = new List<string>();
             if (slot.ActiveUnlocks == null) slot.ActiveUnlocks = new List<string>();
+            if (slot.RepeatableUnlockSequencePositions == null) slot.RepeatableUnlockSequencePositions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
             slot.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             try

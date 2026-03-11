@@ -19,6 +19,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 SyncRoot = new object();
                 CreatedUtc = DateTime.UtcNow;
                 LootAppliedToParticipants = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+                ReadyPeers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             }
 
             public readonly string CoopGroupName;
@@ -33,6 +34,9 @@ namespace Shadowrun.LocalService.Core.Protocols
             public string CompressedMatchConfiguration;
             public ServerSimulationSession Simulation;
             public Dictionary<string, bool> LootAppliedToParticipants;
+            public HashSet<string> ReadyPeers;
+            public int ExpectedParticipantCount;
+            public bool StartMissionForClientsSent;
         }
 
         private readonly object _coopMissionLock = new object();
@@ -322,6 +326,49 @@ namespace Shadowrun.LocalService.Core.Protocols
             return coopSession != null;
         }
 
+        private static int CountExpectedCoopParticipants(string memberListRaw, Guid activeIdentityGuid)
+        {
+            var memberGuids = ParseGuidsFromLooseText(memberListRaw, 8);
+            if (memberGuids == null || memberGuids.Length == 0)
+            {
+                memberGuids = new[] { activeIdentityGuid };
+            }
+
+            if (!ContainsGuid(memberGuids, activeIdentityGuid))
+            {
+                var extended = new Guid[memberGuids.Length + 1];
+                Array.Copy(memberGuids, 0, extended, 0, memberGuids.Length);
+                extended[extended.Length - 1] = activeIdentityGuid;
+                memberGuids = extended;
+            }
+
+            const int maxHumans = 4;
+            if (memberGuids.Length > maxHumans)
+            {
+                var truncated = new Guid[maxHumans];
+                Array.Copy(memberGuids, 0, truncated, 0, maxHumans);
+                memberGuids = truncated;
+            }
+
+            return memberGuids.Length > 0 ? memberGuids.Length : 1;
+        }
+
+        private void UpdateCoopMissionExpectedParticipantCount(CoopMissionSessionState coopSession, int expectedParticipantCount)
+        {
+            if (coopSession == null || expectedParticipantCount <= 0)
+            {
+                return;
+            }
+
+            lock (coopSession.SyncRoot)
+            {
+                if (expectedParticipantCount > coopSession.ExpectedParticipantCount)
+                {
+                    coopSession.ExpectedParticipantCount = expectedParticipantCount;
+                }
+            }
+        }
+
         private ServerSimulationSession AcquireCoopMissionSimulation(
             CoopMissionSessionState coopSession,
             string peer,
@@ -395,6 +442,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                         coopSession.LootAppliedToParticipants.Clear();
                     }
+                    if (coopSession.ReadyPeers != null)
+                    {
+                        coopSession.ReadyPeers.Clear();
+                    }
+                    coopSession.StartMissionForClientsSent = false;
 
                     coopSession.Simulation = ServerSimulationSession.Create(
                         _logger,
@@ -422,7 +474,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                         coopGroupName = coopGroupName,
                     });
 
-                    MissionRuntimeRegistry.MarkCoopMissionStarted(coopGroupName);
                     return simulationSession;
                 }
                 catch (Exception ex)
@@ -464,6 +515,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                 {
                     if (list[i] == null || string.Equals(list[i].Peer, peer, StringComparison.OrdinalIgnoreCase))
                     {
+                        CoopMissionSessionState session;
+                        if (_coopMissionSessions.TryGetValue(coopGroupName, out session) && session != null && session.ReadyPeers != null)
+                        {
+                            lock (session.SyncRoot)
+                            {
+                                session.ReadyPeers.Remove(peer);
+                            }
+                        }
                         list.RemoveAt(i);
                     }
                 }
@@ -510,6 +569,15 @@ namespace Shadowrun.LocalService.Core.Protocols
                     return;
                 }
 
+                CoopMissionSessionState session;
+                if (_coopMissionSessions.TryGetValue(coopGroupName, out session) && session != null && session.ReadyPeers != null)
+                {
+                    lock (session.SyncRoot)
+                    {
+                        session.ReadyPeers.Remove(peer);
+                    }
+                }
+
                 for (var i = list.Count - 1; i >= 0; i--)
                 {
                     if (list[i] == null || string.Equals(list[i].Peer, peer, StringComparison.OrdinalIgnoreCase))
@@ -520,6 +588,58 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             TryStopEmptyCoopMissionGroup(coopGroupName, "participant-empty");
+        }
+
+        private bool TryMarkCoopMissionReadyAndCheckAllReady(string coopGroupName, string peer, out CoopMissionSessionState session, out int readyCount, out int expectedCount, out int participantCount)
+        {
+            session = null;
+            readyCount = 0;
+            expectedCount = 0;
+            participantCount = 0;
+
+            if (IsNullOrWhiteSpace(coopGroupName) || IsNullOrWhiteSpace(peer))
+            {
+                return false;
+            }
+
+            lock (_coopMissionLock)
+            {
+                if (!_coopMissionSessions.TryGetValue(coopGroupName, out session) || session == null)
+                {
+                    return false;
+                }
+
+                List<CoopMissionParticipant> list;
+                if (_coopMissionParticipants.TryGetValue(coopGroupName, out list) && list != null)
+                {
+                    participantCount = list.Count;
+                }
+
+                lock (session.SyncRoot)
+                {
+                    if (session.ReadyPeers == null)
+                    {
+                        session.ReadyPeers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    }
+
+                    session.ReadyPeers.Add(peer);
+                    readyCount = session.ReadyPeers.Count;
+                    expectedCount = session.ExpectedParticipantCount > 0 ? session.ExpectedParticipantCount : participantCount;
+
+                    if (session.StartMissionForClientsSent)
+                    {
+                        return false;
+                    }
+
+                    if (expectedCount > 0 && participantCount >= expectedCount && readyCount >= expectedCount)
+                    {
+                        session.StartMissionForClientsSent = true;
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         private void TryStopEmptyCoopMissionGroup(string coopGroupName, string reason)

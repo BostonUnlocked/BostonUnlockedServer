@@ -48,12 +48,19 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             public List<ChapterInfo> Chapters = new List<ChapterInfo>();
         }
 
+        internal sealed class UnlockSequenceInfo
+        {
+            public string Key;
+            public List<string> Unlocks = new List<string>();
+        }
+
         internal sealed class ChapterInfo
         {
             public int Index;
             public string TechnicalName;
             public string Hub;
             public List<string> RequiredMissions = new List<string>();
+            public List<string> SideMissions = new List<string>();
             public List<string> RequiredUnlocks = new List<string>();
             public List<string> DialogNpcIds = new List<string>();
         }
@@ -76,6 +83,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
         public readonly Dictionary<string, string[]> MissionRewardUnlocks;
         public readonly Dictionary<string, string[]> MissionUnlockDeactivations;
         public readonly HashSet<string> RepeatableMissions;
+        public readonly List<UnlockSequenceInfo> RepeatableUnlockSequences;
 
         private MetagameplayStaticDataIndex()
         {
@@ -90,6 +98,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             MissionRewardUnlocks = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
             MissionUnlockDeactivations = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
             RepeatableMissions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            RepeatableUnlockSequences = new List<UnlockSequenceInfo>();
         }
 
         public static MetagameplayStaticDataIndex Load(string staticDataDir)
@@ -330,8 +339,8 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             }
 
             ParseItemDefinitionsFromJson(json, result);
-
             var root = Json.DeserializeObject(json);
+            ParseUnlockSequences(root, result);
             var components = TryGetObjectArray(root as IDictionary, "Components");
             if (components == null)
             {
@@ -773,6 +782,25 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                             }
                         }
 
+                        var sideMissions = TryGetObjectArray(chapterDict, "SideMissions");
+                        if (sideMissions != null)
+                        {
+                            for (var missionIndex = 0; missionIndex < sideMissions.Length; missionIndex++)
+                            {
+                                var missionRef = sideMissions[missionIndex] as IDictionary;
+                                if (missionRef == null)
+                                {
+                                    continue;
+                                }
+
+                                var missionName = GetString(missionRef, "Mission");
+                                if (!string.IsNullOrEmpty(missionName))
+                                {
+                                    chapter.SideMissions.Add(missionName);
+                                }
+                            }
+                        }
+
                         var dialogs = TryGetObjectArray(chapterDict, "DialogsForChapter");
                         if (dialogs != null)
                         {
@@ -798,6 +826,82 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
                 result.Storylines[technicalName] = info;
             }
+        }
+
+        private static void ParseUnlockSequences(object node, MetagameplayStaticDataIndex result)
+        {
+            if (node == null || result == null)
+            {
+                return;
+            }
+
+            var dict = node as IDictionary;
+            if (dict != null)
+            {
+                var typeName = GetString(dict, "TypeName");
+                if (!string.IsNullOrEmpty(typeName) && typeName.IndexOf("UnlockSequenceDefinition", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    var unlocks = TryGetObjectArray(dict, "Unlocks");
+                    if (unlocks != null && unlocks.Length > 0)
+                    {
+                        var sequence = new UnlockSequenceInfo();
+                        for (var i = 0; i < unlocks.Length; i++)
+                        {
+                            var unlock = unlocks[i] as string;
+                            if (!string.IsNullOrEmpty(unlock))
+                            {
+                                sequence.Unlocks.Add(unlock);
+                            }
+                        }
+
+                        if (sequence.Unlocks.Count > 0)
+                        {
+                            sequence.Key = string.Join("|", sequence.Unlocks.ToArray());
+                            if (!ContainsUnlockSequence(result.RepeatableUnlockSequences, sequence.Key))
+                            {
+                                result.RepeatableUnlockSequences.Add(sequence);
+                            }
+                        }
+                    }
+                }
+
+                foreach (DictionaryEntry entry in dict)
+                {
+                    ParseUnlockSequences(entry.Value, result);
+                }
+
+                return;
+            }
+
+            var array = ToObjectArray(node);
+            if (array == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < array.Length; i++)
+            {
+                ParseUnlockSequences(array[i], result);
+            }
+        }
+
+        private static bool ContainsUnlockSequence(List<UnlockSequenceInfo> sequences, string key)
+        {
+            if (sequences == null || string.IsNullOrEmpty(key))
+            {
+                return false;
+            }
+
+            for (var i = 0; i < sequences.Count; i++)
+            {
+                var sequence = sequences[i];
+                if (sequence != null && string.Equals(sequence.Key, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static void ParseGlobalsFile(string path, MetagameplayStaticDataIndex result)

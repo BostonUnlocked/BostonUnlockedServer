@@ -52,10 +52,12 @@ namespace Shadowrun.LocalService.Core.Metagameplay
     internal sealed class PortedMissionRewardService
     {
         private readonly LocalServiceOptions _options;
+        private readonly RepeatableMissionUnlockService _repeatableUnlockService;
 
         public PortedMissionRewardService(LocalServiceOptions options)
         {
             _options = options;
+            _repeatableUnlockService = new RepeatableMissionUnlockService(options);
         }
 
         public MissionReward ResolveMissionReward(string rewardSection, string missionName, string missionOutcome)
@@ -167,7 +169,9 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             result.NuyenAfter = slot.Nuyen;
 
             result.AppliedGrantedUnlocks = AddActiveUnlocks(slot, missionReward.GrantedUnlocks);
-            result.AppliedDeactivatedUnlocks = RemoveActiveUnlocks(slot, deactivatedUnlocks);
+            var removedUnlocks = RemoveActiveUnlocks(slot, deactivatedUnlocks);
+            var advancedSequence = _repeatableUnlockService.AdvanceSequencesForConsumedUnlocks(slot, deactivatedUnlocks);
+            result.AppliedDeactivatedUnlocks = MergeUniqueStrings(removedUnlocks, deactivatedUnlocks);
 
             var appliedCurrencies = new List<CurrencyReward>();
             var earnedCurrencies = missionReward.EarnedCurrencies ?? new CurrencyReward[0];
@@ -211,8 +215,33 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 EarnedCurrencies = appliedCurrencies.ToArray(),
                 ItemChanges = appliedItemChanges.ToArray(),
             };
-            result.Persisted = result.ShouldNotifyClient || result.AppliedDeactivatedUnlocks.Length > 0;
+            result.Persisted = result.ShouldNotifyClient || result.AppliedDeactivatedUnlocks.Length > 0 || advancedSequence;
             return result;
+        }
+
+        private static string[] MergeUniqueStrings(string[] first, string[] second)
+        {
+            var merged = new List<string>();
+            AddUniqueStrings(merged, first);
+            AddUniqueStrings(merged, second);
+            return merged.ToArray();
+        }
+
+        private static void AddUniqueStrings(List<string> target, string[] values)
+        {
+            if (target == null || values == null || values.Length == 0)
+            {
+                return;
+            }
+
+            for (var i = 0; i < values.Length; i++)
+            {
+                var value = values[i];
+                if (!string.IsNullOrEmpty(value) && !target.Contains(value))
+                {
+                    target.Add(value);
+                }
+            }
         }
 
         private static List<ItemChange> ApplyItemChanges(CareerSlot slot, ItemChange[] itemChanges)

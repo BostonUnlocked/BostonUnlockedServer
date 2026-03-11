@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Net.Sockets;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay.Changes;
@@ -20,6 +21,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             byte[] data,
             ulong directMessageNumber,
             ulong gameworldEntityId,
+            ulong missionInstanceEntityId,
             ulong gameClientEntityId,
             string activeIdentityHash,
             Guid activeIdentityGuid,
@@ -50,6 +52,14 @@ namespace Shadowrun.LocalService.Core.Protocols
             switch (request.Kind)
             {
                 case MissionCommandKind.MissionReady:
+                    HandleMissionReadyCommand(
+                        stream,
+                        peer,
+                        responseMsgNoBase,
+                        missionInstanceEntityId,
+                        currentCoopGroupName,
+                        simulationSession,
+                        simulationSessionSync);
                     return;
 
                 case MissionCommandKind.LeaveMission:
@@ -104,6 +114,159 @@ namespace Shadowrun.LocalService.Core.Protocols
                         simulationSessionSync);
                     return;
             }
+        }
+
+        private void HandleMissionReadyCommand(
+            NetworkStream stream,
+            string peer,
+            ulong responseMsgNoBase,
+            ulong missionInstanceEntityId,
+            string currentCoopGroupName,
+            ServerSimulationSession simulationSession,
+            object simulationSessionSync)
+        {
+            if (simulationSession == null)
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "mission-ready",
+                    peer = peer,
+                    status = "ignored-no-session",
+                    coopGroup = currentCoopGroupName,
+                });
+                return;
+            }
+
+            if (!IsNullOrWhiteSpace(currentCoopGroupName))
+            {
+                HandleCoopMissionReadyCommand(stream, peer, responseMsgNoBase, missionInstanceEntityId, currentCoopGroupName, simulationSession, simulationSessionSync);
+                return;
+            }
+
+            var started = false;
+            try
+            {
+                if (simulationSessionSync != null)
+                {
+                    lock (simulationSessionSync)
+                    {
+                        started = simulationSession.StartMissionPlay();
+                    }
+                }
+                else
+                {
+                    started = simulationSession.StartMissionPlay();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "mission-ready",
+                    peer = peer,
+                    status = "failed",
+                    coopGroup = currentCoopGroupName,
+                    message = ex.Message,
+                });
+                return;
+            }
+
+            if (!started)
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "mission-ready",
+                    peer = peer,
+                    status = simulationSession.IsMissionStarted ? "already-started" : "waiting",
+                    coopGroup = currentCoopGroupName,
+                });
+                return;
+            }
+
+            MissionRuntimeRegistry.MarkSoloMissionStarted(peer);
+            SendMissionStartForClients(stream, peer, responseMsgNoBase, missionInstanceEntityId, "sent MissionInstanceCommunicationObject StartMissionForClients");
+        }
+
+        private void HandleCoopMissionReadyCommand(
+            NetworkStream stream,
+            string peer,
+            ulong responseMsgNoBase,
+            ulong missionInstanceEntityId,
+            string currentCoopGroupName,
+            ServerSimulationSession simulationSession,
+            object simulationSessionSync)
+        {
+            CoopMissionSessionState session;
+            int readyCount;
+            int expectedCount;
+            int participantCount;
+            var shouldStart = TryMarkCoopMissionReadyAndCheckAllReady(currentCoopGroupName, peer, out session, out readyCount, out expectedCount, out participantCount);
+
+            if (!shouldStart)
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "mission-ready",
+                    peer = peer,
+                    status = simulationSession.IsMissionStarted ? "already-started" : "waiting-for-other-clients",
+                    coopGroup = currentCoopGroupName,
+                    readyCount = readyCount,
+                    expectedCount = expectedCount,
+                    participantCount = participantCount,
+                });
+                return;
+            }
+
+            var started = false;
+            try
+            {
+                if (simulationSessionSync != null)
+                {
+                    lock (simulationSessionSync)
+                    {
+                        started = simulationSession.StartMissionPlay();
+                    }
+                }
+                else
+                {
+                    started = simulationSession.StartMissionPlay();
+                }
+            }
+            catch (Exception ex)
+            {
+                if (session != null)
+                {
+                    lock (session.SyncRoot)
+                    {
+                        session.StartMissionForClientsSent = false;
+                    }
+                }
+
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "mission-ready",
+                    peer = peer,
+                    status = "failed",
+                    coopGroup = currentCoopGroupName,
+                    message = ex.Message,
+                });
+                return;
+            }
+
+            if (!started)
+            {
+                return;
+            }
+
+            MissionRuntimeRegistry.MarkCoopMissionStarted(currentCoopGroupName);
+            var frame = BuildMissionStartForClientsFrame(responseMsgNoBase, missionInstanceEntityId);
+            SendRawFrame(stream, peer, frame, "sent MissionInstanceCommunicationObject StartMissionForClients (coop)");
+            BroadcastToCoopMissionPeers(currentCoopGroupName, peer, frame, "sent MissionInstanceCommunicationObject StartMissionForClients (coop bcast)");
         }
 
         private bool TryParseMissionCommandRequest(int fieldId, byte[] data, out ParsedMissionCommandRequest request, out object missionLog)
@@ -238,6 +401,66 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
+            var shouldBroadcast = true;
+            IList<ServerSimulationSession.AiTurnAction> aiActions = null;
+            if (simulationSession != null)
+            {
+                try
+                {
+                    if (simulationSessionSync != null)
+                    {
+                        lock (simulationSessionSync)
+                        {
+                            shouldBroadcast = simulationSession.ExecuteFollowPath(request.AgentId.Value, request.TargetX.Value, request.TargetY.Value);
+                            if (shouldBroadcast)
+                            {
+                                aiActions = simulationSession.SkipAiTurnsIfNeeded();
+                            }
+                        }
+                    }
+                    else
+                    {
+                        shouldBroadcast = simulationSession.ExecuteFollowPath(request.AgentId.Value, request.TargetX.Value, request.TargetY.Value);
+                        if (shouldBroadcast)
+                        {
+                            aiActions = simulationSession.SkipAiTurnsIfNeeded();
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    shouldBroadcast = false;
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "sim",
+                        peer = peer,
+                        status = "execute-failed",
+                        cmd = "FollowPath",
+                        agentId = request.AgentId.Value,
+                        targetX = request.TargetX.Value,
+                        targetY = request.TargetY.Value,
+                        message = ex.Message,
+                    });
+                }
+            }
+
+            if (!shouldBroadcast)
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "mission-command-suppressed",
+                    peer = peer,
+                    cmd = "FollowPath",
+                    agentId = request.AgentId.Value,
+                    targetX = request.TargetX.Value,
+                    targetY = request.TargetY.Value,
+                    reason = "authoritative-sim-did-not-accept-command",
+                });
+                return;
+            }
+
             var followPathPayload = Concat(
                 BitConverter.GetBytes(request.AgentId.Value),
                 BitConverter.GetBytes(request.TargetX.Value),
@@ -247,45 +470,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             SendRawFrame(stream, peer, PrefixLength(followPathCore), "echoed GameworldCommunicationObject FollowPath from MissionCommand");
             BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(followPathCore), "echoed GameworldCommunicationObject FollowPath from MissionCommand (coop bcast)");
 
-            if (simulationSession == null)
-            {
-                return;
-            }
-
-            IList<ServerSimulationSession.AiTurnAction> aiActions = null;
-            try
-            {
-                if (simulationSessionSync != null)
-                {
-                    lock (simulationSessionSync)
-                    {
-                        simulationSession.ExecuteFollowPath(request.AgentId.Value, request.TargetX.Value, request.TargetY.Value);
-                        aiActions = simulationSession.SkipAiTurnsIfNeeded();
-                    }
-                }
-                else
-                {
-                    simulationSession.ExecuteFollowPath(request.AgentId.Value, request.TargetX.Value, request.TargetY.Value);
-                    aiActions = simulationSession.SkipAiTurnsIfNeeded();
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Log(new
-                {
-                    ts = RequestLogger.UtcNowIso(),
-                    type = "sim",
-                    peer = peer,
-                    status = "execute-failed",
-                    cmd = "FollowPath",
-                    agentId = request.AgentId.Value,
-                    targetX = request.TargetX.Value,
-                    targetY = request.TargetY.Value,
-                    message = ex.Message,
-                });
-            }
-
-            TryBroadcastAiTurnActions(stream, peer, currentCoopGroupName, gameworldEntityId, responseMsgNoBase + 3, aiActions);
+            TryBroadcastAiTurnActions(stream, peer, currentCoopGroupName, gameworldEntityId, responseMsgNoBase + 3, aiActions, simulationSession);
             SendPendingLootPreviews(simulationSession, stream, peer, responseMsgNoBase + 900, currentCoopGroupName, activeIdentityHash, activeIdentityGuid, activeCareerIndex);
         }
 
@@ -324,6 +509,8 @@ namespace Shadowrun.LocalService.Core.Protocols
             var seed2 = 0x33333333u;
             var seed3 = 0x44444444u;
             var seedPackage = new Cliffhanger.SRO.ServerClientCommons.Gameworld.Communication.SeedPackage(seed0, seed1, seed2, seed3);
+            var shouldBroadcast = true;
+            IList<ServerSimulationSession.AiTurnAction> aiActions = null;
 
             if (simulationSession != null)
             {
@@ -334,7 +521,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                         lock (simulationSessionSync)
                         {
                             seedPackage = simulationSession.CreateSeedPackage();
-                            simulationSession.ExecuteActivateSkill(
+                            shouldBroadcast = simulationSession.ExecuteActivateSkill(
                                 request.WeaponIndex.Value,
                                 request.SkillIndex.Value,
                                 request.SkillId.Value,
@@ -342,12 +529,16 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 request.TargetX.Value,
                                 request.TargetY.Value,
                                 seedPackage);
+                            if (shouldBroadcast)
+                            {
+                                aiActions = simulationSession.SkipAiTurnsIfNeeded();
+                            }
                         }
                     }
                     else
                     {
                         seedPackage = simulationSession.CreateSeedPackage();
-                        simulationSession.ExecuteActivateSkill(
+                        shouldBroadcast = simulationSession.ExecuteActivateSkill(
                             request.WeaponIndex.Value,
                             request.SkillIndex.Value,
                             request.SkillId.Value,
@@ -355,10 +546,15 @@ namespace Shadowrun.LocalService.Core.Protocols
                             request.TargetX.Value,
                             request.TargetY.Value,
                             seedPackage);
+                        if (shouldBroadcast)
+                        {
+                            aiActions = simulationSession.SkipAiTurnsIfNeeded();
+                        }
                     }
                 }
                 catch (Exception ex)
                 {
+                    shouldBroadcast = false;
                     _logger.Log(new
                     {
                         ts = RequestLogger.UtcNowIso(),
@@ -378,6 +574,23 @@ namespace Shadowrun.LocalService.Core.Protocols
                 seed3 = seedPackage.Seed3;
             }
 
+            if (!shouldBroadcast)
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "mission-command-suppressed",
+                    peer = peer,
+                    cmd = "ActivateActiveSkill",
+                    skillId = request.SkillId.Value,
+                    agentId = request.AgentId.Value,
+                    targetX = request.TargetX.Value,
+                    targetY = request.TargetY.Value,
+                    reason = "authoritative-sim-did-not-accept-command",
+                });
+                return;
+            }
+
             var activatePayload = Concat(
                 BitConverter.GetBytes(request.WeaponIndex.Value),
                 BitConverter.GetBytes(request.SkillIndex.Value),
@@ -394,39 +607,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             SendRawFrame(stream, peer, PrefixLength(activateCore), "echoed GameworldCommunicationObject ActivateActiveSkill from MissionCommand");
             BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(activateCore), "echoed GameworldCommunicationObject ActivateActiveSkill from MissionCommand (coop bcast)");
 
-            if (simulationSession == null)
-            {
-                return;
-            }
-
-            IList<ServerSimulationSession.AiTurnAction> aiActions = null;
-            try
-            {
-                if (simulationSessionSync != null)
-                {
-                    lock (simulationSessionSync)
-                    {
-                        aiActions = simulationSession.SkipAiTurnsIfNeeded();
-                    }
-                }
-                else
-                {
-                    aiActions = simulationSession.SkipAiTurnsIfNeeded();
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Log(new
-                {
-                    ts = RequestLogger.UtcNowIso(),
-                    type = "sim",
-                    peer = peer,
-                    status = "skip-ai-failed",
-                    message = ex.Message,
-                });
-            }
-
-            TryBroadcastAiTurnActions(stream, peer, currentCoopGroupName, gameworldEntityId, responseMsgNoBase + 3, aiActions);
+            TryBroadcastAiTurnActions(stream, peer, currentCoopGroupName, gameworldEntityId, responseMsgNoBase + 3, aiActions, simulationSession);
             SendPendingLootPreviews(simulationSession, stream, peer, responseMsgNoBase + 950, currentCoopGroupName, activeIdentityHash, activeIdentityGuid, activeCareerIndex);
         }
 
@@ -473,7 +654,8 @@ namespace Shadowrun.LocalService.Core.Protocols
             string currentCoopGroupName,
             ulong gameworldEntityId,
             ulong baseMessageNumber,
-            IList<ServerSimulationSession.AiTurnAction> aiActions)
+            IList<ServerSimulationSession.AiTurnAction> aiActions,
+            ServerSimulationSession simulationSession)
         {
             if (aiActions == null || aiActions.Count == 0)
             {
@@ -482,6 +664,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             try
             {
+                LogMissionReplicationBatch(peer, currentCoopGroupName, aiActions, simulationSession);
+
                 for (var i = 0; i < aiActions.Count; i++)
                 {
                     var aiAction = aiActions[i];
@@ -548,6 +732,66 @@ namespace Shadowrun.LocalService.Core.Protocols
                     status = "skip-ai-failed",
                     message = ex.Message,
                 });
+            }
+        }
+
+        private void LogMissionReplicationBatch(
+            string peer,
+            string currentCoopGroupName,
+            IList<ServerSimulationSession.AiTurnAction> aiActions,
+            ServerSimulationSession simulationSession)
+        {
+            if (simulationSession == null || aiActions == null || aiActions.Count == 0)
+            {
+                return;
+            }
+
+            try
+            {
+                var entityIds = new List<int>(aiActions.Count);
+                var actionKinds = new List<string>(aiActions.Count);
+                var skillIds = new List<int>(aiActions.Count);
+
+                for (var i = 0; i < aiActions.Count; i++)
+                {
+                    var aiAction = aiActions[i];
+                    if (aiAction == null)
+                    {
+                        continue;
+                    }
+
+                    entityIds.Add(aiAction.AgentId);
+                    actionKinds.Add(aiAction.Kind.ToString());
+                    skillIds.Add(aiAction.SkillId);
+                }
+
+                var snapshots = simulationSession.DescribeEntitiesForReplication(entityIds)
+                    .Where(snapshot => snapshot != null && snapshot.HasSpawnInfo)
+                    .ToArray();
+
+                if (snapshots.Length == 0)
+                {
+                    return;
+                }
+
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "mission-replication-batch",
+                    peer = peer,
+                    coopGroup = currentCoopGroupName,
+                    actionCount = aiActions.Count,
+                    actionKinds = actionKinds.ToArray(),
+                    skillIds = skillIds.ToArray(),
+                    protocolFramesImplemented = new[] { "GameworldFieldEvent:FollowPath", "GameworldFieldEvent:ActivateActiveSkill" },
+                    explicitDynamicEntityIntroductionsImplemented = false,
+                    explicitDynamicEntityHealthFramesImplemented = false,
+                    explicitDynamicEntityRemovalFramesImplemented = false,
+                    spawnedEntities = snapshots,
+                });
+            }
+            catch
+            {
             }
         }
 

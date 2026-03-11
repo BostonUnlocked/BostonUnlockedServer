@@ -17,13 +17,15 @@ namespace Shadowrun.LocalService.Core.Metagameplay
     internal sealed class PortedShopInventoryService
     {
         private readonly LocalServiceOptions _options;
+        private readonly EffectiveUnlockResolver _unlockResolver;
 
-        public PortedShopInventoryService(LocalServiceOptions options)
+        public PortedShopInventoryService(LocalServiceOptions options, LocalUserStore userStore)
         {
             _options = options;
+            _unlockResolver = new EffectiveUnlockResolver(userStore, options);
         }
 
-        public ShopTransactionApplicationResult Apply(CareerSlot slot, ItemPossessionChanges requestedChanges)
+        public ShopTransactionApplicationResult Apply(Guid identityGuid, CareerSlot slot, ItemPossessionChanges requestedChanges)
         {
             var result = new ShopTransactionApplicationResult();
             result.ShopChanges = new ShopItemChanges();
@@ -44,7 +46,8 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
             var index = MetagameplayStaticDataIndex.Load(_options != null ? _options.StaticDataDir : null);
             var storyProgression = new PortedStoryProgressionService(_options);
-            var availabilityContext = MetagameplayAvailabilityContext.Create(slot, storyProgression.GetVirtualChapterIndex(slot, "Main Campaign"));
+            var effectiveUnlocks = _unlockResolver.GetAllActiveUnlocks(identityGuid, slot);
+            var availabilityContext = MetagameplayAvailabilityContext.Create(slot, storyProgression.GetVirtualChapterIndex(identityGuid, slot, "Main Campaign"), effectiveUnlocks);
             var tempInventory = new Dictionary<string, int>(slot.ItemPossessions, StringComparer.OrdinalIgnoreCase);
             var applied = new List<ItemChange>();
             var allRequested = requestedChanges.ItemChanges ?? new ItemChange[0];

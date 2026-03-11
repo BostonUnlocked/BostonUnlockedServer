@@ -1,6 +1,5 @@
 using System;
 using System.Net.Sockets;
-using System.Threading;
 
 namespace Shadowrun.LocalService.Core.Protocols
 {
@@ -122,17 +121,20 @@ namespace Shadowrun.LocalService.Core.Protocols
             SendRawFrame(stream, peer, PrefixLength(startMissionAcceptedCore), note);
         }
 
+        private byte[] BuildMissionStartForClientsFrame(ulong requestMsgNoBase, ulong missionInstanceEntityId)
+        {
+            var startMissionForClientsCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, missionInstanceEntityId, 0, new byte[0]), requestMsgNoBase + 8);
+            return PrefixLength(startMissionForClientsCore);
+        }
+
         private void SendMissionStartForClients(
             NetworkStream stream,
             string peer,
-            ManualResetEvent stopEvent,
             ulong requestMsgNoBase,
             ulong missionInstanceEntityId,
             string note)
         {
-            SleepWithStop(stopEvent, 6000);
-            var startMissionForClientsCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, missionInstanceEntityId, 0, new byte[0]), requestMsgNoBase + 8);
-            SendRawFrame(stream, peer, PrefixLength(startMissionForClientsCore), note);
+            SendRawFrame(stream, peer, BuildMissionStartForClientsFrame(requestMsgNoBase, missionInstanceEntityId), note);
         }
     }
 }

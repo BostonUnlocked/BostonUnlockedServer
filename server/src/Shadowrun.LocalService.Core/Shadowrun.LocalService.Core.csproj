@@ -143,13 +143,16 @@
     <Compile Include="Persistence\ISessionIdentityMap.cs" />
     <Compile Include="Persistence\ExpiringSessionIdentityMap.cs" />
     <Compile Include="Metagameplay\MetagameplayAvailabilityEvaluator.cs" />
+    <Compile Include="Metagameplay\EffectiveUnlockResolver.cs" />
     <Compile Include="Metagameplay\LocalMetagameplaySnapshotFactory.cs" />
+    <Compile Include="Metagameplay\PortedStorySnapshotBuilder.cs" />
     <Compile Include="Metagameplay\PortedHubInstance.cs" />
     <Compile Include="Metagameplay\PortedHubInstanceManager.cs" />
     <Compile Include="Metagameplay\PortedHubLoadBalancing.cs" />
     <Compile Include="Metagameplay\PortedHubRepository.cs" />
     <Compile Include="Metagameplay\PortedHubStateController.cs" />
     <Compile Include="Metagameplay\PortedMissionRewardService.cs" />
+    <Compile Include="Metagameplay\RepeatableMissionUnlockService.cs" />
     <Compile Include="Metagameplay\PortedStoryProgressionService.cs" />
     <Compile Include="Metagameplay\MetagameplayStaticDataIndex.cs" />
     <Compile Include="Metagameplay\PortedShopInventoryService.cs" />
@@ -191,11 +194,13 @@
     <Compile Include="Simulation\LocalMissionLootController.cs" />
     <Compile Include="Simulation\EncounterActivationTracker.cs" />
     <Compile Include="Simulation\NullMetagameplayrelevantChangeObserver.cs" />
+    <Compile Include="Simulation\MissionEntityStateDiagnosticsListener.cs" />
     <Compile Include="Simulation\PortedAiAgent.cs" />
     <Compile Include="Simulation\PortedAiCommander.cs" />
     <Compile Include="Simulation\PortedAiCommanderRepository.cs" />
     <Compile Include="Simulation\ServerSimulationSession.cs" />
     <Compile Include="Simulation\ServerSimulationSession.AiTurns.cs" />
+    <Compile Include="Simulation\ServerSimulationSession.Diagnostics.cs" />
     <Compile Include="Simulation\TurnObserver.cs" />
   </ItemGroup>
 

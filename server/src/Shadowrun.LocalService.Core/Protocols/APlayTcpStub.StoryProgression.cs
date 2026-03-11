@@ -155,7 +155,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                         try
                         {
-                            var chapterAdvance = _storyProgressionService.TryAdvanceIfEligible(slotForStoryRewards, "Main Campaign");
+                            var chapterAdvance = _storyProgressionService.TryAdvanceIfEligible(activeIdentityGuid, slotForStoryRewards, "Main Campaign");
                             chapterAdvanced = chapterAdvance.Advanced;
                             if (chapterAdvanced)
                             {

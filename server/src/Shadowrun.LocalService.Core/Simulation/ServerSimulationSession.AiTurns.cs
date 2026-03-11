@@ -166,7 +166,7 @@ namespace Shadowrun.LocalService.Core.Simulation
                 });
             }
 
-            var plan = actingAgent.Act(_aiPlanner, _gameworld);
+            var plan = actingAgent.Act(_aiPlanner, _gameworld, forceEndTurnForInactiveGroup);
             if (plan == null || plan.Agent == null)
             {
                 return false;
@@ -304,7 +304,7 @@ namespace Shadowrun.LocalService.Core.Simulation
                 var fallbackCmd = new ActivatePositionTargetedActiveSkillCommand(
                     0,
                     0,
-                    EndActorTurnSkillId,
+                    EndTeamTurnSkillId,
                     executedPlan.Agent.Id,
                     fallbackPos,
                     _gameworld,
@@ -324,7 +324,7 @@ namespace Shadowrun.LocalService.Core.Simulation
                     0,
                     0,
                     0,
-                    EndActorTurnSkillId,
+                    EndTeamTurnSkillId,
                     fallbackSeeds);
                 return true;
             }

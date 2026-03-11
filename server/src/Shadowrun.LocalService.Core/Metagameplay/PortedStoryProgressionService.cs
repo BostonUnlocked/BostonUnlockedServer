@@ -27,10 +27,17 @@ namespace Shadowrun.LocalService.Core.Metagameplay
     internal sealed class PortedStoryProgressionService
     {
         private readonly LocalServiceOptions _options;
+        private readonly EffectiveUnlockResolver _unlockResolver;
 
-        public PortedStoryProgressionService(LocalServiceOptions options)
+        public PortedStoryProgressionService(LocalServiceOptions options, LocalUserStore userStore)
         {
             _options = options;
+            _unlockResolver = new EffectiveUnlockResolver(userStore, options);
+        }
+
+        public PortedStoryProgressionService(LocalServiceOptions options)
+            : this(options, null)
+        {
         }
 
         public StoryMissionStateUpdateResult ApplyMissionState(CareerSlot slot, string storylineName, string missionName, StoryMissionstate targetState)
@@ -128,6 +135,11 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
         public StoryChapterAdvanceResult TryAdvanceIfEligible(CareerSlot slot, string storylineName)
         {
+            return TryAdvanceIfEligible(Guid.Empty, slot, storylineName);
+        }
+
+        public StoryChapterAdvanceResult TryAdvanceIfEligible(Guid identityGuid, CareerSlot slot, string storylineName)
+        {
             var result = new StoryChapterAdvanceResult();
             if (slot == null || string.IsNullOrEmpty(storylineName))
             {
@@ -173,7 +185,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 }
             }
 
-            if (!HasAllActiveUnlocks(slot, chapter.RequiredUnlocks))
+            if (!_unlockResolver.HasAllActiveUnlocks(identityGuid, slot, chapter.RequiredUnlocks))
             {
                 return result;
             }
@@ -205,6 +217,11 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
         public int GetVirtualChapterIndex(CareerSlot slot, string storylineName)
         {
+            return GetVirtualChapterIndex(Guid.Empty, slot, storylineName);
+        }
+
+        public int GetVirtualChapterIndex(Guid identityGuid, CareerSlot slot, string storylineName)
+        {
             MetagameplayStaticDataIndex.StorylineInfo storyline;
             MetagameplayStaticDataIndex.ChapterInfo chapter;
             int currentIndex;
@@ -222,6 +239,11 @@ namespace Shadowrun.LocalService.Core.Metagameplay
         }
 
         public string GetCurrentStoryHubId(CareerSlot slot, string storylineName)
+        {
+            return GetCurrentStoryHubId(Guid.Empty, slot, storylineName);
+        }
+
+        public string GetCurrentStoryHubId(Guid identityGuid, CareerSlot slot, string storylineName)
         {
             MetagameplayStaticDataIndex.StorylineInfo storyline;
             MetagameplayStaticDataIndex.ChapterInfo chapter;
@@ -448,35 +470,6 @@ namespace Shadowrun.LocalService.Core.Metagameplay
         private bool IsRepeatableMission(string missionName)
         {
             return MetagameplayStaticDataIndex.Load(_options != null ? _options.StaticDataDir : null).IsMissionRepeatable(missionName);
-        }
-
-        private static bool HasAllActiveUnlocks(CareerSlot slot, List<string> requiredUnlocks)
-        {
-            if (requiredUnlocks == null || requiredUnlocks.Count == 0)
-            {
-                return true;
-            }
-
-            if (slot == null || slot.ActiveUnlocks == null || slot.ActiveUnlocks.Count == 0)
-            {
-                return false;
-            }
-
-            for (var i = 0; i < requiredUnlocks.Count; i++)
-            {
-                var requiredUnlock = requiredUnlocks[i];
-                if (string.IsNullOrEmpty(requiredUnlock))
-                {
-                    continue;
-                }
-
-                if (!slot.ActiveUnlocks.Contains(requiredUnlock))
-                {
-                    return false;
-                }
-            }
-
-            return true;
         }
 
         private static StoryMissionstate ParseStoryMissionStateOrDefault(string value, StoryMissionstate fallback)
