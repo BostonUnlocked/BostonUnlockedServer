@@ -71,6 +71,11 @@
       <SpecificVersion>False</SpecificVersion>
       <Private>True</Private>
     </Reference>
+    <Reference Include="Mono.Data.Sqlite">
+      <HintPath>..\Dependencies\Mono.Data.Sqlite.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
     <Reference Include="SRO.Core.Compatibility">
       <HintPath>..\Dependencies\SRO.Core.Compatibility.dll</HintPath>
       <SpecificVersion>False</SpecificVersion>
@@ -139,6 +144,7 @@
     <Compile Include="Persistence\LocalSessionStore.cs" />
     <Compile Include="Persistence\LocalPlayerInfoStore.cs" />
     <Compile Include="Persistence\FriendsStore.cs" />
+    <Compile Include="Persistence\SqliteLocalStore.cs" />
     <Compile Include="Persistence\ISessionIdentityMap.cs" />
     <Compile Include="Persistence\ExpiringSessionIdentityMap.cs" />
     <Compile Include="Metagameplay\MetagameplayAvailabilityEvaluator.cs" />

@@ -86,6 +86,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         private IDictionary LoadAccountStoreNoThrow(bool persistMigration)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.LoadAccountStoreNoThrow();
+            }
+
             IDictionary loaded = null;
             try
             {
@@ -175,6 +180,12 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         private void SaveAccountStoreNoThrow(IDictionary store)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                _sqliteStore.SaveAccountStoreNoThrow(store);
+                return;
+            }
+
             try
             {
                 // Do not persist any global "active" identity pointers at the root.
@@ -206,6 +217,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         private IDictionary LoadAccountForIdentityNoThrow(string identityHash, bool createIfMissing)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.LoadAccountForIdentityNoThrow(identityHash, createIfMissing);
+            }
+
             if (!IsGuidish(identityHash))
             {
                 identityHash = null;
@@ -239,6 +255,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         private IDictionary LoadAccountNoThrow()
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.LoadAccountNoThrow();
+            }
+
             try
             {
                 var store = LoadAccountStoreNoThrow(true);
@@ -274,6 +295,12 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         private void SaveAccountNoThrow(IDictionary account)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                _sqliteStore.SaveAccountNoThrow(account);
+                return;
+            }
+
             try
             {
                 if (account == null)

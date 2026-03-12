@@ -3,7 +3,10 @@ param(
     [int]$Port = 80,
     [int]$APlayPort = 5055,
     [int]$PhotonPort = 4530,
-    [switch]$NoFileLogs
+    [switch]$NoFileLogs,
+    [switch]$UseSqlite,
+    [switch]$MigrateJsonToSqlite,
+    [string]$SQLiteDbPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,6 +75,24 @@ if ($missingDlls.Count -gt 0 -or $missingStatic.Count -gt 0 -or -not (Test-Path 
     throw "Run: $extractor -GameRoot '<path-to-ShadowrunChronicles-install>'"
 }
 
+if ($UseSqlite) {
+    $sqliteDlls = @(
+        'Mono.Data.Sqlite.dll',
+        'sqlite3.dll'
+    )
+
+    $missingSqliteDlls = @()
+    foreach ($dll in $sqliteDlls) {
+        if (-not (Test-Path (Join-Path $depsDir $dll))) {
+            $missingSqliteDlls += $dll
+        }
+    }
+
+    if ($missingSqliteDlls.Count -gt 0) {
+        throw "SQLite requested but missing DLLs in ${depsDir}: $($missingSqliteDlls -join ', ')"
+    }
+}
+
 Push-Location (Join-Path $PSScriptRoot 'src')
 try {
     Write-Output "[server] building (net48 host/core with current MSBuild toolchain)..."
@@ -121,6 +142,19 @@ $argsList = @(
 
 if ($NoFileLogs) {
     $argsList += '--no-file-logs'
+}
+
+if ($UseSqlite) {
+    $argsList += '--use-sqlite'
+}
+
+if ($MigrateJsonToSqlite) {
+    $argsList += '--migrate-json-to-sqlite'
+}
+
+if (-not [string]::IsNullOrWhiteSpace($SQLiteDbPath)) {
+    $argsList += '--sqlite-db-path'
+    $argsList += $SQLiteDbPath
 }
 
 & $exe @argsList

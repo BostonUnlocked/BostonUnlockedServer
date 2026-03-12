@@ -32,11 +32,13 @@ namespace Shadowrun.LocalService.Core.Persistence
         private readonly RequestLogger _logger;
         private readonly object _syncRoot;
         private readonly string _accountPath;
+        private readonly SqliteLocalStore _sqliteStore;
 
-        public LocalAccountStore(LocalServiceOptions options, RequestLogger logger, object syncRoot)
+        public LocalAccountStore(LocalServiceOptions options, RequestLogger logger, object syncRoot, SqliteLocalStore sqliteStore)
         {
             _logger = logger;
             _syncRoot = syncRoot ?? new object();
+            _sqliteStore = sqliteStore;
 
             var dataDir = options != null ? options.DataDir : null;
             if (string.IsNullOrEmpty(dataDir))
@@ -60,6 +62,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public string GetOrCreateIdentityHash()
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.GetOrCreateIdentityHash();
+            }
+
             lock (_syncRoot)
             {
                 var account = LoadAccountNoThrow();
@@ -92,6 +99,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public string GetOrCreateIdentityHashForSteamId(ulong steamId64)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.GetOrCreateIdentityHashForSteamId(steamId64);
+            }
+
             if (steamId64 == 0)
             {
                 return GetOrCreateIdentityHash();
@@ -177,6 +189,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public bool TryRegisterCliffhangerCredentials(string email, string password, string tag, out string identityHash, out string message)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.TryRegisterCliffhangerCredentials(email, password, out identityHash, out message);
+            }
+
             identityHash = null;
             message = null;
 
@@ -260,6 +277,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public bool TryAuthenticateCliffhangerCredentials(string email, string password, out string identityHash, out bool isVerified, out string message)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.TryAuthenticateCliffhangerCredentials(email, password, out identityHash, out isVerified, out message);
+            }
+
             identityHash = null;
             isVerified = false;
             message = null;
@@ -345,6 +367,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public string GetDisplayName(string identityHash)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.GetDisplayName(identityHash);
+            }
+
             lock (_syncRoot)
             {
                 var account = LoadAccountForIdentityNoThrow(identityHash, true) ?? LoadAccountNoThrow();
@@ -361,6 +388,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public int GetLastCareerIndex(string identityHash)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.GetLastCareerIndex(identityHash);
+            }
+
             lock (_syncRoot)
             {
                 var account = LoadAccountForIdentityNoThrow(identityHash, true) ?? LoadAccountNoThrow();
@@ -370,6 +402,12 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public void SetLastCareerIndex(string identityHash, int index)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                _sqliteStore.SetLastCareerIndex(identityHash, index);
+                return;
+            }
+
             if (index < 0)
             {
                 index = 0;
@@ -385,6 +423,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public bool MigrateDisplayNames(ref int updatedCount)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.MigrateAccountDisplayNames(ref updatedCount);
+            }
+
             lock (_syncRoot)
             {
                 var changed = false;

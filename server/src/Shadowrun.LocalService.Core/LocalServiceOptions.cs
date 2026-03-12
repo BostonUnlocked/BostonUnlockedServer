@@ -17,6 +17,9 @@ public sealed class LocalServiceOptions
         APlayPort = 5055;
         PhotonPort = 4530;
         WorkspaceRoot = Directory.GetCurrentDirectory();
+        UseSqlite = false;
+        MigrateJsonToSqlite = false;
+        SqliteBusyTimeoutMs = 15000;
 
         EnableAiLogic = DefaultEnableAiLogic;
 
@@ -32,6 +35,7 @@ public sealed class LocalServiceOptions
         // Keep persistence outside build output by default.
         _dataDir = TryGetDefaultPersistentDataDir();
         ChatAdminConfigPath = Path.Combine(_dataDir, "chat-admins.json");
+        SqliteDatabasePath = Path.Combine(_dataDir, "localservice.sqlite");
     }
 
     public string Host { get; set; }
@@ -54,6 +58,10 @@ public sealed class LocalServiceOptions
     /// When true, the host will not write request logs to files.
     /// </summary>
     public bool DisableFileLogs { get; set; }
+    public bool UseSqlite { get; set; }
+    public bool MigrateJsonToSqlite { get; set; }
+    public string SqliteDatabasePath { get; set; }
+    public int SqliteBusyTimeoutMs { get; set; }
 
     public string DataDir
     {

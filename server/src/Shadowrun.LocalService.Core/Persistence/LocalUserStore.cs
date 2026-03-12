@@ -19,6 +19,7 @@ namespace Shadowrun.LocalService.Core.Persistence
         private readonly LocalServiceOptions _options;
         private readonly RequestLogger _logger;
         private readonly object _lock = new object();
+        private readonly SqliteLocalStore _sqliteStore;
 
         private readonly string _accountPath;
         private readonly LocalAccountStore _accountStore;
@@ -74,12 +75,13 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
 
             _accountPath = Path.Combine(dataDir, "account.json");
-            _accountStore = new LocalAccountStore(options, logger, _lock);
+            _sqliteStore = new SqliteLocalStore(options, logger);
+            _accountStore = new LocalAccountStore(options, logger, _lock, _sqliteStore);
             _couponService = new LocalCouponService(this);
             _careerSeedService = new LocalCareerSeedService(this);
             _careerStore = new LocalCareerStore(this);
             _sessionStore = new LocalSessionStore(options, logger);
-            _playerInfoStore = new LocalPlayerInfoStore(options, logger);
+            _playerInfoStore = new LocalPlayerInfoStore(options, logger, _sqliteStore);
         }
 
         public string GetOrCreateIdentityHash()

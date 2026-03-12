@@ -14,10 +14,12 @@ namespace Shadowrun.LocalService.Core.Persistence
         private readonly RequestLogger _logger;
         private readonly object _lock = new object();
         private readonly string _playerInfoPath;
+        private readonly SqliteLocalStore _sqliteStore;
 
-        public LocalPlayerInfoStore(LocalServiceOptions options, RequestLogger logger)
+        public LocalPlayerInfoStore(LocalServiceOptions options, RequestLogger logger, SqliteLocalStore sqliteStore)
         {
             _logger = logger;
+            _sqliteStore = sqliteStore;
 
             var dataDir = options != null ? options.DataDir : null;
             if (string.IsNullOrEmpty(dataDir))
@@ -41,6 +43,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public Dictionary<string, string> Get(string identityHash, string gameName)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.GetPlayerInfo(identityHash, gameName);
+            }
+
             var results = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (IsNullOrWhiteSpace(identityHash) || IsNullOrWhiteSpace(gameName))
             {
@@ -75,6 +82,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public PlayerInfoChanges Set(string identityHash, string gameName, Dictionary<string, string> updates)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.SetPlayerInfo(identityHash, gameName, updates);
+            }
+
             var changes = new PlayerInfoChanges();
             if (IsNullOrWhiteSpace(identityHash) || IsNullOrWhiteSpace(gameName) || updates == null)
             {
@@ -133,6 +145,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public List<KeyValuePair<string, Dictionary<string, string>>> Search(string gameName, string searchString)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.SearchPlayerInfo(gameName, searchString);
+            }
+
             var results = new List<KeyValuePair<string, Dictionary<string, string>>>();
             if (IsNullOrWhiteSpace(gameName) || IsNullOrWhiteSpace(searchString))
             {
@@ -201,6 +218,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public bool MutateRootNoThrow(Func<IDictionary, bool> mutator)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.MutatePlayerInfoRootNoThrow(mutator);
+            }
+
             if (mutator == null)
             {
                 return false;

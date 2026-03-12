@@ -36,7 +36,9 @@ namespace Shadowrun.LocalService.Host
 				port = options.Port,
 				aplayPort = options.APlayPort,
 				photonPort = options.PhotonPort,
-					runtime = ".NET Framework 4.8",
+				persistenceBackend = options.UseSqlite ? "Sqlite" : "Json",
+				sqliteDatabasePath = options.UseSqlite ? options.SqliteDatabasePath : null,
+				runtime = ".NET Framework 4.8",
 			});
 
 			Console.WriteLine("[localservice-cs] listening on http://{0}:{1}", options.Host, options.Port);
@@ -175,6 +177,7 @@ namespace Shadowrun.LocalService.Host
 			PreloadIfExists(probeDirs, "Cliffhanger.SRO.ServerClientCommons.dll");
 			PreloadIfExists(probeDirs, "JsonFx.Json.dll");
 			PreloadIfExists(probeDirs, "Ionic.Zip.dll");
+			PreloadIfExists(probeDirs, "Mono.Data.Sqlite.dll");
 		}
 
 		private static void PreloadIfExists(string[] probeDirs, string dllName)
@@ -208,6 +211,9 @@ namespace Shadowrun.LocalService.Host
 			var aplayPort = 5055;
 			var photonPort = 4530;
 			var noFileLogs = false;
+			var useSqlite = false;
+			var migrateJsonToSqlite = false;
+			string sqliteDbPath = null;
 
 			for (var i = 0; i < args.Length; i++)
 			{
@@ -215,6 +221,21 @@ namespace Shadowrun.LocalService.Host
 				if (string.Equals(arg, "--no-file-logs", StringComparison.OrdinalIgnoreCase))
 				{
 					noFileLogs = true;
+					continue;
+				}
+				if (string.Equals(arg, "--use-sqlite", StringComparison.OrdinalIgnoreCase))
+				{
+					useSqlite = true;
+					continue;
+				}
+				if (string.Equals(arg, "--migrate-json-to-sqlite", StringComparison.OrdinalIgnoreCase))
+				{
+					migrateJsonToSqlite = true;
+					continue;
+				}
+				if (string.Equals(arg, "--sqlite-db-path", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+				{
+					sqliteDbPath = args[++i];
 					continue;
 				}
 				if (string.Equals(arg, "--host", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
@@ -263,6 +284,12 @@ namespace Shadowrun.LocalService.Host
 			options.APlayPort = aplayPort;
 			options.PhotonPort = photonPort;
 			options.DisableFileLogs = noFileLogs;
+			options.UseSqlite = useSqlite;
+			options.MigrateJsonToSqlite = migrateJsonToSqlite;
+			if (!string.IsNullOrEmpty(sqliteDbPath))
+			{
+				options.SqliteDatabasePath = sqliteDbPath;
+			}
 			return options;
 		}
 	}
