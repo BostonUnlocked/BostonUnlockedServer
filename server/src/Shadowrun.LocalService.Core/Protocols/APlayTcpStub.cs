@@ -1709,9 +1709,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 // If each TCP connection has its own sim, neither side will ever observe the other
                                 // player exhausting actions, so the team never ends and AI turns never start.
                                 CoopMissionSessionState coopSession;
-                                if (!TryGetOrCreateCoopMissionSession(coopGroupName, activeIdentityHash, activeCareerIndex, mapName, completedStoryMissions, out coopSession))
+                                string coopMissionRejectionReason;
+                                if (!TryGetOrCreateCoopMissionSession(coopGroupName, activeIdentityHash, activeIdentityGuid, activeCareerIndex, mapName, completedStoryMissions, out coopSession, out coopMissionRejectionReason))
                                 {
-                                    SendMissionStartCancelled(stream, peer, requestMsgNoBase, "sent MetaGameplayCommunicationObject StartMissionCancelled (coop mission already completed)");
+                                    SendMissionStartCancelled(stream, peer, requestMsgNoBase, "sent MetaGameplayCommunicationObject StartMissionCancelled (coop mission already completed; decision=" + coopMissionRejectionReason + ")");
                                     continue;
                                 }
 

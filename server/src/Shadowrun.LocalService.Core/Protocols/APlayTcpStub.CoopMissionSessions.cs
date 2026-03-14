@@ -306,15 +306,36 @@ namespace Shadowrun.LocalService.Core.Protocols
             return compressedMatchConfiguration;
         }
 
-        private bool TryGetOrCreateCoopMissionSession(string coopGroupName, string activeIdentityHash, int activeCareerIndex, string mapName, HashSet<string> completedStoryMissions, out CoopMissionSessionState coopSession)
+        private bool TryGetOrCreateCoopMissionSession(string coopGroupName, string activeIdentityHash, Guid activeIdentityGuid, int activeCareerIndex, string mapName, HashSet<string> completedStoryMissions, out CoopMissionSessionState coopSession, out string rejectionReason)
         {
             coopSession = null;
+            rejectionReason = "leader-check-not-needed";
             lock (_coopMissionLock)
             {
                 if (!_coopMissionSessions.TryGetValue(coopGroupName, out coopSession) || coopSession == null)
                 {
-                    if (IsMissionCompletedForCareer(activeIdentityHash, activeCareerIndex, mapName, completedStoryMissions))
+                    string authorityIdentityHash;
+                    int authorityCareerIndex;
+                    bool useRequesterFallbackCompletedMissions;
+                    string completionGateDecision;
+                    var shouldApplyCompletionGate = TryResolveCoopMissionCompletionAuthority(
+                        coopGroupName,
+                        activeIdentityHash,
+                        activeIdentityGuid,
+                        activeCareerIndex,
+                        out authorityIdentityHash,
+                        out authorityCareerIndex,
+                        out useRequesterFallbackCompletedMissions,
+                        out completionGateDecision);
+
+                    if (shouldApplyCompletionGate
+                        && IsMissionCompletedForCareer(
+                            authorityIdentityHash,
+                            authorityCareerIndex,
+                            mapName,
+                            useRequesterFallbackCompletedMissions ? completedStoryMissions : null))
                     {
+                        rejectionReason = completionGateDecision;
                         return false;
                     }
 
@@ -324,6 +345,69 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             return coopSession != null;
+        }
+
+        private bool TryResolveCoopMissionCompletionAuthority(
+            string coopGroupName,
+            string activeIdentityHash,
+            Guid activeIdentityGuid,
+            int activeCareerIndex,
+            out string authorityIdentityHash,
+            out int authorityCareerIndex,
+            out bool useRequesterFallbackCompletedMissions,
+            out string decision)
+        {
+            authorityIdentityHash = activeIdentityHash;
+            authorityCareerIndex = activeCareerIndex;
+            useRequesterFallbackCompletedMissions = true;
+            decision = "requester-no-leader";
+
+            Guid leaderAccountId;
+            if (!CoopGroupHostRegistry.TryGetLeader(coopGroupName, out leaderAccountId) || leaderAccountId == Guid.Empty)
+            {
+                return !IsNullOrWhiteSpace(authorityIdentityHash);
+            }
+
+            if (leaderAccountId == activeIdentityGuid)
+            {
+                decision = "leader-requester";
+                return !IsNullOrWhiteSpace(authorityIdentityHash);
+            }
+
+            HubPresenceRegistry.Participant leaderPresence;
+            if (_hubPresenceRegistry != null
+                && _hubPresenceRegistry.TryGetParticipantForAccount(leaderAccountId, out leaderPresence)
+                && leaderPresence != null
+                && !IsNullOrWhiteSpace(leaderPresence.IdentityHash))
+            {
+                authorityIdentityHash = leaderPresence.IdentityHash;
+                authorityCareerIndex = leaderPresence.CareerIndex;
+                useRequesterFallbackCompletedMissions = false;
+                decision = "leader-hub-presence";
+                return true;
+            }
+
+            var participants = GetCoopMissionParticipantsSnapshot(coopGroupName);
+            for (var i = 0; i < participants.Length; i++)
+            {
+                var participant = participants[i];
+                if (participant == null || participant.IdentityGuid != leaderAccountId || IsNullOrWhiteSpace(participant.IdentityHash))
+                {
+                    continue;
+                }
+
+                authorityIdentityHash = participant.IdentityHash;
+                authorityCareerIndex = participant.CareerIndex;
+                useRequesterFallbackCompletedMissions = false;
+                decision = "leader-coop-participant";
+                return true;
+            }
+
+            authorityIdentityHash = activeIdentityHash;
+            authorityCareerIndex = activeCareerIndex;
+            useRequesterFallbackCompletedMissions = true;
+            decision = "leader-unresolved-nonhost-allowed";
+            return false;
         }
 
         private static int CountExpectedCoopParticipants(string memberListRaw, Guid activeIdentityGuid)
