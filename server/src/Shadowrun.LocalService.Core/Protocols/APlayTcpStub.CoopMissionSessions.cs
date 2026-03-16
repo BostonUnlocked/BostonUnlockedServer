@@ -277,6 +277,32 @@ namespace Shadowrun.LocalService.Core.Protocols
             return missingCount;
         }
 
+        private void ApplyCoopHostContext(string protocol, string peer, string connectionHash, string coopGroupName, Guid activeIdentityGuid)
+        {
+            Guid hostAccountId;
+            if (CoopGroupHostRegistry.TryGetLeader(coopGroupName, out hostAccountId) && hostAccountId != Guid.Empty)
+            {
+                _logger.UpdateConnectionHostAccountId(protocol, peer, connectionHash, hostAccountId);
+                return;
+            }
+
+            if (activeIdentityGuid != Guid.Empty)
+            {
+                _logger.UpdateConnectionHostAccountId(protocol, peer, connectionHash, activeIdentityGuid);
+            }
+        }
+
+        private string ResolveCoopHostAccountIdText(string coopGroupName, Guid activeIdentityGuid)
+        {
+            Guid hostAccountId;
+            if (CoopGroupHostRegistry.TryGetLeader(coopGroupName, out hostAccountId) && hostAccountId != Guid.Empty)
+            {
+                return hostAccountId.ToString("D");
+            }
+
+            return activeIdentityGuid != Guid.Empty ? activeIdentityGuid.ToString("D") : null;
+        }
+
         private Dictionary<Guid, List<ParsedHenchmanSelection>> SnapshotCoopMissionHenchSelections(string coopGroupName)
         {
             lock (_coopMissionLock)

@@ -38,6 +38,7 @@ namespace Shadowrun.LocalService.Core.Http
                         {
                             ts = RequestLogger.UtcNowIso(),
                             type = "http-steam-auth",
+                            accountId = identity,
                             steamId64 = steamId.ToString(CultureInfo.InvariantCulture),
                             ticketHexLen = ticketHex != null ? ticketHex.Length : 0,
                         });
@@ -311,6 +312,7 @@ namespace Shadowrun.LocalService.Core.Http
                     {
                         ts = RequestLogger.UtcNowIso(),
                         type = "http-playerinfo",
+                        accountId = requestedIdentityHashes.Count == 1 ? requestedIdentityHashes[0] : null,
                         path = "/AccountSystem/Accounts/PlayerActivity/GetPlayerInfo",
                         requested = requestedIdentityHashes != null ? requestedIdentityHashes.ToArray() : new string[0],
                         returned = results.Count,

@@ -920,46 +920,51 @@ namespace Shadowrun.LocalService.Core.Protocols
             using (client)
             {
                 var peer = client.Client.RemoteEndPoint != null ? client.Client.RemoteEndPoint.ToString() : "unknown";
-                using (var stream = client.GetStream())
+                var connectionHash = RequestLogger.CreateConnectionHash("aplay", peer);
+                _logger.RegisterConnectionContext("aplay", peer, connectionHash);
+                try
                 {
-                    // The client uses `GameClientConnection.APlayEntityId` as its local PlayerID.
-                    // To make coop ownership work, each connection must have a unique entity id.
-                    var gameClientEntityId = AllocateGameClientEntityId();
-                    var gameClientIntroducePayload = BuildCoreIntroduceGameClientPayload(gameClientEntityId, "127.0.0.1", 1UL);
-                    var apInitializedPayload = BuildCoreApInitializedPayload(1U, gameClientEntityId, DefaultIntroduceMsgNo + 1UL);
-
-                    var connectionClosed = new ManualResetEvent(false);
-                    var keepAliveLoopStarted = false;
-                    long keepAliveMsgNo = 500000;
-
-                    var first = ReadChunk(stream);
-                    if (first.Length == 0)
+                    using (var stream = client.GetStream())
                     {
-                        _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "aplay-conn", peer = peer, note = "connected then closed" });
-                        return;
-                    }
+                        // The client uses `GameClientConnection.APlayEntityId` as its local PlayerID.
+                        // To make coop ownership work, each connection must have a unique entity id.
+                        var gameClientEntityId = AllocateGameClientEntityId();
+                        var gameClientIntroducePayload = BuildCoreIntroduceGameClientPayload(gameClientEntityId, "127.0.0.1", 1UL);
+                        var apInitializedPayload = BuildCoreApInitializedPayload(1U, gameClientEntityId, DefaultIntroduceMsgNo + 1UL);
 
-                    _logger.Log(new
-                    {
-                        ts = RequestLogger.UtcNowIso(),
-                        type = "aplay-conn",
-                        peer = peer,
-                        bytes = first.Length,
-                        preview = Encoding.ASCII.GetString(first, 0, Math.Min(first.Length, 180)),
-                    });
+                        var connectionClosed = new ManualResetEvent(false);
+                        var keepAliveLoopStarted = false;
+                        long keepAliveMsgNo = 500000;
 
-                    if (LooksLikeHttp(first))
-                    {
-                        HandleHttpProbe(stream, peer, first);
-                        return;
-                    }
+                        var first = ReadChunk(stream);
+                        if (first.Length == 0)
+                        {
+                            _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "aplay-conn", connectionHash = connectionHash, peer = peer, note = "connected then closed" });
+                            return;
+                        }
 
-                    if (StartsWith(first, new byte[] { (byte)'X', (byte)'M', (byte)'L', 0x00 }))
-                    {
-                        _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "aplay-proto", peer = peer, action = "received", payload = "XML\\u0000" });
-                    }
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "aplay-conn",
+                            connectionHash = connectionHash,
+                            peer = peer,
+                            bytes = first.Length,
+                            preview = Encoding.ASCII.GetString(first, 0, Math.Min(first.Length, 180)),
+                        });
 
-                    var buffer = new List<byte>(first);
+                        if (LooksLikeHttp(first))
+                        {
+                            HandleHttpProbe(stream, peer, first);
+                            return;
+                        }
+
+                        if (StartsWith(first, new byte[] { (byte)'X', (byte)'M', (byte)'L', 0x00 }))
+                        {
+                            _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "aplay-proto", connectionHash = connectionHash, peer = peer, action = "received", payload = "XML\\u0000" });
+                        }
+
+                        var buffer = new List<byte>(first);
                     var sentIntro = false;
                     var sentInit = false;
                     var sentAccountIntro = false;
@@ -1024,6 +1029,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                         {
                             ts = RequestLogger.UtcNowIso(),
                             type = "creation-info-tracking",
+                            connectionHash = connectionHash,
                             peer = peer,
                             status = "armed",
                             reason = reason ?? string.Empty,
@@ -1263,6 +1269,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                             var decodedLog = new Dictionary<string, object>();
                             decodedLog["ts"] = RequestLogger.UtcNowIso();
                             decodedLog["type"] = "aplay-frame-decoded";
+                            decodedLog["connectionHash"] = connectionHash;
                             decodedLog["peer"] = peer;
                             decodedLog["bytes"] = decoded.Length;
                             decodedLog["decodedHex"] = ToHexString(decoded, 0, decoded.Length).ToLowerInvariant();
@@ -1860,6 +1867,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 {
                                     ts = RequestLogger.UtcNowIso(),
                                     type = "coop-mission-start",
+                                    connectionHash = connectionHash,
+                                    accountId = activeIdentityGuid != Guid.Empty ? activeIdentityGuid.ToString("D") : null,
+                                    hostAccountId = ResolveCoopHostAccountIdText(coopGroupName, activeIdentityGuid),
                                     peer = peer,
                                     apMsgId = shared.Value.ApMsgId,
                                     entityId = shared.Value.EntityId,
@@ -1877,6 +1887,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 });
 
                                 currentCoopGroupName = coopGroupName;
+                                ApplyCoopHostContext("aplay", peer, connectionHash, currentCoopGroupName, activeIdentityGuid);
                                 RegisterCoopMissionParticipant(coopGroupName, peer, stream, activeIdentityHash, activeIdentityGuid, activeCareerIndex);
                                 UpdateCoopMissionHenchSelections(coopGroupName, activeIdentityGuid, coopParsedSelections);
 
@@ -2372,6 +2383,15 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     }
                                 }
 
+                                if (requestedHostAccountId != Guid.Empty && requestedHostAccountId != activeIdentityGuid)
+                                {
+                                    _logger.UpdateConnectionHostAccountId("aplay", peer, connectionHash, requestedHostAccountId);
+                                }
+                                else
+                                {
+                                    _logger.ClearConnectionHostAccountId("aplay", peer, connectionHash);
+                                }
+
                                 if (IsNullOrWhiteSpace(routedHubId) && !IsNullOrWhiteSpace(currentHubInstanceId))
                                 {
                                     routedHubId = currentHubInstanceId;
@@ -2466,6 +2486,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         ts = RequestLogger.UtcNowIso(),
                                         type = "hub-join-eval",
                                         path = "RequestStoryHubFor",
+                                        accountId = activeIdentityGuid != Guid.Empty ? activeIdentityGuid.ToString("D") : null,
+                                        hostAccountId = requestedHostAccountId != Guid.Empty && requestedHostAccountId != activeIdentityGuid ? requestedHostAccountId.ToString("D") : null,
                                         peer = peer,
                                         previousHubId = previousHubId ?? string.Empty,
                                         previousCharacterId = previousParticipant != null ? (previousParticipant.CharacterId ?? string.Empty) : string.Empty,
@@ -2484,9 +2506,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     {
                                         ts = RequestLogger.UtcNowIso(),
                                         type = "hub-route-storyhubfor",
+                                        accountId = activeIdentityGuid != Guid.Empty ? activeIdentityGuid.ToString("D") : null,
                                         peer = peer,
                                         hostCharacterId = requestedHostCharacterId ?? string.Empty,
-                                        hostAccountId = requestedHostAccountId != Guid.Empty ? requestedHostAccountId.ToString() : string.Empty,
+                                        hostAccountId = requestedHostAccountId != Guid.Empty && requestedHostAccountId != activeIdentityGuid ? requestedHostAccountId.ToString("D") : null,
                                         routedHubId = routedHubId,
                                         routeSource = routedHubSource,
                                     });
@@ -2635,16 +2658,20 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         var effectiveHubId = currentHubInstanceId;
                                         Guid followHostAccountId;
                                         string followHostHubId;
+                                        var hasFollowHost = false;
                                         if (PartyHubFollowRegistry.TryGetHostForMember(activeIdentityGuid, out followHostAccountId)
                                             && followHostAccountId != Guid.Empty
                                             && followHostAccountId != activeIdentityGuid
                                             && TryResolveHubIdForAccount(followHostAccountId, out followHostHubId)
                                             && !IsNullOrWhiteSpace(followHostHubId))
                                         {
+                                            hasFollowHost = true;
                                             effectiveHubId = followHostHubId;
+                                            _logger.UpdateConnectionHostAccountId("aplay", peer, connectionHash, followHostAccountId);
                                         }
                                         else
                                         {
+                                            _logger.ClearConnectionHostAccountId("aplay", peer, connectionHash);
                                             var currentStoryHubId = _storyProgressionService != null
                                                 ? _storyProgressionService.GetCurrentStoryHubId(activeIdentityGuid, currentSlot, "Main Campaign")
                                                 : null;
@@ -2733,12 +2760,25 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             ts = RequestLogger.UtcNowIso(),
                                             type = "hub-join-eval",
                                             path = "RequestCurrentStorylineHubMessage",
+                                            accountId = activeIdentityGuid != Guid.Empty ? activeIdentityGuid.ToString("D") : null,
+                                            hostAccountId = hasFollowHost ? followHostAccountId.ToString("D") : null,
                                             peer = peer,
                                             previousHubId = previousHubId ?? string.Empty,
                                             previousCharacterId = previousParticipant != null ? (previousParticipant.CharacterId ?? string.Empty) : string.Empty,
                                             currentHubId = currentParticipantHubId ?? string.Empty,
                                             currentCharacterId = currentParticipant != null ? (currentParticipant.CharacterId ?? string.Empty) : string.Empty,
                                             shouldBroadcastAdd = shouldBroadcastAdd,
+                                        });
+
+                                        _logger.Log(new
+                                        {
+                                            ts = RequestLogger.UtcNowIso(),
+                                            type = "hub-route-current-storyline",
+                                            accountId = activeIdentityGuid != Guid.Empty ? activeIdentityGuid.ToString("D") : null,
+                                            hostAccountId = hasFollowHost ? followHostAccountId.ToString("D") : null,
+                                            peer = peer,
+                                            routedHubId = effectiveHubId,
+                                            routeSource = hasFollowHost ? "follow-host" : "storyline-self",
                                         });
 
                                         var serializedSharedHubState = currentHubInstance != null
@@ -3124,17 +3164,22 @@ namespace Shadowrun.LocalService.Core.Protocols
                         StopAndForgetSoloMission(peer, "connection-teardown");
                     }
 
-                    cancelHubReadyFallback("connection-teardown");
-                    cancelPostCreateWatchdog("connection-teardown");
-                    HubPresenceRegistry.Participant teardownParticipant;
-                    _hubPresenceRegistry.TryGetParticipantForPeer(peer, out teardownParticipant);
-                    if (currentHubInstance != null && teardownParticipant != null && !IsNullOrWhiteSpace(teardownParticipant.CharacterId))
-                    {
-                        _portedHubInstanceManager.RemoveCharacterFromHub(currentHubInstance, teardownParticipant.CharacterId);
-                        currentHubInstance = null;
+                        cancelHubReadyFallback("connection-teardown");
+                        cancelPostCreateWatchdog("connection-teardown");
+                        HubPresenceRegistry.Participant teardownParticipant;
+                        _hubPresenceRegistry.TryGetParticipantForPeer(peer, out teardownParticipant);
+                        if (currentHubInstance != null && teardownParticipant != null && !IsNullOrWhiteSpace(teardownParticipant.CharacterId))
+                        {
+                            _portedHubInstanceManager.RemoveCharacterFromHub(currentHubInstance, teardownParticipant.CharacterId);
+                            currentHubInstance = null;
+                        }
+                        RemoveHubPresenceWithBroadcast(peer);
+                        UnregisterHubPeerStream(peer, stream);
                     }
-                    RemoveHubPresenceWithBroadcast(peer);
-                    UnregisterHubPeerStream(peer, stream);
+                }
+                finally
+                {
+                    _logger.ClearConnectionContext("aplay", peer, connectionHash);
                 }
             }
         }

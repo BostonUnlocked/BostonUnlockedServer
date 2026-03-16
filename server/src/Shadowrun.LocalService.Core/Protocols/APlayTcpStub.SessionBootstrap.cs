@@ -185,6 +185,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             activeIdentityHash = mappedIdentityHash;
             activeIdentityGuid = mappedIdentityGuid;
+            _logger.UpdateConnectionAccountId("aplay", peer, null, activeIdentityGuid);
             RegisterGameClientEntityIdForIdentity(activeIdentityGuid, gameClientEntityId, peer);
 
             var careerSummary = BuildCareerSummaryJson(_userStore != null ? _userStore.GetCareers(activeIdentityHash) : null);

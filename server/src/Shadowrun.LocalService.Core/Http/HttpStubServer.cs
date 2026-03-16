@@ -120,44 +120,163 @@ namespace Shadowrun.LocalService.Core.Http
                 client.SendTimeout = 2000;
 
                 var endpoint = client.Client.RemoteEndPoint != null ? client.Client.RemoteEndPoint.ToString() : "unknown";
-                using (var stream = client.GetStream())
+                var connectionHash = RequestLogger.CreateConnectionHash("http", endpoint);
+                _logger.RegisterConnectionContext("http", endpoint, connectionHash);
+                try
                 {
-                    HttpRequest request;
-                    try
+                    using (var stream = client.GetStream())
                     {
-                        request = ReadSingleRequest(stream);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "http-error", peer = endpoint, message = ex.Message });
-                        return;
-                    }
+                        HttpRequest request;
+                        try
+                        {
+                            request = ReadSingleRequest(stream);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "http-error", connectionHash = connectionHash, peer = endpoint, message = ex.Message });
+                            return;
+                        }
 
-                    if (request == null)
-                    {
-                        return;
+                        if (request == null)
+                        {
+                            return;
+                        }
+
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "http-request",
+                            accountId = ResolveRequestAccountId(request),
+                            connectionHash = connectionHash,
+                            peer = endpoint,
+                            method = request.Method,
+                            host = request.Host,
+                            path = request.Path,
+                            query = request.Query,
+                            userAgent = request.UserAgent,
+                            contentType = request.ContentType,
+                            contentLength = request.BodyBytes != null ? request.BodyBytes.Length : 0,
+                            body = BuildSafeRequestBodyForLog(request.Path, request.BodyBytes),
+                        });
+
+                        var response = RouteRequest(request);
+                        var suppressBody = string.Equals(request.Method, "HEAD", StringComparison.OrdinalIgnoreCase);
+                        WriteResponse(stream, response, suppressBody);
                     }
-
-                    _logger.Log(new
-                    {
-                        ts = RequestLogger.UtcNowIso(),
-                        type = "http-request",
-                        peer = endpoint,
-                        method = request.Method,
-                        host = request.Host,
-                        path = request.Path,
-                        query = request.Query,
-                        userAgent = request.UserAgent,
-                        contentType = request.ContentType,
-                        contentLength = request.BodyBytes != null ? request.BodyBytes.Length : 0,
-                        body = BuildSafeRequestBodyForLog(request.Path, request.BodyBytes),
-                    });
-
-                    var response = RouteRequest(request);
-                    var suppressBody = string.Equals(request.Method, "HEAD", StringComparison.OrdinalIgnoreCase);
-                    WriteResponse(stream, response, suppressBody);
+                }
+                finally
+                {
+                    _logger.ClearConnectionContext("http", endpoint, connectionHash);
                 }
             }
+        }
+
+        private string ResolveRequestAccountId(HttpRequest request)
+        {
+            if (request == null)
+            {
+                return null;
+            }
+
+            var accountIdFromPath = ResolveRequestAccountIdFromPath(request.Path);
+            if (!IsNullOrWhiteSpace(accountIdFromPath))
+            {
+                return accountIdFromPath;
+            }
+
+            if (request.BodyBytes == null || request.BodyBytes.Length == 0)
+            {
+                return null;
+            }
+
+            IDictionary dict;
+            try
+            {
+                dict = TryParseJsonDictionary(request.BodyBytes);
+            }
+            catch
+            {
+                dict = null;
+            }
+
+            if (dict == null)
+            {
+                return null;
+            }
+
+            var identityHash = GetString(dict, "IdentityHash");
+            if (!IsNullOrWhiteSpace(identityHash))
+            {
+                return identityHash;
+            }
+
+            identityHash = GetSingleStringValue(dict, "IdentityHashes");
+            if (!IsNullOrWhiteSpace(identityHash))
+            {
+                return identityHash;
+            }
+
+            identityHash = GetString(dict, "AccountId");
+            if (!IsNullOrWhiteSpace(identityHash))
+            {
+                return identityHash;
+            }
+
+            var sessionHash = GetString(dict, "SessionHash");
+            if (IsNullOrWhiteSpace(sessionHash))
+            {
+                sessionHash = GetString(dict, "AccountSystemSessionHash");
+            }
+
+            string mappedIdentity;
+            if (!IsNullOrWhiteSpace(sessionHash)
+                && TryResolveIdentityForSessionHash(sessionHash, out mappedIdentity)
+                && !IsNullOrWhiteSpace(mappedIdentity))
+            {
+                return mappedIdentity;
+            }
+
+            return null;
+        }
+
+        private static string ResolveRequestAccountIdFromPath(string path)
+        {
+            var normalizedPath = NormalizePathForRoute(path);
+            var couponHistoryIdentityHash = ExtractCouponHistoryIdentityHash(normalizedPath);
+            if (IsGuidish(couponHistoryIdentityHash))
+            {
+                return couponHistoryIdentityHash;
+            }
+
+            return null;
+        }
+
+        private static string GetSingleStringValue(IDictionary dict, string key)
+        {
+            if (dict == null || IsNullOrWhiteSpace(key) || !dict.Contains(key))
+            {
+                return null;
+            }
+
+            var value = dict[key];
+            if (value == null)
+            {
+                return null;
+            }
+
+            var text = value as string;
+            if (text != null)
+            {
+                return text;
+            }
+
+            var list = value as IList;
+            if (list == null || list.Count != 1 || list[0] == null)
+            {
+                return null;
+            }
+
+            return Convert.ToString(list[0], CultureInfo.InvariantCulture);
         }
 
         private HttpResponse RouteRequest(HttpRequest request)

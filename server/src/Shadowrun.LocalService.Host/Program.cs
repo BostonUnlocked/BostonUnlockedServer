@@ -25,19 +25,23 @@ namespace Shadowrun.LocalService.Host
 				// Ignore.
 			}
 			var logger = options.DisableFileLogs
-				? new RequestLogger(null, null, null, null)
-				: new RequestLogger(options.RequestLogPath, options.RequestLowLogPath, options.AiLogPath, options.AdminLogPath);
+				? new RequestLogger(null, null, options.StructuredLogRotationIntervalMinutes, options.StructuredLogRetentionDays)
+				: new RequestLogger(options.EventsLogPrefix, options.DiagnosticsLogPrefix, options.StructuredLogRotationIntervalMinutes, options.StructuredLogRetentionDays);
 			logger.Reset();
 			logger.Log(new
 			{
-				ts = RequestLogger.UtcNowIso(),
-				type = "startup",
+				timestamp = RequestLogger.UtcNowIso(),
+				component = "startup",
+				eventName = "host-start",
+				message = "local service host starting",
 				host = options.Host,
 				port = options.Port,
 				aplayPort = options.APlayPort,
 				photonPort = options.PhotonPort,
 				persistenceBackend = options.UseSqlite ? "Sqlite" : "Json",
 				sqliteDatabasePath = options.UseSqlite ? options.SqliteDatabasePath : null,
+				rotationIntervalMinutes = options.StructuredLogRotationIntervalMinutes,
+				retentionDays = options.StructuredLogRetentionDays,
 				runtime = ".NET Framework 4.8",
 			});
 
@@ -46,17 +50,14 @@ namespace Shadowrun.LocalService.Host
 			Console.WriteLine("[localservice-cs] PhotonProxy TCP stub on {0}:{1}", options.Host, options.PhotonPort);
 			if (options.DisableFileLogs)
 			{
-				Console.WriteLine("[localservice-cs] request log: (disabled)");
-				Console.WriteLine("[localservice-cs] request log (low): (disabled)");
-				Console.WriteLine("[localservice-cs] request log (ai): (disabled)");
-				Console.WriteLine("[localservice-cs] request log (admin): (disabled)");
+				Console.WriteLine("[localservice-cs] structured logs: (disabled)");
 			}
 			else
 			{
-				Console.WriteLine("[localservice-cs] request log: {0}", options.RequestLogPath);
-				Console.WriteLine("[localservice-cs] request log (low): {0}", options.RequestLowLogPath);
-				Console.WriteLine("[localservice-cs] request log (ai): {0}", options.AiLogPath);
-				Console.WriteLine("[localservice-cs] request log (admin): {0}", options.AdminLogPath);
+				Console.WriteLine("[localservice-cs] events log prefix: {0}", options.EventsLogPrefix);
+				Console.WriteLine("[localservice-cs] diagnostics log prefix: {0}", options.DiagnosticsLogPrefix);
+				Console.WriteLine("[localservice-cs] log rotation: {0} minutes", options.StructuredLogRotationIntervalMinutes);
+				Console.WriteLine("[localservice-cs] log retention: {0} day(s)", options.StructuredLogRetentionDays);
 			}
 			Console.WriteLine("[localservice-cs] chat admin config: {0}", options.ChatAdminConfigPath);
 
@@ -118,8 +119,10 @@ namespace Shadowrun.LocalService.Host
 			{
 				logger.Log(new
 				{
-					ts = RequestLogger.UtcNowIso(),
-					type = "fatal",
+					timestamp = RequestLogger.UtcNowIso(),
+					component = "fatal",
+					eventName = "service-thread-faulted",
+					level = "error",
 					message = "service thread faulted",
 					error = ex0.Message,
 					errorType = ex0.GetType().FullName,

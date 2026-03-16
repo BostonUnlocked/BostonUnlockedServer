@@ -211,6 +211,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     }
 
                     state.AccountId = accountId;
+                    _logger.UpdateConnectionAccountId("photon", state != null ? state.Endpoint : null, state != null ? state.ConnectionHash : null, accountId);
                     state.LocalUser = CreateUser(accountId);
 
                     try
@@ -449,6 +450,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                             && TryResolveGroupHostAccountId(response.GroupData, state.AccountId, out hostAccountId))
                         {
                             PartyHubFollowRegistry.SetHostForMember(state.AccountId, hostAccountId);
+                            _logger.UpdateConnectionHostAccountId("photon", state != null ? state.Endpoint : null, state != null ? state.ConnectionHash : null, hostAccountId);
                         }
                         return response;
                     }
@@ -2428,6 +2430,7 @@ namespace Shadowrun.LocalService.Core.Protocols
         private sealed class ConnectionState
         {
             public Guid ConnectionId;
+            public string ConnectionHash;
             public string Endpoint;
             public NetworkStream Stream;
 

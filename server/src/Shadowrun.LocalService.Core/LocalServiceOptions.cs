@@ -20,6 +20,8 @@ public sealed class LocalServiceOptions
         UseSqlite = false;
         MigrateJsonToSqlite = false;
         SqliteBusyTimeoutMs = 15000;
+        StructuredLogRotationIntervalMinutes = 5;
+        StructuredLogRetentionDays = 1;
 
         EnableAiLogic = DefaultEnableAiLogic;
 
@@ -58,6 +60,8 @@ public sealed class LocalServiceOptions
     /// When true, the host will not write request logs to files.
     /// </summary>
     public bool DisableFileLogs { get; set; }
+    public int StructuredLogRotationIntervalMinutes { get; set; }
+    public int StructuredLogRetentionDays { get; set; }
     public bool UseSqlite { get; set; }
     public bool MigrateJsonToSqlite { get; set; }
     public string SqliteDatabasePath { get; set; }
@@ -128,10 +132,8 @@ public sealed class LocalServiceOptions
         }
     }
 
-    public string RequestLogPath { get { return Path.Combine(LogDir, "requests-csharp.log"); } }
-    public string RequestLowLogPath { get { return Path.Combine(LogDir, "requests-csharp-low.log"); } }
-    public string AiLogPath { get { return Path.Combine(LogDir, "requests-csharp-ai.log"); } }
-    public string AdminLogPath { get { return Path.Combine(LogDir, "requests-csharp-admin.log"); } }
+    public string EventsLogPrefix { get { return Path.Combine(LogDir, "events"); } }
+    public string DiagnosticsLogPrefix { get { return Path.Combine(LogDir, "diagnostics"); } }
 
     private string TryGetPortableSubdir(string name)
     {
