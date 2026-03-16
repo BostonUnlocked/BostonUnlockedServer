@@ -15,37 +15,314 @@ namespace Shadowrun.LocalService.Core.Protocols
 {
     public sealed partial class APlayTcpStub
     {
-        private static string SerializeDefaultHenchmanCollection()
+        private const int HenchmanCollectionHistoryLength = 6;
+
+        private sealed class HenchmanCollectionCacheEntry
+        {
+            public int CreationIndex;
+            public string Serialized;
+            public List<PlayerCharacterSnapshot> Snapshots;
+        }
+
+        private static readonly LinkedList<HenchmanCollectionCacheEntry> HenchmanCollectionHistory = new LinkedList<HenchmanCollectionCacheEntry>();
+        private static DateTime CachedDefaultHenchmanSnapshotsLastWriteUtc;
+        private static List<PlayerCharacterSnapshot> CachedDefaultHenchmanSnapshots;
+        private static int NextHenchmanCollectionCreationIndex = 1;
+
+        private string SerializeDefaultHenchmanCollection(string activeIdentityHash, int activeCareerIndex)
         {
             lock (HenchmanCollectionCacheLock)
             {
                 try
                 {
-                    var staticDataPath = TryFindMetagameplayStaticDataPath();
-                    if (!IsNullOrWhiteSpace(staticDataPath) && File.Exists(staticDataPath))
+                    var defaultSnapshots = GetDefaultHenchmanSnapshotsNoLock();
+                    var collectionSnapshots = new List<PlayerCharacterSnapshot>();
+                    if (defaultSnapshots != null && defaultSnapshots.Count > 0)
                     {
-                        var lastWriteUtc = File.GetLastWriteTimeUtc(staticDataPath);
-                        if (CachedSerializedHenchmanCollection != null && lastWriteUtc == CachedSerializedHenchmanCollectionLastWriteUtc)
+                        for (var i = 0; i < defaultSnapshots.Count; i++)
                         {
-                            return CachedSerializedHenchmanCollection;
-                        }
+                            var src = defaultSnapshots[i];
+                            if (src == null)
+                            {
+                                continue;
+                            }
 
-                        var henchSnapshots = TryLoadDefaultHenchmanSnapshotsFromMetagameplay(staticDataPath);
-                        if (henchSnapshots != null && henchSnapshots.Count > 0)
-                        {
-                            var serialized = SerializeHenchmanCollectionFromSnapshots(henchSnapshots, lastWriteUtc);
-                            CachedSerializedHenchmanCollection = serialized;
-                            CachedSerializedHenchmanCollectionLastWriteUtc = lastWriteUtc;
-                            CachedHenchmanCollectionSnapshots = henchSnapshots;
-                            return serialized;
+                            var clone = src.Copy() as PlayerCharacterSnapshot;
+                            if (clone == null)
+                            {
+                                continue;
+                            }
+
+                            clone.IsHenchman = true;
+                            clone.PlayerId = 0UL;
+                            clone.WantsBackgroundChange = false;
+                            EnsureHenchmanSnapshotHasValidLoadout(clone);
+                            collectionSnapshots.Add(clone);
                         }
+                    }
+
+                    var playerDerivedSnapshots = BuildPlayerDerivedHenchmanSnapshots(activeIdentityHash, activeCareerIndex, 2);
+                    if (playerDerivedSnapshots != null && playerDerivedSnapshots.Count > 0)
+                    {
+                        for (var i = 0; i < playerDerivedSnapshots.Count; i++)
+                        {
+                            var snapshot = playerDerivedSnapshots[i];
+                            if (snapshot == null || ContainsDuplicateHenchmanSnapshot(collectionSnapshots, snapshot))
+                            {
+                                continue;
+                            }
+
+                            collectionSnapshots.Add(snapshot);
+                        }
+                    }
+
+                    if (collectionSnapshots.Count > 0)
+                    {
+                        collectionSnapshots.Sort(
+                            delegate(PlayerCharacterSnapshot a, PlayerCharacterSnapshot b)
+                            {
+                                var an = a != null ? a.CharacterName : null;
+                                var bn = b != null ? b.CharacterName : null;
+                                return string.CompareOrdinal(an ?? string.Empty, bn ?? string.Empty);
+                            });
+
+                        return RegisterHenchmanCollectionNoLock(collectionSnapshots);
                     }
                 }
                 catch
                 {
                 }
 
-                return SerializeFallbackHenchmanCollection();
+                return RegisterHenchmanCollectionNoLock(BuildFallbackHenchmanSnapshots());
+            }
+        }
+
+        private static List<PlayerCharacterSnapshot> GetDefaultHenchmanSnapshotsNoLock()
+        {
+            try
+            {
+                var staticDataPath = TryFindMetagameplayStaticDataPath();
+                if (!IsNullOrWhiteSpace(staticDataPath) && File.Exists(staticDataPath))
+                {
+                    var lastWriteUtc = File.GetLastWriteTimeUtc(staticDataPath);
+                    if (CachedDefaultHenchmanSnapshots != null && CachedDefaultHenchmanSnapshots.Count > 0 && lastWriteUtc == CachedDefaultHenchmanSnapshotsLastWriteUtc)
+                    {
+                        return CachedDefaultHenchmanSnapshots;
+                    }
+
+                    var snapshots = TryLoadDefaultHenchmanSnapshotsFromMetagameplay(staticDataPath);
+                    if (snapshots != null && snapshots.Count > 0)
+                    {
+                        CachedDefaultHenchmanSnapshots = snapshots;
+                        CachedDefaultHenchmanSnapshotsLastWriteUtc = lastWriteUtc;
+                        return CachedDefaultHenchmanSnapshots;
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            if (CachedDefaultHenchmanSnapshots == null || CachedDefaultHenchmanSnapshots.Count == 0)
+            {
+                CachedDefaultHenchmanSnapshots = BuildFallbackHenchmanSnapshots();
+                CachedDefaultHenchmanSnapshotsLastWriteUtc = DateTime.MinValue;
+            }
+
+            return CachedDefaultHenchmanSnapshots;
+        }
+
+        private string RegisterHenchmanCollectionNoLock(List<PlayerCharacterSnapshot> snapshots)
+        {
+            if (snapshots == null || snapshots.Count == 0)
+            {
+                snapshots = BuildFallbackHenchmanSnapshots();
+            }
+
+            const string ownerCharacterIdentifier = "DEFAULT";
+            var henches = new List<HenchmanRepositoryPlayerCharacterSnapshot>();
+            for (var i = 0; i < snapshots.Count; i++)
+            {
+                var snapshot = snapshots[i];
+                if (snapshot == null)
+                {
+                    continue;
+                }
+
+                snapshot.IsHenchman = true;
+                snapshot.DataVersion = snapshot.DataVersion != 0 ? snapshot.DataVersion : 48;
+                snapshot.PlayerId = 0UL;
+                snapshot.WantsBackgroundChange = false;
+                EnsureHenchmanSnapshotHasValidLoadout(snapshot);
+
+                var entry = new HenchmanRepositoryPlayerCharacterSnapshot(ownerCharacterIdentifier);
+                entry.IsDefaultHench = !IsPlayerDerivedHenchmanIdentifier(snapshot.CharacterIdentifier);
+                entry.PlayerCharacterSnapshot = snapshot;
+                henches.Add(entry);
+            }
+
+            var creationIndex = NextHenchmanCollectionCreationIndex++;
+            if (creationIndex <= 0)
+            {
+                NextHenchmanCollectionCreationIndex = 2;
+                creationIndex = 1;
+            }
+
+            var collection = new HenchmanCollection
+            {
+                CreationIndex = creationIndex,
+                Data = henches.ToArray(),
+            };
+
+            var serialized = HenchRepoSerializer.SerializeHenchmanCollection(collection);
+            var historyEntry = new HenchmanCollectionCacheEntry
+            {
+                CreationIndex = creationIndex,
+                Serialized = serialized,
+                Snapshots = snapshots,
+            };
+
+            HenchmanCollectionHistory.AddFirst(historyEntry);
+            while (HenchmanCollectionHistory.Count > HenchmanCollectionHistoryLength)
+            {
+                HenchmanCollectionHistory.RemoveLast();
+            }
+
+            CachedSerializedHenchmanCollection = serialized;
+            CachedHenchmanCollectionCreationIndex = creationIndex;
+            CachedHenchmanCollectionSnapshots = snapshots;
+
+            return serialized;
+        }
+
+        private List<PlayerCharacterSnapshot> BuildPlayerDerivedHenchmanSnapshots(string activeIdentityHash, int activeCareerIndex, int targetCount)
+        {
+            if (_userStore == null || targetCount <= 0)
+            {
+                return null;
+            }
+
+            try
+            {
+                var candidates = _userStore.GetRandomOccupiedCareerReferences(activeIdentityHash, activeCareerIndex);
+                if (candidates == null || candidates.Count == 0)
+                {
+                    return null;
+                }
+
+                var results = new List<PlayerCharacterSnapshot>();
+                for (var i = 0; i < candidates.Count && results.Count < targetCount; i++)
+                {
+                    var candidate = candidates[i];
+                    if (candidate == null || candidate.Slot == null || IsNullOrWhiteSpace(candidate.IdentityHash))
+                    {
+                        continue;
+                    }
+
+                    var characterIdentifier = !IsNullOrWhiteSpace(candidate.Slot.CharacterIdentifier)
+                        ? candidate.Slot.CharacterIdentifier
+                        : (candidate.IdentityHash + ":" + candidate.CareerIndex.ToString(CultureInfo.InvariantCulture));
+                    var snapshot = BuildPlayerCharacterSnapshotForSlot(characterIdentifier, candidate.Slot.CharacterName, candidate.Slot);
+                    if (snapshot == null || snapshot.SkillTreeDefinitions == null || snapshot.SkillTreeDefinitions.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    snapshot.IsHenchman = true;
+                    snapshot.PlayerId = 0UL;
+                    snapshot.WantsBackgroundChange = false;
+                    snapshot.CharacterIdentifier = BuildPlayerDerivedHenchmanIdentifier(candidate.IdentityHash, candidate.CareerIndex);
+                    EnsureHenchmanSnapshotHasValidLoadout(snapshot);
+
+                    if (ContainsDuplicateHenchmanSnapshot(results, snapshot))
+                    {
+                        continue;
+                    }
+
+                    results.Add(snapshot);
+                }
+
+                return results;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string BuildPlayerDerivedHenchmanIdentifier(string identityHash, int careerIndex)
+        {
+            var normalizedIdentity = !IsNullOrWhiteSpace(identityHash)
+                ? identityHash.Replace("-", string.Empty)
+                : Guid.Empty.ToString("N");
+            if (normalizedIdentity.Length > 12)
+            {
+                normalizedIdentity = normalizedIdentity.Substring(0, 12);
+            }
+
+            return "00000000-0000-0000-0000-000000000000:PLAYERHENCH_"
+                + normalizedIdentity
+                + "_"
+                + careerIndex.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private static bool IsPlayerDerivedHenchmanIdentifier(string characterIdentifier)
+        {
+            return !IsNullOrWhiteSpace(characterIdentifier)
+                && characterIdentifier.IndexOf(":PLAYERHENCH_", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool ContainsDuplicateHenchmanSnapshot(IEnumerable<PlayerCharacterSnapshot> snapshots, PlayerCharacterSnapshot candidate)
+        {
+            if (snapshots == null || candidate == null)
+            {
+                return false;
+            }
+
+            foreach (var snapshot in snapshots)
+            {
+                if (snapshot == null)
+                {
+                    continue;
+                }
+
+                if (!IsNullOrWhiteSpace(snapshot.CharacterIdentifier)
+                    && !IsNullOrWhiteSpace(candidate.CharacterIdentifier)
+                    && string.Equals(snapshot.CharacterIdentifier, candidate.CharacterIdentifier, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                if (!IsNullOrWhiteSpace(snapshot.CharacterName)
+                    && !IsNullOrWhiteSpace(candidate.CharacterName)
+                    && string.Equals(snapshot.CharacterName, candidate.CharacterName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static List<PlayerCharacterSnapshot> GetSnapshotsForSelectionCollection(IList<ParsedHenchmanSelection> parsedSelections)
+        {
+            if (parsedSelections == null || parsedSelections.Count == 0)
+            {
+                return null;
+            }
+
+            var creationIndex = parsedSelections[0].CollectionCreationIndex;
+            lock (HenchmanCollectionCacheLock)
+            {
+                foreach (var entry in HenchmanCollectionHistory)
+                {
+                    if (entry != null && entry.CreationIndex == creationIndex && entry.Snapshots != null && entry.Snapshots.Count > 0)
+                    {
+                        return entry.Snapshots;
+                    }
+                }
+
+                return CachedHenchmanCollectionSnapshots;
             }
         }
 
@@ -467,44 +744,6 @@ namespace Shadowrun.LocalService.Core.Protocols
             return -1;
         }
 
-        private static string SerializeHenchmanCollectionFromSnapshots(List<PlayerCharacterSnapshot> snapshots, DateTime lastWriteUtc)
-        {
-            const string ownerCharacterIdentifier = "DEFAULT";
-
-            var henches = new List<HenchmanRepositoryPlayerCharacterSnapshot>();
-            for (var i = 0; i < snapshots.Count; i++)
-            {
-                var snapshot = snapshots[i];
-                if (snapshot == null)
-                {
-                    continue;
-                }
-
-                snapshot.IsHenchman = true;
-                snapshot.DataVersion = snapshot.DataVersion != 0 ? snapshot.DataVersion : 48;
-                snapshot.PlayerId = 0UL;
-                snapshot.WantsBackgroundChange = false;
-                EnsureHenchmanSnapshotHasValidLoadout(snapshot);
-
-                var entry = new HenchmanRepositoryPlayerCharacterSnapshot(ownerCharacterIdentifier);
-                entry.IsDefaultHench = true;
-                entry.PlayerCharacterSnapshot = snapshot;
-                henches.Add(entry);
-            }
-
-            var creationIndex = unchecked((int)(DateTime.UtcNow.Ticks & 0x7fffffff)) + 1;
-            var collection = new HenchmanCollection
-            {
-                CreationIndex = creationIndex,
-                Data = henches.ToArray(),
-            };
-
-            CachedHenchmanCollectionCreationIndex = creationIndex;
-            CachedHenchmanCollectionSnapshots = snapshots;
-
-            return HenchRepoSerializer.SerializeHenchmanCollection(collection);
-        }
-
         private static void EnsureHenchmanSnapshotHasValidLoadout(PlayerCharacterSnapshot snapshot)
         {
             if (snapshot == null)
@@ -530,11 +769,9 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
-        private static string SerializeFallbackHenchmanCollection()
+        private static List<PlayerCharacterSnapshot> BuildFallbackHenchmanSnapshots()
         {
-            const string ownerCharacterIdentifier = "DEFAULT";
-
-            var henches = new List<HenchmanRepositoryPlayerCharacterSnapshot>();
+            var snapshots = new List<PlayerCharacterSnapshot>();
             for (var i = 0; i < 8; i++)
             {
                 var extension = (100 + i).ToString(CultureInfo.InvariantCulture);
@@ -566,22 +803,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                     snapshot.PlayerCharacterInventory.Armor = CreateInventoryItem(PlayerCharacterDefaultValues.Armor, 2);
                 }
 
-                var entry = new HenchmanRepositoryPlayerCharacterSnapshot(ownerCharacterIdentifier);
-                entry.IsDefaultHench = false;
-                entry.PlayerCharacterSnapshot = snapshot;
-                henches.Add(entry);
+                snapshots.Add(snapshot);
             }
 
-            var collection = new HenchmanCollection
-            {
-                CreationIndex = 1,
-                Data = henches.ToArray(),
-            };
-
-            CachedHenchmanCollectionCreationIndex = 1;
-            CachedHenchmanCollectionSnapshots = henches.Select(h => h != null ? h.PlayerCharacterSnapshot : null).Where(s => s != null).ToList();
-
-            return HenchRepoSerializer.SerializeHenchmanCollection(collection);
+            return snapshots;
         }
 
         private static string SerializeInventoryFromSlot(CareerSlot slot)

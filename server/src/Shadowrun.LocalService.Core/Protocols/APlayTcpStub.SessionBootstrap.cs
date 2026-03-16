@@ -321,7 +321,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             var metaSnapshotCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 26, metaSnapshotPayload), serverMsgNoBase + 6);
             SendRawFrame(stream, peer, PrefixLength(metaSnapshotCore), "sent MetaGameplayCommunicationObject SendMetagameplayDataSnapshotToClient");
 
-            var henchmanCollectionPayload = BuildUtf16StringPayload(SerializeDefaultHenchmanCollection());
+            var henchmanCollectionPayload = BuildUtf16StringPayload(SerializeDefaultHenchmanCollection(identityHash, careerIndex));
             var henchmanCollectionCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 27, henchmanCollectionPayload), serverMsgNoBase + 7);
             SendRawFrame(stream, peer, PrefixLength(henchmanCollectionCore), "sent MetaGameplayCommunicationObject SendHenchmanCollectionToClient");
 

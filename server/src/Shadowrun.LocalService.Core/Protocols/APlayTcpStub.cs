@@ -35,7 +35,6 @@ namespace Shadowrun.LocalService.Core.Protocols
         private static long _hubReadyFallbackSkippedTotal;
         private static readonly object HenchmanCollectionCacheLock = new object();
         private static string CachedSerializedHenchmanCollection;
-        private static DateTime CachedSerializedHenchmanCollectionLastWriteUtc;
         private static int CachedHenchmanCollectionCreationIndex;
         private static List<PlayerCharacterSnapshot> CachedHenchmanCollectionSnapshots;
 
@@ -1802,7 +1801,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 var requestMsgNoBase = direct.Value.MsgNo + 100;
                                 try
                                 {
-                                    var henchmanCollectionPayload = BuildUtf16StringPayload(SerializeDefaultHenchmanCollection());
+                                    var henchmanCollectionPayload = BuildUtf16StringPayload(SerializeDefaultHenchmanCollection(activeIdentityHash, activeCareerIndex));
                                     var henchmanCollectionCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 27, henchmanCollectionPayload), requestMsgNoBase + 1);
                                     SendRawFrame(stream, peer, PrefixLength(henchmanCollectionCore), "sent MetaGameplayCommunicationObject SendHenchmanCollectionToClient in response to GetHenchmanCollection");
                                 }

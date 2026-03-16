@@ -465,6 +465,70 @@ namespace Shadowrun.LocalService.Core.Persistence
             return _careerStore != null ? _careerStore.GetCareers(identityHash) : new List<CareerSlot>();
         }
 
+        public List<OccupiedCareerReference> GetRandomOccupiedCareerReferences(string excludedIdentityHash, int excludedCareerIndex)
+        {
+            lock (_lock)
+            {
+                var store = LoadAccountStoreNoThrow(true);
+                var accounts = GetOrCreateDict(store, AccountStoreAccountsKey);
+                var candidates = new List<OccupiedCareerReference>();
+                var normalizedExcludedIdentity = IsGuidish(excludedIdentityHash) ? NormalizeGuidish(excludedIdentityHash) : null;
+
+                foreach (DictionaryEntry accountEntry in accounts)
+                {
+                    var identityHash = accountEntry.Key as string;
+                    if (!IsGuidish(identityHash))
+                    {
+                        continue;
+                    }
+
+                    var normalizedIdentityHash = NormalizeGuidish(identityHash);
+                    var careers = _careerStore != null ? _careerStore.GetCareers(normalizedIdentityHash) : null;
+                    if (careers == null || careers.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    for (var i = 0; i < careers.Count; i++)
+                    {
+                        var slot = careers[i];
+                        if (slot == null || !slot.IsOccupied)
+                        {
+                            continue;
+                        }
+
+                        if (!IsNullOrWhiteSpace(normalizedExcludedIdentity)
+                            && string.Equals(normalizedIdentityHash, normalizedExcludedIdentity, StringComparison.OrdinalIgnoreCase)
+                            && slot.Index == excludedCareerIndex)
+                        {
+                            continue;
+                        }
+
+                        var slotCopy = CareerSlot.FromDictionary(slot.ToDictionary());
+                        if (slotCopy == null)
+                        {
+                            continue;
+                        }
+
+                        if (IsNullOrWhiteSpace(slotCopy.CharacterIdentifier))
+                        {
+                            slotCopy.CharacterIdentifier = normalizedIdentityHash + ":" + slotCopy.Index.ToString(CultureInfo.InvariantCulture);
+                        }
+
+                        candidates.Add(new OccupiedCareerReference
+                        {
+                            IdentityHash = normalizedIdentityHash,
+                            CareerIndex = slotCopy.Index,
+                            Slot = slotCopy,
+                        });
+                    }
+                }
+
+                ShuffleOccupiedCareerReferences(candidates);
+                return candidates;
+            }
+        }
+
         public CareerSlot GetOrCreateCareer(int index, bool markOccupied)
         {
             return _careerStore != null ? _careerStore.GetOrCreateCareer(GetOrCreateIdentityHash(), index, markOccupied) : null;
@@ -509,6 +573,24 @@ namespace Shadowrun.LocalService.Core.Persistence
         public bool ApplyCouponItemPackageToAllCareers(string identityHash, string packageTechnicalName)
         {
             return _couponService != null && _couponService.ApplyCouponItemPackageToAllCareers(identityHash, packageTechnicalName);
+        }
+
+        private static void ShuffleOccupiedCareerReferences(List<OccupiedCareerReference> values)
+        {
+            if (values == null || values.Count < 2)
+            {
+                return;
+            }
+
+            var seed = unchecked(Environment.TickCount * 397) ^ Guid.NewGuid().GetHashCode();
+            var random = new Random(seed);
+            for (var i = values.Count - 1; i > 0; i--)
+            {
+                var swapIndex = random.Next(i + 1);
+                var tmp = values[i];
+                values[i] = values[swapIndex];
+                values[swapIndex] = tmp;
+            }
         }
 
         private bool ApplyCouponItemPackagesToCareerNoLock(string identityHash, CareerSlot slot)
@@ -556,6 +638,13 @@ namespace Shadowrun.LocalService.Core.Persistence
         public Dictionary<string, string> Added { get; private set; }
         public Dictionary<string, string> Updated { get; private set; }
         public List<string> Deleted { get; private set; }
+    }
+
+    public sealed class OccupiedCareerReference
+    {
+        public string IdentityHash;
+        public int CareerIndex;
+        public CareerSlot Slot;
     }
 
     public sealed class CareerSlot
@@ -1049,6 +1138,24 @@ namespace Shadowrun.LocalService.Core.Persistence
                 slot.AppliedCouponItemPackages = new List<string>();
             }
             return slot;
+        }
+
+        private static void ShuffleOccupiedCareerReferences(List<OccupiedCareerReference> values)
+        {
+            if (values == null || values.Count < 2)
+            {
+                return;
+            }
+
+            var seed = unchecked(Environment.TickCount * 397) ^ Guid.NewGuid().GetHashCode();
+            var random = new Random(seed);
+            for (var i = values.Count - 1; i > 0; i--)
+            {
+                var swapIndex = random.Next(i + 1);
+                var tmp = values[i];
+                values[i] = values[swapIndex];
+                values[swapIndex] = tmp;
+            }
         }
 
         private static bool IsNullOrWhiteSpace(string value)

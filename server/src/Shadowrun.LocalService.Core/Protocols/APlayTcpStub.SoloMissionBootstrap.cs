@@ -24,9 +24,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             try
             {
-                SerializeDefaultHenchmanCollection();
-
-                var snapshots = CachedHenchmanCollectionSnapshots;
+                var snapshots = GetSnapshotsForSelectionCollection(parsedSelections);
                 if (snapshots == null || snapshots.Count == 0)
                 {
                     return null;
@@ -81,7 +79,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     mapName = mapName,
                     henchSelectionCount = parsedSelections.Count,
                     henchResolvedCount = selectedHenchmen != null ? selectedHenchmen.Length : 0,
-                    henchCollectionCreationIndex = CachedHenchmanCollectionCreationIndex,
+                    henchCollectionCreationIndex = parsedSelections.Count > 0 ? parsedSelections[0].CollectionCreationIndex : CachedHenchmanCollectionCreationIndex,
                     henchSelectionCreationIndex = parsedSelections.Count > 0 ? (int?)parsedSelections[0].CollectionCreationIndex : null,
                 });
 

@@ -445,8 +445,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                             && parsedSelections != null
                             && parsedSelections.Count > 0)
                         {
-                            SerializeDefaultHenchmanCollection();
-                            var snapshots = CachedHenchmanCollectionSnapshots;
+                            var snapshots = GetSnapshotsForSelectionCollection(parsedSelections);
                             if (snapshots != null && snapshots.Count > 0)
                             {
                                 var ownerKarma = slots[i] != null ? slots[i].Karma : 0;
