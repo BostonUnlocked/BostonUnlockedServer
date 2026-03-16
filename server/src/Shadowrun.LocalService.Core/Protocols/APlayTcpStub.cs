@@ -977,6 +977,15 @@ namespace Shadowrun.LocalService.Core.Protocols
                     long metaStartSingleplayerMissionSeen = 0;
                     long metaRequestHubSeen = 0;
                     long postCreateArmGeneration = 0;
+                    long creationInfoSignalGeneration = 0;
+                    long creationInfoSatisfiedGeneration = 0;
+                    long pendingPostCreateStoryprogressGeneration = 0;
+                    ulong pendingPostCreateStoryprogressAfterMsgNo = 0;
+                    long pendingPostCreateBaselineSend = 0;
+                    long pendingPostCreateBaselineSetState = 0;
+                    long pendingPostCreateBaselineStart = 0;
+                    Timer postCreateWatchdogTimer = null;
+                    var postCreateWatchdogSync = new object();
 
                     // Per-connection identity resolved from RequestToLogin(sessionHash, deviceModel, loginMethod).
                     // Enforced: no fallback to a global/default identity.
@@ -990,6 +999,12 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                     Action<string> cancelHubReadyFallback = null;
                     Action<string, string, string> armHubReadyFallback = null;
+                    Action<string> armCreationInfoTracking = null;
+                    Action<string> markCreationInfoSatisfied = null;
+                    Action disposePostCreateWatchdog = null;
+                    Action<string> cancelPostCreateWatchdog = null;
+                    Action<long, long, long, long> armPostCreateWatchdog = null;
+                    Action<ulong, string> flushPendingPostCreateStoryprogress = null;
 
                     cancelHubReadyFallback = delegate (string reason)
                     {
@@ -999,6 +1014,194 @@ namespace Shadowrun.LocalService.Core.Protocols
                     armHubReadyFallback = delegate (string hubId, string characterId, string reason)
                     {
                         ArmHubReadyFallback(hubReadyFallbackState, stopEvent, connectionClosed, peer, hubId, characterId, reason);
+                    };
+
+                    armCreationInfoTracking = delegate (string reason)
+                    {
+                        var generation = Interlocked.Increment(ref creationInfoSignalGeneration);
+                        Interlocked.Exchange(ref creationInfoSatisfiedGeneration, 0);
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "creation-info-tracking",
+                            peer = peer,
+                            status = "armed",
+                            reason = reason ?? string.Empty,
+                            generation = generation,
+                        });
+                    };
+
+                    markCreationInfoSatisfied = delegate (string reason)
+                    {
+                        var generation = Interlocked.Read(ref creationInfoSignalGeneration);
+                        if (generation == 0)
+                        {
+                            return;
+                        }
+
+                        if (Interlocked.Exchange(ref creationInfoSatisfiedGeneration, generation) == generation)
+                        {
+                            return;
+                        }
+
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "creation-info-tracking",
+                            peer = peer,
+                            status = "satisfied",
+                            reason = reason ?? string.Empty,
+                            generation = generation,
+                        });
+                    };
+
+                    disposePostCreateWatchdog = delegate
+                    {
+                        Timer timerToDispose = null;
+                        lock (postCreateWatchdogSync)
+                        {
+                            timerToDispose = postCreateWatchdogTimer;
+                            postCreateWatchdogTimer = null;
+                        }
+
+                        if (timerToDispose != null)
+                        {
+                            try
+                            {
+                                timerToDispose.Dispose();
+                            }
+                            catch
+                            {
+                            }
+                        }
+                    };
+
+                    cancelPostCreateWatchdog = delegate (string reason)
+                    {
+                        Interlocked.Increment(ref postCreateArmGeneration);
+                        disposePostCreateWatchdog();
+                    };
+
+                    armPostCreateWatchdog = delegate (long arm, long baselineSend, long baselineSetState, long baselineStart)
+                    {
+                        disposePostCreateWatchdog();
+
+                        Timer timer = null;
+                        timer = new Timer(delegate(object _)
+                        {
+                            try
+                            {
+                                if (stopEvent.WaitOne(0) || connectionClosed.WaitOne(0))
+                                {
+                                    return;
+                                }
+
+                                if (Interlocked.Read(ref postCreateArmGeneration) != arm)
+                                {
+                                    return;
+                                }
+
+                                var sendNow = Interlocked.Read(ref metaSendMessageSeen);
+                                var setNow = Interlocked.Read(ref metaSetStoryMissionStateSeen);
+                                var startNow = Interlocked.Read(ref metaStartSingleplayerMissionSeen);
+                                if (sendNow <= baselineSend && setNow <= baselineSetState && startNow <= baselineStart)
+                                {
+                                    _logger.Log(new
+                                    {
+                                        ts = RequestLogger.UtcNowIso(),
+                                        type = "post-create-watchdog",
+                                        peer = peer,
+                                        note = "No MetaGameplay SendMessage observed after career creation commit; intro/mandatory-mission flow likely not triggered.",
+                                        sendMessages = sendNow,
+                                        setStoryMissionState = setNow,
+                                        startSingleplayerMission = startNow,
+                                    });
+                                }
+                            }
+                            finally
+                            {
+                                lock (postCreateWatchdogSync)
+                                {
+                                    if (object.ReferenceEquals(postCreateWatchdogTimer, timer))
+                                    {
+                                        postCreateWatchdogTimer = null;
+                                    }
+                                }
+
+                                if (timer != null)
+                                {
+                                    try
+                                    {
+                                        timer.Dispose();
+                                    }
+                                    catch
+                                    {
+                                    }
+                                }
+                            }
+                        }, null, 10000, Timeout.Infinite);
+
+                        lock (postCreateWatchdogSync)
+                        {
+                            postCreateWatchdogTimer = timer;
+                        }
+                    };
+
+                    flushPendingPostCreateStoryprogress = delegate (ulong triggerMsgNo, string reason)
+                    {
+                        var generation = pendingPostCreateStoryprogressGeneration;
+                        if (generation == 0)
+                        {
+                            return;
+                        }
+
+                        if (triggerMsgNo <= pendingPostCreateStoryprogressAfterMsgNo)
+                        {
+                            return;
+                        }
+
+                        pendingPostCreateStoryprogressGeneration = 0;
+
+                        try
+                        {
+                            var postCreateMsgNoBase = triggerMsgNo + 40UL;
+
+                            var chapterChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.ChapterChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"NewChapterIndex\":0}";
+                            var chapterPayload = BuildUtf16StringPayload(chapterChangeJson);
+                            var chapterCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, chapterPayload), postCreateMsgNoBase + 1);
+                            SendRawFrame(stream, peer, PrefixLength(chapterCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (ChapterChange 0) after career creation metagameplay activation");
+                        }
+                        catch
+                        {
+                        }
+
+                        try
+                        {
+                            var missionChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.MissionStateChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"Mission\":\"1_010_Prologue\",\"NewState\":\"Available\"}";
+                            var missionPayload = BuildUtf16StringPayload(missionChangeJson);
+                            var missionCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, missionPayload), (uint)(triggerMsgNo + 42));
+                            SendRawFrame(stream, peer, PrefixLength(missionCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (MissionStateChange Available) after career creation metagameplay activation");
+                        }
+                        catch
+                        {
+                        }
+
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "post-create-storyprogress",
+                            peer = peer,
+                            status = "flushed",
+                            reason = reason ?? string.Empty,
+                            triggerMsgNo = triggerMsgNo,
+                            generation = generation,
+                        });
+
+                        armPostCreateWatchdog(
+                            generation,
+                            pendingPostCreateBaselineSend,
+                            pendingPostCreateBaselineSetState,
+                            pendingPostCreateBaselineStart);
                     };
 
                     // Track simple story progression locally so DirectStart missions don't loop forever.
@@ -1448,6 +1651,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                     });
 
                                                     armHubReadyFallback(currentParticipantHubId, currentParticipant.CharacterId, "hub-enter-field-2");
+
+                                                    if (TryActivateHubReadiness(peer, currentParticipantHubId, "hub-enter-field-2"))
+                                                    {
+                                                        cancelHubReadyFallback("hub-enter-field-2");
+                                                    }
                                                 }
                                             }
                                         }
@@ -1524,7 +1732,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     completedStoryMissions,
                                     stopEvent,
                                     connectionClosed,
-                                    delegate { return Interlocked.Read(ref metaRequestHubSeen); },
+                                    armCreationInfoTracking,
                                     armHubReadyFallback,
                                     ref sentMetaGameplayIntro,
                                     ref sentHubIntro,
@@ -1672,6 +1880,26 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 RegisterCoopMissionParticipant(coopGroupName, peer, stream, activeIdentityHash, activeIdentityGuid, activeCareerIndex);
                                 UpdateCoopMissionHenchSelections(coopGroupName, activeIdentityGuid, coopParsedSelections);
 
+                                CoopMissionSessionState coopSession;
+                                string coopMissionRejectionReason;
+                                if (!TryGetOrCreateCoopMissionSession(coopGroupName, activeIdentityHash, activeIdentityGuid, activeCareerIndex, mapName, completedStoryMissions, out coopSession, out coopMissionRejectionReason))
+                                {
+                                    var requestMsgNoBaseCancelled = direct.Value.MsgNo + 250;
+                                    EnsureMissionEntitiesIntroduced(
+                                        stream,
+                                        peer,
+                                        requestMsgNoBaseCancelled,
+                                        gameworldEntityId,
+                                        missionInstanceEntityId,
+                                        missionCommandEntityId,
+                                        gameworldCommunicationObjectTypeId,
+                                        missionInstanceCommunicationObjectTypeId,
+                                        missionCommandCommunicationObjectTypeId,
+                                        ref sentMissionEntityIntros);
+                                    SendMissionStartCancelled(stream, peer, requestMsgNoBaseCancelled, "sent MetaGameplayCommunicationObject StartMissionCancelled (coop mission already completed; decision=" + coopMissionRejectionReason + ")");
+                                    continue;
+                                }
+
                                 var requestMsgNoBase = direct.Value.MsgNo + 250;
 
                                 EnsureMissionEntitiesIntroduced(
@@ -1694,7 +1922,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 var memberListRaw = hasPrepareMatchPayload
                                     ? prepareMatchPlayers
                                     : (payloadStrings.Count > 1 ? payloadStrings[1] : null);
+                                UpdateCoopMissionExpectedParticipantCount(coopSession, CountExpectedCoopParticipants(memberListRaw, activeIdentityGuid));
+
                                 var compressedMatchConfiguration = BuildCoopCompressedMatchConfiguration(
+                                    coopSession,
                                     mapName,
                                     coopGroupName,
                                     memberListRaw,
@@ -1708,15 +1939,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 // Coop missions must share one authoritative simulation across all peers.
                                 // If each TCP connection has its own sim, neither side will ever observe the other
                                 // player exhausting actions, so the team never ends and AI turns never start.
-                                CoopMissionSessionState coopSession;
-                                string coopMissionRejectionReason;
-                                if (!TryGetOrCreateCoopMissionSession(coopGroupName, activeIdentityHash, activeIdentityGuid, activeCareerIndex, mapName, completedStoryMissions, out coopSession, out coopMissionRejectionReason))
-                                {
-                                    SendMissionStartCancelled(stream, peer, requestMsgNoBase, "sent MetaGameplayCommunicationObject StartMissionCancelled (coop mission already completed; decision=" + coopMissionRejectionReason + ")");
-                                    continue;
-                                }
-
-                                UpdateCoopMissionExpectedParticipantCount(coopSession, CountExpectedCoopParticipants(memberListRaw, activeIdentityGuid));
 
                                 simulationSessionSync = coopSession.SyncRoot;
                                 simulationSession = AcquireCoopMissionSimulation(
@@ -2077,67 +2299,21 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 var baselineSetState = Interlocked.Read(ref metaSetStoryMissionStateSeen);
                                                 var baselineStart = Interlocked.Read(ref metaStartSingleplayerMissionSeen);
 
-                                                ThreadPool.QueueUserWorkItem(delegate
+                                                pendingPostCreateBaselineSend = baselineSend;
+                                                pendingPostCreateBaselineSetState = baselineSetState;
+                                                pendingPostCreateBaselineStart = baselineStart;
+                                                pendingPostCreateStoryprogressAfterMsgNo = commitMsgNo;
+                                                pendingPostCreateStoryprogressGeneration = arm;
+
+                                                _logger.Log(new
                                                 {
-                                                    // Give the UI a moment to finish swapping screens.
-                                                    SleepWithStop(stopEvent, 1200);
-                                                    if (stopEvent.WaitOne(0) || connectionClosed.WaitOne(0))
-                                                    {
-                                                        return;
-                                                    }
-
-                                                    try
-                                                    {
-                                                        var postCreateMsgNoBase = commitMsgNo + 40;
-
-                                                        var chapterChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.ChapterChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"NewChapterIndex\":0}";
-                                                        var chapterPayload = BuildUtf16StringPayload(chapterChangeJson);
-                                                        var chapterCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, chapterPayload), postCreateMsgNoBase + 1);
-                                                        SendRawFrame(stream, peer, PrefixLength(chapterCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (ChapterChange 0) after career creation commit");
-                                                    }
-                                                    catch
-                                                    {
-                                                    }
-
-                                                    try
-                                                    {
-                                                        var missionChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.MissionStateChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"Mission\":\"1_010_Prologue\",\"NewState\":\"Available\"}";
-                                                        var missionPayload = BuildUtf16StringPayload(missionChangeJson);
-                                                        var missionCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, missionPayload), commitMsgNo + 42);
-                                                        SendRawFrame(stream, peer, PrefixLength(missionCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (MissionStateChange Available) after career creation commit");
-                                                    }
-                                                    catch
-                                                    {
-                                                    }
-
-                                                    // Watchdog: if intro finishes but no mission-start messages are sent, log once.
-                                                    SleepWithStop(stopEvent, 10000);
-                                                    if (stopEvent.WaitOne(0) || connectionClosed.WaitOne(0))
-                                                    {
-                                                        return;
-                                                    }
-
-                                                    if (Interlocked.Read(ref postCreateArmGeneration) != arm)
-                                                    {
-                                                        return;
-                                                    }
-
-                                                    var sendNow = Interlocked.Read(ref metaSendMessageSeen);
-                                                    var setNow = Interlocked.Read(ref metaSetStoryMissionStateSeen);
-                                                    var startNow = Interlocked.Read(ref metaStartSingleplayerMissionSeen);
-                                                    if (sendNow <= baselineSend && setNow <= baselineSetState && startNow <= baselineStart)
-                                                    {
-                                                        _logger.Log(new
-                                                        {
-                                                            ts = RequestLogger.UtcNowIso(),
-                                                            type = "post-create-watchdog",
-                                                            peer = peer,
-                                                            note = "No MetaGameplay SendMessage observed after career creation commit; intro/mandatory-mission flow likely not triggered.",
-                                                            sendMessages = sendNow,
-                                                            setStoryMissionState = setNow,
-                                                            startSingleplayerMission = startNow,
-                                                        });
-                                                    }
+                                                    ts = RequestLogger.UtcNowIso(),
+                                                    type = "post-create-storyprogress",
+                                                    peer = peer,
+                                                    status = "armed",
+                                                    reason = "career-creation-commit",
+                                                    afterMsgNo = commitMsgNo,
+                                                    generation = arm,
                                                 });
                                             }
                                         }
@@ -2202,6 +2378,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     routedHubSource = "current-peer";
                                 }
 
+                                string requestStoryHubReadyHubId = null;
+                                string requestStoryHubReadyCharacterId = null;
                                 if (!IsNullOrWhiteSpace(routedHubId))
                                 {
                                     HubPresenceRegistry.Participant previousParticipant;
@@ -2277,6 +2455,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
                                         }
 
+                                        requestStoryHubReadyHubId = currentParticipantHubId;
+                                        requestStoryHubReadyCharacterId = currentParticipant.CharacterId;
                                         armHubReadyFallback(currentParticipantHubId, currentParticipant.CharacterId, "request-story-hub-for");
 
                                     }
@@ -2341,16 +2521,26 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     }
                                 }
 
+                                if (!IsNullOrWhiteSpace(requestStoryHubReadyHubId)
+                                    && !IsNullOrWhiteSpace(requestStoryHubReadyCharacterId)
+                                    && TryActivateHubReadiness(peer, requestStoryHubReadyHubId, "request-story-hub-for"))
+                                {
+                                    cancelHubReadyFallback("request-story-hub-for");
+                                }
+
                             }
 
                             if (isMetaGameplayMessage)
                             {
+                                flushPendingPostCreateStoryprogress(direct.Value.MsgNo, "metagameplay-message");
+
                                 var rawMessage = payloadStrings[0];
 
                                 // Diagnostics: decode MetaGameplayCommunicationObject.SendMessage(...) payloads.
                                 if (isMetaGameplayWrappedMessage && rawMessage != null)
                                 {
                                     Interlocked.Increment(ref metaSendMessageSeen);
+                                    cancelPostCreateWatchdog("metagameplay-sendmessage");
 
                                     string messageType = null;
                                     try
@@ -2391,14 +2581,17 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     if (rawMessage.IndexOf("SetStoryMissionStateMessage", StringComparison.Ordinal) >= 0)
                                     {
                                         Interlocked.Increment(ref metaSetStoryMissionStateSeen);
+                                        markCreationInfoSatisfied("set-story-mission-state");
                                     }
                                     if (rawMessage.IndexOf("StartSingleplayerMissionMessage", StringComparison.Ordinal) >= 0)
                                     {
                                         Interlocked.Increment(ref metaStartSingleplayerMissionSeen);
+                                        markCreationInfoSatisfied("start-singleplayer-mission");
                                     }
                                     if (rawMessage.IndexOf("RequestCurrentStorylineHubMessage", StringComparison.Ordinal) >= 0)
                                     {
                                         Interlocked.Increment(ref metaRequestHubSeen);
+                                        markCreationInfoSatisfied("request-current-storyline-hub");
                                     }
                                 }
 
@@ -2410,6 +2603,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     && rawMessage.IndexOf("RequestCurrentStorylineHubMessage", StringComparison.Ordinal) >= 0
                                     && cachedHubStatePayload != null)
                                 {
+                                    string requestCurrentStorylineHubReadyHubId = null;
+                                    string requestCurrentStorylineHubReadyCharacterId = null;
                                     if (!IsNullOrWhiteSpace(currentHubInstanceId))
                                     {
                                         HubPresenceRegistry.Participant previousParticipant;
@@ -2527,6 +2722,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
                                             }
 
+                                            requestCurrentStorylineHubReadyHubId = currentParticipantHubId;
+                                            requestCurrentStorylineHubReadyCharacterId = currentParticipant.CharacterId;
                                             armHubReadyFallback(currentParticipantHubId, currentParticipant.CharacterId, "request-current-storyline-hub");
 
                                         }
@@ -2565,6 +2762,13 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             var creationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 38, cachedCreationInfoPayload), requestMsgNoBase + 2);
                                             SendRawFrame(stream, peer, PrefixLength(creationInfoCore), "sent MetaGameplayCommunicationObject CreationInfoChanged in response to RequestCurrentStorylineHubMessage");
                                         }
+                                    }
+
+                                    if (!IsNullOrWhiteSpace(requestCurrentStorylineHubReadyHubId)
+                                        && !IsNullOrWhiteSpace(requestCurrentStorylineHubReadyCharacterId)
+                                        && TryActivateHubReadiness(peer, requestCurrentStorylineHubReadyHubId, "request-current-storyline-hub"))
+                                    {
+                                        cancelHubReadyFallback("request-current-storyline-hub");
                                     }
 
                                 }
@@ -2894,6 +3098,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                             }
 
                             cancelHubReadyFallback("socket-closed");
+                            cancelPostCreateWatchdog("socket-closed");
                             connectionClosed.Set();
                             HubPresenceRegistry.Participant disconnectedParticipant;
                             _hubPresenceRegistry.TryGetParticipantForPeer(peer, out disconnectedParticipant);
@@ -2920,6 +3125,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     }
 
                     cancelHubReadyFallback("connection-teardown");
+                    cancelPostCreateWatchdog("connection-teardown");
                     HubPresenceRegistry.Participant teardownParticipant;
                     _hubPresenceRegistry.TryGetParticipantForPeer(peer, out teardownParticipant);
                     if (currentHubInstance != null && teardownParticipant != null && !IsNullOrWhiteSpace(teardownParticipant.CharacterId))

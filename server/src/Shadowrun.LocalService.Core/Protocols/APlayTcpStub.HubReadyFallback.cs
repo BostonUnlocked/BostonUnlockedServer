@@ -103,10 +103,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                     return;
                 }
 
-                var activated = TryActivateHubReadiness(peer, pendingHubId, "fallback-delay");
-                var total = activated
-                    ? Interlocked.Increment(ref _hubReadyFallbackTriggeredTotal)
-                    : Interlocked.Increment(ref _hubReadyFallbackSkippedTotal);
+                var readyResolved = IsHubPeerReady(peer, pendingHubId);
+                var total = readyResolved
+                    ? Interlocked.Increment(ref _hubReadyFallbackSkippedTotal)
+                    : Interlocked.Increment(ref _hubReadyFallbackTriggeredTotal);
 
                 lock (state.SyncRoot)
                 {
@@ -123,8 +123,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                     ts = RequestLogger.UtcNowIso(),
                     type = "hub-ready-fallback",
                     peer = peer,
-                    status = activated ? "triggered" : "skipped",
-                    reason = "fallback-delay",
+                    status = readyResolved ? "resolved" : "timeout",
+                    reason = readyResolved ? "request-driven-ready" : "request-driven-missing",
                     hubId = pendingHubId,
                     characterId = pendingCharacterId,
                     total = total,

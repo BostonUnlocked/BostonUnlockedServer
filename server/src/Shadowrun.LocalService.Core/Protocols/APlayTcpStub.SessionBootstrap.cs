@@ -166,7 +166,6 @@ namespace Shadowrun.LocalService.Core.Protocols
             string rejectReason;
             var mappedIdentityHash = ResolveIdentityForSessionHash(requestedSessionHash, out mappedIdentityGuid, out rejectReason);
 
-            SleepWithStop(stopEvent, 250);
             EnsureAccountEntityIntroduced(stream, peer, serverMsgNoBase, ref sentAccountIntro);
 
             var gameClientOwnerCore = BuildCoreDirectSystem(1, BuildApSharedEntitySetOwner(gameClientEntityId, GameClientConnectionTypeId), serverMsgNoBase + 2);
@@ -218,7 +217,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             HashSet<string> completedStoryMissions,
             ManualResetEvent stopEvent,
             ManualResetEvent connectionClosed,
-            Func<long> getMetaRequestHubSeen,
+            Action<string> armCreationInfoTracking,
             Action<string, string, string> armHubReadyFallback,
             ref bool sentMetaGameplayIntro,
             ref bool sentHubIntro,
@@ -352,52 +351,21 @@ namespace Shadowrun.LocalService.Core.Protocols
                 0f,
                 "career-enter-bootstrap");
 
-            armHubReadyFallback(currentHubInstanceId, characterIdentifier, "career-enter-bootstrap");
-
             var creationInfoJson = "{\"PendingPersistenceCreation\":" + (pendingCreation ? "true" : "false") + ",\"DataVersionChanged\":false}";
             var creationInfoPayload = BuildUtf16StringPayload(creationInfoJson);
             cachedCreationInfoPayload = creationInfoPayload;
             var creationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 38, creationInfoPayload), serverMsgNoBase + 9);
+            var sentCreationInfo = false;
             if (!ShouldSuppressDuplicateHubPush(peer, true, creationInfoPayload))
             {
                 SendRawFrame(stream, peer, PrefixLength(creationInfoCore), "sent MetaGameplayCommunicationObject CreationInfoChanged");
+                sentCreationInfo = true;
             }
 
-            ThreadPool.QueueUserWorkItem(delegate
+            if (sentCreationInfo && armCreationInfoTracking != null)
             {
-                for (var resendAttempt = 1; resendAttempt <= 3; resendAttempt++)
-                {
-                    if (stopEvent.WaitOne(0) || connectionClosed.WaitOne(0))
-                    {
-                        break;
-                    }
-
-                    SleepWithStop(stopEvent, 2000);
-                    if (stopEvent.WaitOne(0) || connectionClosed.WaitOne(0))
-                    {
-                        break;
-                    }
-
-                    if (getMetaRequestHubSeen() > 0)
-                    {
-                        break;
-                    }
-
-                    try
-                    {
-                        var delayedMsgNo = serverMsgNoBase + 9UL + (ulong)(resendAttempt * 2);
-                        var delayedCreationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 38, creationInfoPayload), delayedMsgNo);
-                        if (!ShouldSuppressDuplicateHubPush(peer, true, creationInfoPayload))
-                        {
-                            SendRawFrame(stream, peer, PrefixLength(delayedCreationInfoCore), "resent MetaGameplayCommunicationObject CreationInfoChanged (delayed attempt " + resendAttempt + ")");
-                        }
-                    }
-                    catch
-                    {
-                        break;
-                    }
-                }
-            });
+                armCreationInfoTracking("career-enter-bootstrap");
+            }
 
             sentEnterCareerUpdate = true;
             return false;

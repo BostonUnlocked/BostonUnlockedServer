@@ -20,6 +20,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                 CreatedUtc = DateTime.UtcNow;
                 LootAppliedToParticipants = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
                 ReadyPeers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                SelectionReportedIdentities = new HashSet<Guid>();
+                ExpectedSelectionIdentities = new HashSet<Guid>();
+                SelectionUpdatedEvent = new ManualResetEvent(false);
             }
 
             public readonly string CoopGroupName;
@@ -35,6 +38,10 @@ namespace Shadowrun.LocalService.Core.Protocols
             public ServerSimulationSession Simulation;
             public Dictionary<string, bool> LootAppliedToParticipants;
             public HashSet<string> ReadyPeers;
+            public HashSet<Guid> SelectionReportedIdentities;
+            public HashSet<Guid> ExpectedSelectionIdentities;
+            public ManualResetEvent SelectionUpdatedEvent;
+            public int SelectionUpdateVersion;
             public int ExpectedParticipantCount;
             public bool StartMissionForClientsSent;
         }
@@ -43,6 +50,117 @@ namespace Shadowrun.LocalService.Core.Protocols
         private readonly Dictionary<string, List<CoopMissionParticipant>> _coopMissionParticipants = new Dictionary<string, List<CoopMissionParticipant>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, CoopMissionSessionState> _coopMissionSessions = new Dictionary<string, CoopMissionSessionState>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Dictionary<Guid, List<ParsedHenchmanSelection>>> _coopMissionHenchSelections = new Dictionary<string, Dictionary<Guid, List<ParsedHenchmanSelection>>>(StringComparer.OrdinalIgnoreCase);
+
+        private static Guid[] NormalizeCoopMissionMemberGuids(string memberListRaw, Guid activeIdentityGuid)
+        {
+            var memberGuids = ParseGuidsFromLooseText(memberListRaw, 8);
+            if (memberGuids == null || memberGuids.Length == 0)
+            {
+                memberGuids = new[] { activeIdentityGuid };
+            }
+
+            if (!ContainsGuid(memberGuids, activeIdentityGuid))
+            {
+                var extended = new Guid[memberGuids.Length + 1];
+                Array.Copy(memberGuids, 0, extended, 0, memberGuids.Length);
+                extended[extended.Length - 1] = activeIdentityGuid;
+                memberGuids = extended;
+            }
+
+            const int maxHumans = 4;
+            if (memberGuids.Length > maxHumans)
+            {
+                var truncated = new Guid[maxHumans];
+                Array.Copy(memberGuids, 0, truncated, 0, maxHumans);
+                memberGuids = truncated;
+            }
+
+            return memberGuids;
+        }
+
+        private static int GetCoopMissionSelectionUpdateVersion(CoopMissionSessionState coopSession)
+        {
+            if (coopSession == null)
+            {
+                return 0;
+            }
+
+            lock (coopSession.SyncRoot)
+            {
+                return coopSession.SelectionUpdateVersion;
+            }
+        }
+
+        private static Guid[] SnapshotExpectedCoopMissionSelectionIdentities(CoopMissionSessionState coopSession, Guid[] fallbackIdentityGuids)
+        {
+            if (coopSession == null)
+            {
+                return fallbackIdentityGuids;
+            }
+
+            lock (coopSession.SyncRoot)
+            {
+                if (coopSession.ExpectedSelectionIdentities == null || coopSession.ExpectedSelectionIdentities.Count == 0)
+                {
+                    return fallbackIdentityGuids;
+                }
+
+                var snapshot = new Guid[coopSession.ExpectedSelectionIdentities.Count];
+                coopSession.ExpectedSelectionIdentities.CopyTo(snapshot);
+                return snapshot;
+            }
+        }
+
+        private void SignalCoopMissionSelectionUpdate(CoopMissionSessionState coopSession)
+        {
+            if (coopSession == null)
+            {
+                return;
+            }
+
+            lock (coopSession.SyncRoot)
+            {
+                coopSession.SelectionUpdateVersion++;
+                if (coopSession.SelectionUpdatedEvent != null)
+                {
+                    coopSession.SelectionUpdatedEvent.Set();
+                }
+            }
+        }
+
+        private void UpdateCoopMissionExpectedSelectionIdentities(CoopMissionSessionState coopSession, Guid[] identityGuids)
+        {
+            if (coopSession == null)
+            {
+                return;
+            }
+
+            lock (coopSession.SyncRoot)
+            {
+                if (coopSession.ExpectedSelectionIdentities == null)
+                {
+                    coopSession.ExpectedSelectionIdentities = new HashSet<Guid>();
+                }
+                else
+                {
+                    coopSession.ExpectedSelectionIdentities.Clear();
+                }
+
+                if (identityGuids != null)
+                {
+                    for (var i = 0; i < identityGuids.Length; i++)
+                    {
+                        coopSession.ExpectedSelectionIdentities.Add(identityGuids[i]);
+                    }
+                }
+
+                coopSession.SelectionUpdateVersion++;
+                if (coopSession.SelectionUpdatedEvent != null)
+                {
+                    coopSession.SelectionUpdatedEvent.Set();
+                }
+            }
+        }
 
         private static List<ParsedHenchmanSelection> ParseCoopMissionSelections(bool hasPrepareMatchPayload, string prepareMatchSelectedHenchmen, out string selectedHenchmanParseSource)
         {
@@ -56,9 +174,11 @@ namespace Shadowrun.LocalService.Core.Protocols
             if (coopParsedSelections != null && coopParsedSelections.Count > 0)
             {
                 selectedHenchmanParseSource = "preparematch-selected";
+                return coopParsedSelections;
             }
 
-            return coopParsedSelections;
+            selectedHenchmanParseSource = "preparematch-empty";
+            return coopParsedSelections ?? new List<ParsedHenchmanSelection>();
         }
 
         private static string ResolveCoopMissionMapName(bool hasPrepareMatchPayload, string prepareMatchMapName, List<string> payloadStrings, string coopGroupName)
@@ -101,7 +221,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     _coopMissionHenchSelections[coopGroupName] = byIdentity;
                 }
 
-                if (coopParsedSelections != null && coopParsedSelections.Count > 0)
+                if (coopParsedSelections != null)
                 {
                     byIdentity[activeIdentityGuid] = new List<ParsedHenchmanSelection>(coopParsedSelections);
                 }
@@ -109,7 +229,52 @@ namespace Shadowrun.LocalService.Core.Protocols
                 {
                     byIdentity.Remove(activeIdentityGuid);
                 }
+
+                CoopMissionSessionState session;
+                if (_coopMissionSessions.TryGetValue(coopGroupName, out session) && session != null)
+                {
+                    lock (session.SyncRoot)
+                    {
+                        if (session.SelectionReportedIdentities == null)
+                        {
+                            session.SelectionReportedIdentities = new HashSet<Guid>();
+                        }
+
+                        if (coopParsedSelections != null)
+                        {
+                            session.SelectionReportedIdentities.Add(activeIdentityGuid);
+                        }
+                        else
+                        {
+                            session.SelectionReportedIdentities.Remove(activeIdentityGuid);
+                        }
+                    }
+
+                    SignalCoopMissionSelectionUpdate(session);
+                }
             }
+        }
+
+        private static int CountMissingCoopMissionSelections(Dictionary<Guid, List<ParsedHenchmanSelection>> coopSelectionsByIdentity, Guid[] identityGuids)
+        {
+            if (identityGuids == null || identityGuids.Length == 0)
+            {
+                return 0;
+            }
+
+            var missingCount = 0;
+            for (var i = 0; i < identityGuids.Length; i++)
+            {
+                List<ParsedHenchmanSelection> parsed;
+                if (coopSelectionsByIdentity == null
+                    || !coopSelectionsByIdentity.TryGetValue(identityGuids[i], out parsed)
+                    || parsed == null)
+                {
+                    missingCount++;
+                }
+            }
+
+            return missingCount;
         }
 
         private Dictionary<Guid, List<ParsedHenchmanSelection>> SnapshotCoopMissionHenchSelections(string coopGroupName)
@@ -134,42 +299,57 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
-        private Dictionary<Guid, List<ParsedHenchmanSelection>> WaitForCoopMissionHenchSelections(string coopGroupName, Guid[] identityGuids, ManualResetEvent stopEvent)
+        private Dictionary<Guid, List<ParsedHenchmanSelection>> WaitForCoopMissionHenchSelections(CoopMissionSessionState coopSession, string coopGroupName, Guid[] identityGuids, ManualResetEvent stopEvent)
         {
             var coopSelectionsByIdentity = SnapshotCoopMissionHenchSelections(coopGroupName);
-            var waitUntilUtc = DateTime.UtcNow.AddMilliseconds(1200);
-            while (DateTime.UtcNow < waitUntilUtc)
+            var expectedIdentityGuids = SnapshotExpectedCoopMissionSelectionIdentities(coopSession, identityGuids);
+            var observedUpdateVersion = GetCoopMissionSelectionUpdateVersion(coopSession);
+            while (CountMissingCoopMissionSelections(coopSelectionsByIdentity, expectedIdentityGuids) > 0)
             {
-                var allHaveSelection = true;
-                for (var i = 0; i < identityGuids.Length; i++)
-                {
-                    if (coopSelectionsByIdentity == null)
-                    {
-                        allHaveSelection = false;
-                        break;
-                    }
-
-                    List<ParsedHenchmanSelection> parsed;
-                    if (!coopSelectionsByIdentity.TryGetValue(identityGuids[i], out parsed) || parsed == null || parsed.Count == 0)
-                    {
-                        allHaveSelection = false;
-                        break;
-                    }
-                }
-
-                if (allHaveSelection)
+                if (coopSession == null || coopSession.SelectionUpdatedEvent == null)
                 {
                     break;
                 }
 
-                SleepWithStop(stopEvent, 50);
+                if (stopEvent.WaitOne(0))
+                {
+                    break;
+                }
+
+                var shouldWait = true;
+                lock (coopSession.SyncRoot)
+                {
+                    if (coopSession.SelectionUpdateVersion != observedUpdateVersion)
+                    {
+                        observedUpdateVersion = coopSession.SelectionUpdateVersion;
+                        shouldWait = false;
+                    }
+                    else
+                    {
+                        coopSession.SelectionUpdatedEvent.Reset();
+                    }
+                }
+
+                if (shouldWait)
+                {
+                    var waitIndex = WaitHandle.WaitAny(new WaitHandle[] { stopEvent, coopSession.SelectionUpdatedEvent }, Timeout.Infinite);
+                    if (waitIndex == 0)
+                    {
+                        break;
+                    }
+
+                    observedUpdateVersion = GetCoopMissionSelectionUpdateVersion(coopSession);
+                }
+
                 coopSelectionsByIdentity = SnapshotCoopMissionHenchSelections(coopGroupName);
+                expectedIdentityGuids = SnapshotExpectedCoopMissionSelectionIdentities(coopSession, identityGuids);
             }
 
             return coopSelectionsByIdentity;
         }
 
         private string BuildCoopCompressedMatchConfiguration(
+            CoopMissionSessionState coopSession,
             string mapName,
             string coopGroupName,
             string memberListRaw,
@@ -188,26 +368,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             try
             {
-                var memberGuids = ParseGuidsFromLooseText(memberListRaw, 8);
-                if (memberGuids == null || memberGuids.Length == 0)
-                {
-                    memberGuids = new Guid[] { activeIdentityGuid };
-                }
-                if (!ContainsGuid(memberGuids, activeIdentityGuid))
-                {
-                    var extended = new Guid[memberGuids.Length + 1];
-                    Array.Copy(memberGuids, 0, extended, 0, memberGuids.Length);
-                    extended[extended.Length - 1] = activeIdentityGuid;
-                    memberGuids = extended;
-                }
-
-                const int maxHumans = 4;
-                if (memberGuids.Length > maxHumans)
-                {
-                    var truncated = new Guid[maxHumans];
-                    Array.Copy(memberGuids, 0, truncated, 0, maxHumans);
-                    memberGuids = truncated;
-                }
+                var memberGuids = NormalizeCoopMissionMemberGuids(memberListRaw, activeIdentityGuid);
 
                 if (memberGuids.Length >= 2)
                 {
@@ -220,12 +381,13 @@ namespace Shadowrun.LocalService.Core.Protocols
                     }
 
                     var identityGuids = memberGuids;
+                    UpdateCoopMissionExpectedSelectionIdentities(coopSession, identityGuids);
                     var careerIndices = new int[identityGuids.Length];
                     var slots = new CareerSlot[identityGuids.Length];
                     var playerIds = new ulong[identityGuids.Length];
                     var selectedHenchmenPerPlayer = new PlayerCharacterSnapshot[identityGuids.Length][];
 
-                    var coopSelectionsByIdentity = WaitForCoopMissionHenchSelections(coopGroupName, identityGuids, stopEvent);
+                    var coopSelectionsByIdentity = WaitForCoopMissionHenchSelections(coopSession, coopGroupName, identityGuids, stopEvent);
 
                     for (var i = 0; i < identityGuids.Length; i++)
                     {
@@ -412,28 +574,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         private static int CountExpectedCoopParticipants(string memberListRaw, Guid activeIdentityGuid)
         {
-            var memberGuids = ParseGuidsFromLooseText(memberListRaw, 8);
-            if (memberGuids == null || memberGuids.Length == 0)
-            {
-                memberGuids = new[] { activeIdentityGuid };
-            }
-
-            if (!ContainsGuid(memberGuids, activeIdentityGuid))
-            {
-                var extended = new Guid[memberGuids.Length + 1];
-                Array.Copy(memberGuids, 0, extended, 0, memberGuids.Length);
-                extended[extended.Length - 1] = activeIdentityGuid;
-                memberGuids = extended;
-            }
-
-            const int maxHumans = 4;
-            if (memberGuids.Length > maxHumans)
-            {
-                var truncated = new Guid[maxHumans];
-                Array.Copy(memberGuids, 0, truncated, 0, maxHumans);
-                memberGuids = truncated;
-            }
-
+            var memberGuids = NormalizeCoopMissionMemberGuids(memberListRaw, activeIdentityGuid);
             return memberGuids.Length > 0 ? memberGuids.Length : 1;
         }
 
@@ -530,6 +671,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                         coopSession.ReadyPeers.Clear();
                     }
+                    if (coopSession.SelectionReportedIdentities != null)
+                    {
+                        coopSession.SelectionReportedIdentities.Clear();
+                    }
+                    if (coopSession.ExpectedSelectionIdentities != null)
+                    {
+                        coopSession.ExpectedSelectionIdentities.Clear();
+                    }
                     coopSession.StartMissionForClientsSent = false;
 
                     coopSession.Simulation = ServerSimulationSession.Create(
@@ -612,6 +761,12 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
 
                 list.Add(new CoopMissionParticipant(peer, stream, identityHash, identityGuid, careerIndex));
+
+                CoopMissionSessionState sessionToSignal;
+                if (_coopMissionSessions.TryGetValue(coopGroupName, out sessionToSignal) && sessionToSignal != null && sessionToSignal.SelectionUpdatedEvent != null)
+                {
+                    sessionToSignal.SelectionUpdatedEvent.Set();
+                }
             }
 
             MissionRuntimeRegistry.MarkCoopMissionParticipantJoined(coopGroupName, peer);
@@ -666,8 +821,36 @@ namespace Shadowrun.LocalService.Core.Protocols
                 {
                     if (list[i] == null || string.Equals(list[i].Peer, peer, StringComparison.OrdinalIgnoreCase))
                     {
+                        var departingIdentityGuid = list[i] != null ? list[i].IdentityGuid : Guid.Empty;
+
+                        Dictionary<Guid, List<ParsedHenchmanSelection>> byIdentity;
+                        if (_coopMissionHenchSelections.TryGetValue(coopGroupName, out byIdentity) && byIdentity != null && departingIdentityGuid != Guid.Empty)
+                        {
+                            byIdentity.Remove(departingIdentityGuid);
+                        }
+
+                        if (session != null)
+                        {
+                            lock (session.SyncRoot)
+                            {
+                                if (session.SelectionReportedIdentities != null && departingIdentityGuid != Guid.Empty)
+                                {
+                                    session.SelectionReportedIdentities.Remove(departingIdentityGuid);
+                                }
+                                if (session.ExpectedSelectionIdentities != null && departingIdentityGuid != Guid.Empty)
+                                {
+                                    session.ExpectedSelectionIdentities.Remove(departingIdentityGuid);
+                                }
+                            }
+                        }
+
                         list.RemoveAt(i);
                     }
+                }
+
+                if (session != null)
+                {
+                    SignalCoopMissionSelectionUpdate(session);
                 }
             }
 
@@ -766,6 +949,17 @@ namespace Shadowrun.LocalService.Core.Protocols
                         session.Simulation.Stop();
                         session.Simulation = null;
                     }
+                }
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                if (session.SelectionUpdatedEvent != null)
+                {
+                    session.SelectionUpdatedEvent.Close();
                 }
             }
             catch
