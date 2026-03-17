@@ -582,15 +582,48 @@ namespace Shadowrun.LocalService.Core.Persistence
                 return;
             }
 
-            var seed = unchecked(Environment.TickCount * 397) ^ Guid.NewGuid().GetHashCode();
-            var random = new Random(seed);
-            for (var i = values.Count - 1; i > 0; i--)
-            {
-                var swapIndex = random.Next(i + 1);
-                var tmp = values[i];
-                values[i] = values[swapIndex];
-                values[swapIndex] = tmp;
-            }
+            values.Sort(
+                delegate(OccupiedCareerReference a, OccupiedCareerReference b)
+                {
+                    if (ReferenceEquals(a, b))
+                    {
+                        return 0;
+                    }
+
+                    if (a == null)
+                    {
+                        return 1;
+                    }
+
+                    if (b == null)
+                    {
+                        return -1;
+                    }
+
+                    var identityCompare = string.CompareOrdinal(a.IdentityHash ?? string.Empty, b.IdentityHash ?? string.Empty);
+                    if (identityCompare != 0)
+                    {
+                        return identityCompare;
+                    }
+
+                    var indexCompare = a.CareerIndex.CompareTo(b.CareerIndex);
+                    if (indexCompare != 0)
+                    {
+                        return indexCompare;
+                    }
+
+                    var nameCompare = string.CompareOrdinal(
+                        a.Slot != null ? a.Slot.CharacterName ?? string.Empty : string.Empty,
+                        b.Slot != null ? b.Slot.CharacterName ?? string.Empty : string.Empty);
+                    if (nameCompare != 0)
+                    {
+                        return nameCompare;
+                    }
+
+                    return string.CompareOrdinal(
+                        a.Slot != null ? a.Slot.CharacterIdentifier ?? string.Empty : string.Empty,
+                        b.Slot != null ? b.Slot.CharacterIdentifier ?? string.Empty : string.Empty);
+                });
         }
 
         private bool ApplyCouponItemPackagesToCareerNoLock(string identityHash, CareerSlot slot)

@@ -445,7 +445,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                             && parsedSelections != null
                             && parsedSelections.Count > 0)
                         {
-                            var snapshots = GetSnapshotsForSelectionCollection(parsedSelections);
+                            int requestedCreationIndex;
+                            var snapshots = GetSnapshotsForSelectionCollection(parsedSelections, out requestedCreationIndex);
                             if (snapshots != null && snapshots.Count > 0)
                             {
                                 var ownerKarma = slots[i] != null ? slots[i].Karma : 0;
@@ -453,26 +454,85 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 var ownerNuyen = slots[i] != null ? slots[i].Nuyen : 0;
 
                                 var resolved = new List<PlayerCharacterSnapshot>();
+                                var invalidSelection = false;
                                 for (var si = 0; si < parsedSelections.Count; si++)
                                 {
                                     var selection = parsedSelections[si];
                                     if (selection.HenchmanId < 0 || selection.HenchmanId >= snapshots.Count)
                                     {
-                                        continue;
+                                        invalidSelection = true;
+                                        _logger.Log(new
+                                        {
+                                            ts = RequestLogger.UtcNowIso(),
+                                            type = "coop-henchman-selection-invalid-index",
+                                            coopGroupName = coopGroupName,
+                                            mapName = mapName,
+                                            identityGuid = guid,
+                                            requestedCreationIndex = requestedCreationIndex,
+                                            henchmanId = selection.HenchmanId,
+                                            availableCount = snapshots.Count,
+                                            selectionOrdinal = si,
+                                        });
+                                        break;
                                     }
 
                                     var src = snapshots[selection.HenchmanId];
-                                    var clone = CloneHenchSnapshotForMission(src, guid, si, ownerKarma, ownerSpentKarma, ownerNuyen);
-                                    if (clone != null)
+                                    if (src == null)
                                     {
-                                        resolved.Add(clone);
+                                        invalidSelection = true;
+                                        _logger.Log(new
+                                        {
+                                            ts = RequestLogger.UtcNowIso(),
+                                            type = "coop-henchman-selection-null-snapshot",
+                                            coopGroupName = coopGroupName,
+                                            mapName = mapName,
+                                            identityGuid = guid,
+                                            requestedCreationIndex = requestedCreationIndex,
+                                            henchmanId = selection.HenchmanId,
+                                            selectionOrdinal = si,
+                                        });
+                                        break;
                                     }
+
+                                    var clone = CloneHenchSnapshotForMission(src, guid, si, ownerKarma, ownerSpentKarma, ownerNuyen);
+                                    if (clone == null)
+                                    {
+                                        invalidSelection = true;
+                                        _logger.Log(new
+                                        {
+                                            ts = RequestLogger.UtcNowIso(),
+                                            type = "coop-henchman-selection-clone-failed",
+                                            coopGroupName = coopGroupName,
+                                            mapName = mapName,
+                                            identityGuid = guid,
+                                            requestedCreationIndex = requestedCreationIndex,
+                                            henchmanId = selection.HenchmanId,
+                                            selectionOrdinal = si,
+                                        });
+                                        break;
+                                    }
+
+                                    resolved.Add(clone);
                                 }
 
-                                if (resolved.Count > 0)
+                                if (!invalidSelection && resolved.Count > 0)
                                 {
                                     selectedHenchmenPerPlayer[i] = resolved.ToArray();
                                 }
+                            }
+                            else
+                            {
+                                _logger.Log(new
+                                {
+                                    ts = RequestLogger.UtcNowIso(),
+                                    type = "coop-henchman-selection-collection-miss",
+                                    coopGroupName = coopGroupName,
+                                    mapName = mapName,
+                                    identityGuid = guid,
+                                    requestedCreationIndex = requestedCreationIndex,
+                                    currentCreationIndex = CachedHenchmanCollectionCreationIndex,
+                                    selectionCount = parsedSelections.Count,
+                                });
                             }
                         }
                     }

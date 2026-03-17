@@ -15,7 +15,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 {
     public sealed partial class APlayTcpStub
     {
-        private const int HenchmanCollectionHistoryLength = 6;
+        private const int HenchmanCollectionHistoryLength = 64;
 
         private sealed class HenchmanCollectionCacheEntry
         {
@@ -304,25 +304,39 @@ namespace Shadowrun.LocalService.Core.Protocols
             return false;
         }
 
-        private static List<PlayerCharacterSnapshot> GetSnapshotsForSelectionCollection(IList<ParsedHenchmanSelection> parsedSelections)
+        private List<PlayerCharacterSnapshot> GetSnapshotsForSelectionCollection(IList<ParsedHenchmanSelection> parsedSelections, out int requestedCreationIndex)
         {
+            requestedCreationIndex = 0;
             if (parsedSelections == null || parsedSelections.Count == 0)
             {
                 return null;
             }
 
-            var creationIndex = parsedSelections[0].CollectionCreationIndex;
+            requestedCreationIndex = parsedSelections[0].CollectionCreationIndex;
+            if (requestedCreationIndex <= 0)
+            {
+                return null;
+            }
+
+            for (var i = 1; i < parsedSelections.Count; i++)
+            {
+                if (parsedSelections[i].CollectionCreationIndex != requestedCreationIndex)
+                {
+                    return null;
+                }
+            }
+
             lock (HenchmanCollectionCacheLock)
             {
                 foreach (var entry in HenchmanCollectionHistory)
                 {
-                    if (entry != null && entry.CreationIndex == creationIndex && entry.Snapshots != null && entry.Snapshots.Count > 0)
+                    if (entry != null && entry.CreationIndex == requestedCreationIndex && entry.Snapshots != null && entry.Snapshots.Count > 0)
                     {
                         return entry.Snapshots;
                     }
                 }
 
-                return CachedHenchmanCollectionSnapshots;
+                return null;
             }
         }
 

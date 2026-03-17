@@ -24,9 +24,20 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             try
             {
-                var snapshots = GetSnapshotsForSelectionCollection(parsedSelections);
+                int requestedCreationIndex;
+                var snapshots = GetSnapshotsForSelectionCollection(parsedSelections, out requestedCreationIndex);
                 if (snapshots == null || snapshots.Count == 0)
                 {
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "henchman-selection-collection-miss",
+                        peer = peer,
+                        mapName = mapName,
+                        requestedCreationIndex = requestedCreationIndex,
+                        currentCreationIndex = CachedHenchmanCollectionCreationIndex,
+                        selectionCount = parsedSelections.Count,
+                    });
                     return null;
                 }
 
@@ -59,15 +70,53 @@ namespace Shadowrun.LocalService.Core.Protocols
                     var selection = parsedSelections[i];
                     if (selection.HenchmanId < 0 || selection.HenchmanId >= snapshots.Count)
                     {
-                        continue;
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "henchman-selection-invalid-index",
+                            peer = peer,
+                            mapName = mapName,
+                            requestedCreationIndex = requestedCreationIndex,
+                            henchmanId = selection.HenchmanId,
+                            availableCount = snapshots.Count,
+                            selectionOrdinal = i,
+                        });
+                        return null;
                     }
 
                     var src = snapshots[selection.HenchmanId];
-                    var clone = CloneHenchSnapshotForMission(src, activeIdentityGuid, i, ownerKarma, ownerSpentKarma, ownerNuyen);
-                    if (clone != null)
+                    if (src == null)
                     {
-                        resolved.Add(clone);
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "henchman-selection-null-snapshot",
+                            peer = peer,
+                            mapName = mapName,
+                            requestedCreationIndex = requestedCreationIndex,
+                            henchmanId = selection.HenchmanId,
+                            selectionOrdinal = i,
+                        });
+                        return null;
                     }
+
+                    var clone = CloneHenchSnapshotForMission(src, activeIdentityGuid, i, ownerKarma, ownerSpentKarma, ownerNuyen);
+                    if (clone == null)
+                    {
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "henchman-selection-clone-failed",
+                            peer = peer,
+                            mapName = mapName,
+                            requestedCreationIndex = requestedCreationIndex,
+                            henchmanId = selection.HenchmanId,
+                            selectionOrdinal = i,
+                        });
+                        return null;
+                    }
+
+                    resolved.Add(clone);
                 }
 
                 var selectedHenchmen = resolved.Count > 0 ? resolved.ToArray() : null;
