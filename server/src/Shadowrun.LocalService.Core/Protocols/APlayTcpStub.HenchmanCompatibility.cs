@@ -61,7 +61,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                         }
                     }
 
-                    var playerDerivedSnapshots = BuildPlayerDerivedHenchmanSnapshots(activeIdentityHash, activeCareerIndex, 2);
+                    var playerDerivedSnapshots = BuildPlayerDerivedHenchmanSnapshots(activeIdentityHash, activeCareerIndex, 3);
                     if (playerDerivedSnapshots != null && playerDerivedSnapshots.Count > 0)
                     {
                         for (var i = 0; i < playerDerivedSnapshots.Count; i++)
