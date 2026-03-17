@@ -24,26 +24,33 @@ public sealed partial class PhotonProxyTcpStub
     private readonly HashSet<Guid> _chatAdminAccountIds;
     private readonly Dictionary<string, IChatCommand> _chatCommands;
     private readonly CharacterStatePushBroker _characterStatePushBroker;
+    private readonly HubPresenceRegistry _hubPresenceRegistry;
 
     private readonly ClientSerializer _serializer = new ClientSerializer();
 
     public PhotonProxyTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore)
-        : this(options, logger, userStore, null, null)
+        : this(options, logger, userStore, null, null, null)
     {
     }
 
     public PhotonProxyTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap)
-        : this(options, logger, userStore, sessionIdentityMap, null)
+        : this(options, logger, userStore, sessionIdentityMap, null, null)
     {
     }
 
     public PhotonProxyTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap, CharacterStatePushBroker characterStatePushBroker)
+        : this(options, logger, userStore, sessionIdentityMap, characterStatePushBroker, null)
+    {
+    }
+
+    public PhotonProxyTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap, CharacterStatePushBroker characterStatePushBroker, HubPresenceRegistry hubPresenceRegistry)
     {
         _options = options;
         _logger = logger;
         _userStore = userStore;
         _sessionIdentityMap = sessionIdentityMap;
         _characterStatePushBroker = characterStatePushBroker ?? CharacterStatePushBroker.Shared;
+        _hubPresenceRegistry = hubPresenceRegistry ?? new HubPresenceRegistry();
 
         _friendsStore = new FriendsStore(options, logger);
         _chatAndFriends = new ChatAndFriendsState(this);
@@ -108,132 +115,142 @@ public sealed partial class PhotonProxyTcpStub
         using (client)
         {
             var endpoint = client.Client.RemoteEndPoint != null ? client.Client.RemoteEndPoint.ToString() : "unknown";
-            client.ReceiveTimeout = 2000;
-            client.SendTimeout = 2000;
-            _logger.Log(new
+            var connectionHash = RequestLogger.CreateConnectionHash("photon", endpoint);
+            _logger.RegisterConnectionContext("photon", endpoint, connectionHash);
+            try
             {
-                ts = RequestLogger.UtcNowIso(),
-                type = "photon-conn",
-                peer = endpoint,
-                note = "connected",
-            });
-
-            ConnectionState state = null;
-            using (var stream = client.GetStream())
-            {
-                var recvBuffer = new List<byte>();
-                var initCallbackSent = false;
-
-                state = new ConnectionState
+                client.ReceiveTimeout = 2000;
+                client.SendTimeout = 2000;
+                _logger.Log(new
                 {
-                    ConnectionId = Guid.NewGuid(),
-                    Endpoint = endpoint,
-                    Stream = stream,
-                };
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "photon-conn",
+                    connectionHash = connectionHash,
+                    peer = endpoint,
+                    note = "connected",
+                });
 
-                while (!stopEvent.WaitOne(0))
+                ConnectionState state = null;
+                using (var stream = client.GetStream())
                 {
-                    var chunk = ReadChunk(stream);
-                    if (chunk.Length <= 0)
-                    {
-                        break;
-                    }
+                    var recvBuffer = new List<byte>();
+                    var initCallbackSent = false;
 
-                    _logger.LogLow(new
+                    state = new ConnectionState
                     {
-                        ts = RequestLogger.UtcNowIso(),
-                        type = "photon-chunk",
-                        peer = endpoint,
-                        bytes = chunk.Length,
-                        hexPreview = ToHexString(chunk, 0, Math.Min(128, chunk.Length)).ToLowerInvariant(),
-                        asciiPreview = Encoding.ASCII.GetString(chunk, 0, Math.Min(160, chunk.Length)),
-                    });
+                        ConnectionId = Guid.NewGuid(),
+                        ConnectionHash = connectionHash,
+                        Endpoint = endpoint,
+                        Stream = stream,
+                    };
 
-                    recvBuffer.AddRange(chunk);
-
-                    while (recvBuffer.Count > 0)
+                    while (!stopEvent.WaitOne(0))
                     {
-                        if (recvBuffer[0] == 0xF0)
+                        var chunk = ReadChunk(stream);
+                        if (chunk.Length <= 0)
                         {
-                            if (recvBuffer.Count < 5)
+                            break;
+                        }
+
+                        _logger.LogLow(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "photon-chunk",
+                            connectionHash = connectionHash,
+                            peer = endpoint,
+                            bytes = chunk.Length,
+                            hexPreview = ToHexString(chunk, 0, Math.Min(128, chunk.Length)).ToLowerInvariant(),
+                            asciiPreview = Encoding.ASCII.GetString(chunk, 0, Math.Min(160, chunk.Length)),
+                        });
+
+                        recvBuffer.AddRange(chunk);
+
+                        while (recvBuffer.Count > 0)
+                        {
+                            if (recvBuffer[0] == 0xF0)
+                            {
+                                if (recvBuffer.Count < 5)
+                                {
+                                    break;
+                                }
+
+                                var pingRequest = recvBuffer.Take(5).ToArray();
+                                recvBuffer.RemoveRange(0, 5);
+
+                                var ticks = (uint)(GetUnixTimeMilliseconds() & 0xFFFFFFFF);
+                                var pingResponse = new byte[9];
+                                pingResponse[0] = 0xF0;
+                                pingResponse[1] = (byte)(ticks >> 24);
+                                pingResponse[2] = (byte)(ticks >> 16);
+                                pingResponse[3] = (byte)(ticks >> 8);
+                                pingResponse[4] = (byte)ticks;
+                                Buffer.BlockCopy(pingRequest, 1, pingResponse, 5, 4);
+
+                                if (!SendRaw(stream, endpoint, pingResponse, "ping-response"))
+                                {
+                                    return;
+                                }
+                                continue;
+                            }
+
+                            if (recvBuffer.Count < 7)
                             {
                                 break;
                             }
 
-                            var pingRequest = recvBuffer.Take(5).ToArray();
-                            recvBuffer.RemoveRange(0, 5);
-
-                            var ticks = (uint)(GetUnixTimeMilliseconds() & 0xFFFFFFFF);
-                            var pingResponse = new byte[9];
-                            pingResponse[0] = 0xF0;
-                            pingResponse[1] = (byte)(ticks >> 24);
-                            pingResponse[2] = (byte)(ticks >> 16);
-                            pingResponse[3] = (byte)(ticks >> 8);
-                            pingResponse[4] = (byte)ticks;
-                            Buffer.BlockCopy(pingRequest, 1, pingResponse, 5, 4);
-
-                            if (!SendRaw(stream, endpoint, pingResponse, "ping-response"))
+                            if (recvBuffer[0] != 0xFB)
                             {
-                                return;
+                                _logger.Log(new
+                                {
+                                    ts = RequestLogger.UtcNowIso(),
+                                    type = "photon-parse",
+                                    connectionHash = connectionHash,
+                                    peer = endpoint,
+                                    note = "unexpected-leading-byte",
+                                    b = recvBuffer[0],
+                                });
+                                recvBuffer.RemoveAt(0);
+                                continue;
                             }
-                            continue;
-                        }
 
-                        if (recvBuffer.Count < 7)
-                        {
-                            break;
-                        }
+                            var frameLen = (recvBuffer[1] << 24)
+                                | (recvBuffer[2] << 16)
+                                | (recvBuffer[3] << 8)
+                                | recvBuffer[4];
 
-                        if (recvBuffer[0] != 0xFB)
-                        {
-                            _logger.Log(new
+                            if (frameLen < 7)
                             {
-                                ts = RequestLogger.UtcNowIso(),
-                                type = "photon-parse",
-                                peer = endpoint,
-                                note = "unexpected-leading-byte",
-                                b = recvBuffer[0],
-                            });
-                            recvBuffer.RemoveAt(0);
-                            continue;
-                        }
+                                _logger.Log(new
+                                {
+                                    ts = RequestLogger.UtcNowIso(),
+                                    type = "photon-parse",
+                                    connectionHash = connectionHash,
+                                    peer = endpoint,
+                                    note = "invalid-frame-length",
+                                    frameLen,
+                                });
+                                recvBuffer.RemoveAt(0);
+                                continue;
+                            }
 
-                        var frameLen = (recvBuffer[1] << 24)
-                            | (recvBuffer[2] << 16)
-                            | (recvBuffer[3] << 8)
-                            | recvBuffer[4];
-
-                        if (frameLen < 7)
-                        {
-                            _logger.Log(new
+                            if (recvBuffer.Count < frameLen)
                             {
-                                ts = RequestLogger.UtcNowIso(),
-                                type = "photon-parse",
-                                peer = endpoint,
-                                note = "invalid-frame-length",
-                                frameLen,
-                            });
-                            recvBuffer.RemoveAt(0);
-                            continue;
-                        }
+                                break;
+                            }
 
-                        if (recvBuffer.Count < frameLen)
-                        {
-                            break;
-                        }
+                            var frame = recvBuffer.Take(frameLen).ToArray();
+                            recvBuffer.RemoveRange(0, frameLen);
 
-                        var frame = recvBuffer.Take(frameLen).ToArray();
-                        recvBuffer.RemoveRange(0, frameLen);
-
-                        var channel = frame[5];
-                        var reliable = frame[6];
-                        var payload = new byte[frame.Length - 7];
-                        Buffer.BlockCopy(frame, 7, payload, 0, payload.Length);
+                            var channel = frame[5];
+                            var reliable = frame[6];
+                            var payload = new byte[frame.Length - 7];
+                            Buffer.BlockCopy(frame, 7, payload, 0, payload.Length);
 
                         _logger.Log(new
                         {
                             ts = RequestLogger.UtcNowIso(),
                             type = "photon-frame",
+                            connectionHash = connectionHash,
                             peer = endpoint,
                             frameLen,
                             channel,
@@ -248,6 +265,7 @@ public sealed partial class PhotonProxyTcpStub
                             {
                                 ts = RequestLogger.UtcNowIso(),
                                 type = "photon-command",
+                                connectionHash = connectionHash,
                                 peer = endpoint,
                                 command = payload[1],
                                 payloadLen = payload.Length,
@@ -352,13 +370,18 @@ public sealed partial class PhotonProxyTcpStub
             {
             }
 
-            _logger.Log(new
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "photon-conn",
+                    peer = endpoint,
+                    note = "closed",
+                });
+            }
+            finally
             {
-                ts = RequestLogger.UtcNowIso(),
-                type = "photon-conn",
-                peer = endpoint,
-                note = "closed",
-            });
+                _logger.ClearConnectionContext("photon", endpoint, connectionHash);
+            }
         }
     }
 

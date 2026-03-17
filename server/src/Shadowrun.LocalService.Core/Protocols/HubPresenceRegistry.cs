@@ -3,9 +3,9 @@ using System.Collections.Generic;
 
 namespace Shadowrun.LocalService.Core.Protocols
 {
-    internal sealed class HubPresenceRegistry
+    public sealed class HubPresenceRegistry
     {
-        internal sealed class Participant
+        public sealed class Participant
         {
             public string Peer;
             public Guid AccountId;
@@ -20,7 +20,6 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         private readonly object _lock = new object();
         private readonly Dictionary<string, Participant> _byPeer = new Dictionary<string, Participant>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, HashSet<string>> _peersByHub = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<Guid, HashSet<string>> _peersByAccount = new Dictionary<Guid, HashSet<string>>();
         private readonly Dictionary<string, string> _peerByCharacterId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -65,34 +64,6 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
-        public void SetHubForPeer(string peer, string hubId)
-        {
-            if (IsNullOrWhiteSpace(peer) || IsNullOrWhiteSpace(hubId))
-            {
-                return;
-            }
-
-            lock (_lock)
-            {
-                Participant p;
-                if (!_byPeer.TryGetValue(peer, out p) || p == null)
-                {
-                    p = new Participant();
-                    p.Peer = peer;
-                    _byPeer[peer] = p;
-                }
-
-                if (string.Equals(p.HubId, hubId, StringComparison.OrdinalIgnoreCase))
-                {
-                    return;
-                }
-
-                RemoveFromHub_NoLock(p.Peer, p.HubId);
-                p.HubId = hubId;
-                AddToHub_NoLock(p.Peer, p.HubId);
-            }
-        }
-
         public void UpdatePosition(string peer, float x, float y)
         {
             if (IsNullOrWhiteSpace(peer))
@@ -111,30 +82,9 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
-        public bool TryGetHubIdForPeer(string peer, out string hubId)
+        public bool TryGetCharacterIdForAccount(Guid accountId, out string characterId)
         {
-            hubId = null;
-            if (IsNullOrWhiteSpace(peer))
-            {
-                return false;
-            }
-
-            lock (_lock)
-            {
-                Participant p;
-                if (!_byPeer.TryGetValue(peer, out p) || p == null || IsNullOrWhiteSpace(p.HubId))
-                {
-                    return false;
-                }
-
-                hubId = p.HubId;
-                return true;
-            }
-        }
-
-        public bool TryGetHubIdForAccount(Guid accountId, out string hubId)
-        {
-            hubId = null;
+            characterId = null;
             if (accountId == Guid.Empty)
             {
                 return false;
@@ -151,38 +101,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                 foreach (var peer in peers)
                 {
                     Participant p;
-                    if (_byPeer.TryGetValue(peer, out p) && p != null && !IsNullOrWhiteSpace(p.HubId))
+                    if (_byPeer.TryGetValue(peer, out p) && p != null && !IsNullOrWhiteSpace(p.CharacterId))
                     {
-                        hubId = p.HubId;
+                        characterId = p.CharacterId;
                         return true;
                     }
-                }
-            }
-
-            return false;
-        }
-
-        public bool TryGetHubIdForCharacter(string characterId, out string hubId)
-        {
-            hubId = null;
-            if (IsNullOrWhiteSpace(characterId))
-            {
-                return false;
-            }
-
-            lock (_lock)
-            {
-                string peer;
-                if (!_peerByCharacterId.TryGetValue(characterId, out peer) || IsNullOrWhiteSpace(peer))
-                {
-                    return false;
-                }
-
-                Participant p;
-                if (_byPeer.TryGetValue(peer, out p) && p != null && !IsNullOrWhiteSpace(p.HubId))
-                {
-                    hubId = p.HubId;
-                    return true;
                 }
             }
 
@@ -201,47 +124,6 @@ namespace Shadowrun.LocalService.Core.Protocols
             {
                 return _peerByCharacterId.TryGetValue(characterId, out peer) && !IsNullOrWhiteSpace(peer);
             }
-        }
-
-        public IList<Participant> GetParticipantsInHub(string hubId)
-        {
-            var result = new List<Participant>();
-            if (IsNullOrWhiteSpace(hubId))
-            {
-                return result;
-            }
-
-            lock (_lock)
-            {
-                HashSet<string> peers;
-                if (!_peersByHub.TryGetValue(hubId, out peers) || peers == null || peers.Count == 0)
-                {
-                    return result;
-                }
-
-                foreach (var peer in peers)
-                {
-                    Participant p;
-                    if (!_byPeer.TryGetValue(peer, out p) || p == null)
-                    {
-                        continue;
-                    }
-
-                    var copy = new Participant();
-                    copy.Peer = p.Peer;
-                    copy.AccountId = p.AccountId;
-                    copy.IdentityHash = p.IdentityHash;
-                    copy.CareerIndex = p.CareerIndex;
-                    copy.CharacterId = p.CharacterId;
-                    copy.CharacterName = p.CharacterName;
-                    copy.HubId = p.HubId;
-                    copy.X = p.X;
-                    copy.Y = p.Y;
-                    result.Add(copy);
-                }
-            }
-
-            return result;
         }
 
         public bool TryGetParticipantForPeer(string peer, out Participant participant)
@@ -275,6 +157,68 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
+        public bool TryGetParticipantForAccount(Guid accountId, out Participant participant)
+        {
+            participant = null;
+            if (accountId == Guid.Empty)
+            {
+                return false;
+            }
+
+            lock (_lock)
+            {
+                HashSet<string> peers;
+                if (!_peersByAccount.TryGetValue(accountId, out peers) || peers == null || peers.Count == 0)
+                {
+                    return false;
+                }
+
+                foreach (var peer in peers)
+                {
+                    Participant p;
+                    if (_byPeer.TryGetValue(peer, out p) && p != null)
+                    {
+                        participant = CloneParticipant(p);
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        public Participant[] SnapshotParticipants()
+        {
+            lock (_lock)
+            {
+                if (_byPeer.Count == 0)
+                {
+                    return new Participant[0];
+                }
+
+                var snapshot = new Participant[_byPeer.Count];
+                var index = 0;
+                foreach (var participant in _byPeer.Values)
+                {
+                    if (participant == null)
+                    {
+                        continue;
+                    }
+
+                    snapshot[index++] = CloneParticipant(participant);
+                }
+
+                if (index == snapshot.Length)
+                {
+                    return snapshot;
+                }
+
+                var trimmed = new Participant[index];
+                Array.Copy(snapshot, trimmed, index);
+                return trimmed;
+            }
+        }
+
         public void RemovePeer(string peer)
         {
             if (IsNullOrWhiteSpace(peer))
@@ -301,8 +245,6 @@ namespace Shadowrun.LocalService.Core.Protocols
             {
                 return;
             }
-
-            RemoveFromHub_NoLock(p.Peer, p.HubId);
 
             if (p.AccountId != Guid.Empty)
             {
@@ -334,8 +276,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
-            AddToHub_NoLock(p.Peer, p.HubId);
-
             if (p.AccountId != Guid.Empty)
             {
                 HashSet<string> peers;
@@ -353,38 +293,24 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
-        private void RemoveFromHub_NoLock(string peer, string hubId)
+        private static Participant CloneParticipant(Participant source)
         {
-            if (IsNullOrWhiteSpace(peer) || IsNullOrWhiteSpace(hubId))
+            if (source == null)
             {
-                return;
+                return null;
             }
 
-            HashSet<string> peers;
-            if (_peersByHub.TryGetValue(hubId, out peers) && peers != null)
-            {
-                peers.Remove(peer);
-                if (peers.Count == 0)
-                {
-                    _peersByHub.Remove(hubId);
-                }
-            }
-        }
-
-        private void AddToHub_NoLock(string peer, string hubId)
-        {
-            if (IsNullOrWhiteSpace(peer) || IsNullOrWhiteSpace(hubId))
-            {
-                return;
-            }
-
-            HashSet<string> peers;
-            if (!_peersByHub.TryGetValue(hubId, out peers) || peers == null)
-            {
-                peers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                _peersByHub[hubId] = peers;
-            }
-            peers.Add(peer);
+            var copy = new Participant();
+            copy.Peer = source.Peer;
+            copy.AccountId = source.AccountId;
+            copy.IdentityHash = source.IdentityHash;
+            copy.CareerIndex = source.CareerIndex;
+            copy.CharacterId = source.CharacterId;
+            copy.CharacterName = source.CharacterName;
+            copy.HubId = source.HubId;
+            copy.X = source.X;
+            copy.Y = source.Y;
+            return copy;
         }
 
         private static bool IsNullOrWhiteSpace(string value)

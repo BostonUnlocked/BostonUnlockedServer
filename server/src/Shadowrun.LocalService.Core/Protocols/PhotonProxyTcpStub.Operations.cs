@@ -21,6 +21,8 @@ namespace Shadowrun.LocalService.Core.Protocols
     private static readonly object MainCampaignStorylineLock = new object();
     private static MainCampaignStoryline _mainCampaignStoryline;
     private static string _mainCampaignStorylineSourceDir;
+    private const int SlashCommandFeedbackMaxLinesPerPage = 12;
+    private const int SlashCommandFeedbackMaxCharsPerPage = 1200;
 
         private static ServiceEnvelopeRequest ParseServiceEnvelopeRequest(byte[] payload)
         {
@@ -209,6 +211,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     }
 
                     state.AccountId = accountId;
+                    _logger.UpdateConnectionAccountId("photon", state != null ? state.Endpoint : null, state != null ? state.ConnectionHash : null, accountId);
                     state.LocalUser = CreateUser(accountId);
 
                     try
@@ -447,6 +450,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                             && TryResolveGroupHostAccountId(response.GroupData, state.AccountId, out hostAccountId))
                         {
                             PartyHubFollowRegistry.SetHostForMember(state.AccountId, hostAccountId);
+                            _logger.UpdateConnectionHostAccountId("photon", state != null ? state.Endpoint : null, state != null ? state.ConnectionHash : null, hostAccountId);
                         }
                         return response;
                     }
@@ -638,10 +642,14 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             var context = BuildChatCommandContext(state, req.ChannelName, trimmed);
             var result = ExecuteChatCommand(context, trimmed);
+            var feedbackMessages = EnumerateFeedbackMessages(result).ToArray();
 
-            if (!IsNullOrEmpty(result.FeedbackMessage) && _chatAndFriends != null)
+            if (_chatAndFriends != null)
             {
-                _chatAndFriends.SendTextMessageToAccount(state.AccountId, req.ChannelName, Guid.Empty, "[server] " + result.FeedbackMessage);
+                for (var i = 0; i < feedbackMessages.Length; i++)
+                {
+                    _chatAndFriends.SendTextMessageToAccount(state.AccountId, req.ChannelName, Guid.Empty, "[server] " + feedbackMessages[i]);
+                }
             }
 
             LogAdminEvent(new
@@ -651,8 +659,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                 action = "feedback-sent",
                 senderAccountId = state.AccountId,
                 channel = req.ChannelName ?? string.Empty,
-                success = result.Success,
-                feedback = result.FeedbackMessage ?? string.Empty,
+                success = result != null && result.Success,
+                feedbackCount = feedbackMessages.Length,
+                feedback = feedbackMessages.Length > 0 ? feedbackMessages[0] : string.Empty,
                 text = trimmed,
             });
 
@@ -726,7 +735,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             try
             {
-                var result = command.Execute(this, context, args);
+                var result = command.Execute(this, context, args) ?? ChatCommandResult.Fail("Command failed.");
                 if (_logger != null)
                 {
                     _logger.Log(new
@@ -738,6 +747,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                         senderIdentity = context.SenderIdentityHash ?? string.Empty,
                         careerIndex = context.ActiveCareerIndex,
                         success = result.Success,
+                        feedbackCount = CountFeedbackMessages(result),
                     });
                 }
                 LogAdminEvent(new
@@ -751,6 +761,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     careerIndex = context.ActiveCareerIndex,
                     success = result.Success,
                     requiresAdmin = command.RequiresAdmin,
+                    feedbackCount = CountFeedbackMessages(result),
                 });
                 return result;
             }
@@ -811,6 +822,44 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             return string.Equals(channelName, "Global", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(channelName, "SRO_Default", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static IEnumerable<string> EnumerateFeedbackMessages(ChatCommandResult result)
+        {
+            if (result == null)
+            {
+                yield break;
+            }
+
+            if (result.FeedbackMessages != null && result.FeedbackMessages.Length > 0)
+            {
+                for (var i = 0; i < result.FeedbackMessages.Length; i++)
+                {
+                    var message = result.FeedbackMessages[i];
+                    if (!IsNullOrEmpty(message))
+                    {
+                        yield return message;
+                    }
+                }
+
+                yield break;
+            }
+
+            if (!IsNullOrEmpty(result.FeedbackMessage))
+            {
+                yield return result.FeedbackMessage;
+            }
+        }
+
+        private static int CountFeedbackMessages(ChatCommandResult result)
+        {
+            var count = 0;
+            foreach (var ignored in EnumerateFeedbackMessages(result))
+            {
+                count++;
+            }
+
+            return count;
         }
 
         private bool TryResolveItemValidationInfo(string itemCode, out bool isValidItemCode, out int itemCategory)
@@ -1262,10 +1311,19 @@ namespace Shadowrun.LocalService.Core.Protocols
             RegisterChatCommand(map, new HelpChatCommand());
             RegisterChatCommand(map, new AnnounceChatCommand());
             RegisterChatCommand(map, new ActiveMissionsChatCommand());
+            RegisterChatCommand(map, new OnlinePlayersChatCommand());
+            RegisterChatCommand(map, new ListPlayersChatCommand());
             RegisterChatCommand(map, new SetAvailableMissionCommand());
-            RegisterChatCommand(map, new SetBalanceCommand("setkarma", true));
-            RegisterChatCommand(map, new SetBalanceCommand("setnuyen", false));
-            RegisterChatCommand(map, new AddItemCommand());
+            RegisterChatCommand(map, new GetBalanceCommand("getkarma", true, ChatCommandTargetMode.Self));
+            RegisterChatCommand(map, new GetBalanceCommand("getnuyen", false, ChatCommandTargetMode.Self));
+            RegisterChatCommand(map, new SetBalanceCommand("setkarma", true, ChatCommandTargetMode.Self));
+            RegisterChatCommand(map, new SetBalanceCommand("setnuyen", false, ChatCommandTargetMode.Self));
+            RegisterChatCommand(map, new AddItemCommand("additem", ChatCommandTargetMode.Self));
+            RegisterChatCommand(map, new GetBalanceCommand("othergetkarma", true, ChatCommandTargetMode.OtherByAccountId));
+            RegisterChatCommand(map, new GetBalanceCommand("othergetnuyen", false, ChatCommandTargetMode.OtherByAccountId));
+            RegisterChatCommand(map, new SetBalanceCommand("othersetkarma", true, ChatCommandTargetMode.OtherByAccountId));
+            RegisterChatCommand(map, new SetBalanceCommand("othersetnuyen", false, ChatCommandTargetMode.OtherByAccountId));
+            RegisterChatCommand(map, new AddItemCommand("otheradditem", ChatCommandTargetMode.OtherByAccountId));
             return map;
         }
 
@@ -1769,6 +1827,526 @@ namespace Shadowrun.LocalService.Core.Protocols
             return false;
         }
 
+        private bool TryResolveSenderCommandTarget(ChatCommandContext context, out ChatCommandTarget target, out string error)
+        {
+            target = null;
+            error = "Unable to resolve sender identity.";
+
+            if (context == null || context.SenderAccountId == Guid.Empty)
+            {
+                return false;
+            }
+
+            var identityHash = !IsNullOrEmpty(context.SenderIdentityHash)
+                ? context.SenderIdentityHash
+                : context.SenderAccountId.ToString("D");
+            var careerIndex = context.ActiveCareerIndex;
+            var slot = context.ActiveCareerSlot;
+
+            if (slot == null && _userStore != null && !IsNullOrEmpty(identityHash))
+            {
+                try
+                {
+                    slot = _userStore.GetOrCreateCareer(identityHash, careerIndex, false);
+                }
+                catch
+                {
+                    slot = null;
+                }
+            }
+
+            if (slot == null)
+            {
+                error = "Unable to resolve active character.";
+                return false;
+            }
+
+            HubPresenceRegistry.Participant participant;
+            participant = null;
+            if (_hubPresenceRegistry != null)
+            {
+                _hubPresenceRegistry.TryGetParticipantForAccount(context.SenderAccountId, out participant);
+            }
+
+            target = BuildChatCommandTarget(context.SenderAccountId, identityHash, careerIndex, slot, participant);
+            error = null;
+            return true;
+        }
+
+        private bool TryResolveConnectedCommandTarget(string accountIdText, out ChatCommandTarget target, out string error)
+        {
+            target = null;
+            error = "Usage requires an account id.";
+
+            Guid accountId;
+            if (!TryParseGuid(accountIdText, out accountId) || accountId == Guid.Empty)
+            {
+                error = "AccountId must be a valid GUID.";
+                return false;
+            }
+
+            if (_chatAndFriends == null)
+            {
+                error = "Chat service is unavailable.";
+                return false;
+            }
+
+            if (!_chatAndFriends.IsAccountOnline(accountId))
+            {
+                error = "Target account is not currently connected.";
+                return false;
+            }
+
+            var identityHash = accountId.ToString("D");
+            if (_userStore == null)
+            {
+                error = "Persistence service is unavailable.";
+                return false;
+            }
+
+            HubPresenceRegistry.Participant participant;
+            participant = null;
+            if (_hubPresenceRegistry != null)
+            {
+                _hubPresenceRegistry.TryGetParticipantForAccount(accountId, out participant);
+            }
+
+            var careerIndex = participant != null ? participant.CareerIndex : 0;
+            if (participant == null)
+            {
+                try
+                {
+                    careerIndex = _userStore.GetLastCareerIndex(identityHash);
+                }
+                catch
+                {
+                    careerIndex = 0;
+                }
+            }
+
+            CareerSlot slot;
+            try
+            {
+                slot = _userStore.GetOrCreateCareer(identityHash, careerIndex, false);
+            }
+            catch
+            {
+                slot = null;
+            }
+
+            if (slot == null)
+            {
+                error = "Unable to resolve the target's active character.";
+                return false;
+            }
+
+            target = BuildChatCommandTarget(accountId, identityHash, careerIndex, slot, participant);
+            error = null;
+            return true;
+        }
+
+        private ChatCommandTarget BuildChatCommandTarget(Guid accountId, string identityHash, int careerIndex, CareerSlot slot, HubPresenceRegistry.Participant participant)
+        {
+            var target = new ChatCommandTarget();
+            target.AccountId = accountId;
+            target.IdentityHash = !IsNullOrEmpty(identityHash) ? identityHash : (accountId != Guid.Empty ? accountId.ToString("D") : string.Empty);
+            target.ActiveCareerIndex = careerIndex;
+            target.ActiveCareerSlot = slot;
+            target.CharacterId = participant != null && !IsNullOrEmpty(participant.CharacterId)
+                ? participant.CharacterId
+                : (slot != null ? (slot.CharacterIdentifier ?? string.Empty) : string.Empty);
+            target.HubId = participant != null && !IsNullOrEmpty(participant.HubId)
+                ? participant.HubId
+                : (slot != null ? (slot.HubId ?? string.Empty) : string.Empty);
+            target.CharacterName = ResolveChatCommandCharacterName(accountId, participant, slot);
+            return target;
+        }
+
+        private string ResolveChatCommandCharacterName(Guid accountId, HubPresenceRegistry.Participant participant, CareerSlot slot)
+        {
+            if (participant != null && !IsNullOrEmpty(participant.CharacterName))
+            {
+                return participant.CharacterName.Trim();
+            }
+
+            if (slot != null && !IsNullOrEmpty(slot.CharacterName))
+            {
+                return slot.CharacterName.Trim();
+            }
+
+            if (_userStore != null && accountId != Guid.Empty)
+            {
+                try
+                {
+                    var displayName = _userStore.GetDisplayName(accountId.ToString("D"));
+                    if (!IsNullOrEmpty(displayName))
+                    {
+                        return displayName.Trim();
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            return "UnknownCharacter";
+        }
+
+        private bool TryGetBalanceForTarget(ChatCommandTarget target, bool isKarma, out int value, out string message)
+        {
+            value = 0;
+            message = "Unable to resolve active character.";
+            if (target == null || target.ActiveCareerSlot == null)
+            {
+                return false;
+            }
+
+            value = isKarma ? target.ActiveCareerSlot.Karma : target.ActiveCareerSlot.Nuyen;
+            var label = isKarma ? "Karma" : "Nuyen";
+            message = label + " for " + FormatChatCommandTarget(target) + ": " + value.ToString() + ".";
+            return true;
+        }
+
+        private bool TrySetBalanceForTarget(ChatCommandTarget target, int value, bool isKarma, out string message)
+        {
+            message = "Unable to resolve active character.";
+            if (target == null || target.ActiveCareerSlot == null || _userStore == null || IsNullOrEmpty(target.IdentityHash))
+            {
+                return false;
+            }
+
+            if (isKarma)
+            {
+                target.ActiveCareerSlot.Karma = value;
+            }
+            else
+            {
+                target.ActiveCareerSlot.Nuyen = value;
+            }
+
+            _userStore.UpsertCareer(target.IdentityHash, target.ActiveCareerSlot);
+
+            if (_characterStatePushBroker != null)
+            {
+                _characterStatePushBroker.Enqueue(
+                    target.AccountId,
+                    CharacterStatePushPaths.Wallet | CharacterStatePushPaths.MetaSnapshot | CharacterStatePushPaths.CareerSummaries);
+            }
+
+            var label = isKarma ? "karma" : "nuyen";
+            message = "Set " + label + " to " + value.ToString() + " for " + FormatChatCommandTarget(target)
+                + ", career slot " + target.ActiveCareerIndex.ToString() + ".";
+            return true;
+        }
+
+        private bool TryAddItemForTarget(ChatCommandTarget target, string itemCode, int? variantValue, out int appliedVariant, out int quality, out string message)
+        {
+            appliedVariant = -1;
+            quality = 0;
+            message = "Unable to resolve active character.";
+
+            if (target == null || target.ActiveCareerSlot == null || _userStore == null || IsNullOrEmpty(target.IdentityHash))
+            {
+                return false;
+            }
+
+            if (IsNullOrEmpty(itemCode))
+            {
+                message = "Item code is required.";
+                return false;
+            }
+
+            var isValidItemCode = false;
+            var itemCategory = 0;
+            var canValidate = TryResolveItemValidationInfo(itemCode, out isValidItemCode, out itemCategory);
+            if (!canValidate)
+            {
+                message = "Unable to validate item data from static-data.";
+                return false;
+            }
+
+            if (!isValidItemCode)
+            {
+                message = "Unknown item code '" + itemCode + "'.";
+                return false;
+            }
+
+            if (variantValue.HasValue)
+            {
+                appliedVariant = variantValue.Value;
+                if (appliedVariant < 2 || appliedVariant > 405)
+                {
+                    message = "Variant must be between 2 and 405.";
+                    return false;
+                }
+
+                quality = appliedVariant <= 319 ? 1 : 2;
+                if (itemCategory <= 0)
+                {
+                    message = "Item '" + itemCode + "' does not expose an item category for variant compatibility checks.";
+                    return false;
+                }
+
+                var variantExists = false;
+                var isCompatible = false;
+                var canResolveCompatibility = TryResolveVariantCompatibility(appliedVariant, itemCategory, out variantExists, out isCompatible);
+                if (!canResolveCompatibility)
+                {
+                    message = "Unable to validate variant compatibility from static-data.";
+                    return false;
+                }
+
+                if (!variantExists)
+                {
+                    message = "Unknown variant id '" + appliedVariant.ToString() + "'.";
+                    return false;
+                }
+
+                if (!isCompatible)
+                {
+                    message = "Variant " + appliedVariant.ToString() + " is not compatible with item category " + itemCategory.ToString() + ".";
+                    return false;
+                }
+            }
+
+            if (target.ActiveCareerSlot.ItemPossessions == null)
+            {
+                target.ActiveCareerSlot.ItemPossessions = new Dictionary<string, int>(StringComparer.Ordinal);
+            }
+
+            var possessionKey = itemCode + "|" + quality.ToString() + "|" + appliedVariant.ToString();
+            int existing;
+            if (!target.ActiveCareerSlot.ItemPossessions.TryGetValue(possessionKey, out existing) || existing < 0)
+            {
+                existing = 0;
+            }
+
+            var next = existing;
+            try
+            {
+                next = checked(existing + 1);
+            }
+            catch
+            {
+                next = int.MaxValue;
+            }
+
+            target.ActiveCareerSlot.ItemPossessions[possessionKey] = next;
+            _userStore.UpsertCareer(target.IdentityHash, target.ActiveCareerSlot);
+
+            if (_characterStatePushBroker != null)
+            {
+                _characterStatePushBroker.Enqueue(
+                    target.AccountId,
+                    CharacterStatePushPaths.Inventory | CharacterStatePushPaths.MetaSnapshot | CharacterStatePushPaths.CareerSummaries);
+            }
+
+            if (appliedVariant >= 0)
+            {
+                message = "Added 1x " + itemCode + " (variant " + appliedVariant.ToString() + ", quality " + quality.ToString() + ") to "
+                    + FormatChatCommandTarget(target) + ", career slot " + target.ActiveCareerIndex.ToString() + ".";
+                return true;
+            }
+
+            message = "Added 1x " + itemCode + " to " + FormatChatCommandTarget(target)
+                + ", career slot " + target.ActiveCareerIndex.ToString() + ".";
+            return true;
+        }
+
+        private ChatCommandPlayerSummary[] BuildConnectedPlayerSummaries(Guid requesterAccountId)
+        {
+            if (_chatAndFriends == null)
+            {
+                return new ChatCommandPlayerSummary[0];
+            }
+
+            var onlineAccountIds = _chatAndFriends.GetOnlineAccountIds() ?? new Guid[0];
+            if (onlineAccountIds.Length == 0)
+            {
+                return new ChatCommandPlayerSummary[0];
+            }
+
+            var participants = _hubPresenceRegistry != null
+                ? _hubPresenceRegistry.SnapshotParticipants()
+                : new HubPresenceRegistry.Participant[0];
+            var participantByAccountId = new Dictionary<Guid, HubPresenceRegistry.Participant>();
+            for (var i = 0; i < participants.Length; i++)
+            {
+                var participant = participants[i];
+                if (participant == null || participant.AccountId == Guid.Empty)
+                {
+                    continue;
+                }
+
+                HubPresenceRegistry.Participant existing;
+                if (!participantByAccountId.TryGetValue(participant.AccountId, out existing)
+                    || CompareParticipantRichness(participant, existing) > 0)
+                {
+                    participantByAccountId[participant.AccountId] = participant;
+                }
+            }
+
+            var requesterParty = new HashSet<Guid>(_chatAndFriends.GetGroupMemberAccountIds(requesterAccountId) ?? new Guid[0]);
+            var requesterHubId = string.Empty;
+            HubPresenceRegistry.Participant requesterParticipant;
+            if (participantByAccountId.TryGetValue(requesterAccountId, out requesterParticipant)
+                && requesterParticipant != null
+                && !IsNullOrEmpty(requesterParticipant.HubId))
+            {
+                requesterHubId = requesterParticipant.HubId;
+            }
+
+            var seen = new HashSet<Guid>();
+            var results = new List<ChatCommandPlayerSummary>(onlineAccountIds.Length);
+            for (var i = 0; i < onlineAccountIds.Length; i++)
+            {
+                var accountId = onlineAccountIds[i];
+                if (accountId == Guid.Empty || !seen.Add(accountId))
+                {
+                    continue;
+                }
+
+                HubPresenceRegistry.Participant participant;
+                participantByAccountId.TryGetValue(accountId, out participant);
+
+                CareerSlot slot;
+                slot = null;
+                if (_userStore != null)
+                {
+                    try
+                    {
+                        var identityHash = accountId.ToString("D");
+                        var careerIndex = participant != null ? participant.CareerIndex : _userStore.GetLastCareerIndex(identityHash);
+                        slot = _userStore.GetOrCreateCareer(identityHash, careerIndex, false);
+                    }
+                    catch
+                    {
+                        slot = null;
+                    }
+                }
+
+                var hubId = participant != null && !IsNullOrEmpty(participant.HubId)
+                    ? participant.HubId
+                    : (slot != null ? (slot.HubId ?? string.Empty) : string.Empty);
+
+                var isPartyMember = requesterParty.Contains(accountId);
+                var isInSameHub = !IsNullOrEmpty(requesterHubId)
+                    && !IsNullOrEmpty(hubId)
+                    && string.Equals(requesterHubId, hubId, StringComparison.OrdinalIgnoreCase);
+                var bucket = isPartyMember ? 0 : (isInSameHub ? 1 : 2);
+
+                results.Add(new ChatCommandPlayerSummary
+                {
+                    AccountId = accountId,
+                    CharacterName = ResolveChatCommandCharacterName(accountId, participant, slot),
+                    Bucket = bucket,
+                    IsRequester = accountId == requesterAccountId,
+                });
+            }
+
+            return results
+                .OrderBy(summary => summary.Bucket)
+                .ThenBy(summary => summary.IsRequester ? 0 : 1)
+                .ThenBy(summary => summary.CharacterName ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(summary => summary.AccountId)
+                .ToArray();
+        }
+
+        private static int CompareParticipantRichness(HubPresenceRegistry.Participant left, HubPresenceRegistry.Participant right)
+        {
+            if (left == null && right == null)
+            {
+                return 0;
+            }
+
+            if (left == null)
+            {
+                return -1;
+            }
+
+            if (right == null)
+            {
+                return 1;
+            }
+
+            return ComputeParticipantRichness(left).CompareTo(ComputeParticipantRichness(right));
+        }
+
+        private static int ComputeParticipantRichness(HubPresenceRegistry.Participant participant)
+        {
+            if (participant == null)
+            {
+                return -1;
+            }
+
+            var score = 0;
+            if (!IsNullOrEmpty(participant.CharacterName)) score += 4;
+            if (!IsNullOrEmpty(participant.HubId)) score += 2;
+            if (!IsNullOrEmpty(participant.CharacterId)) score += 1;
+            return score;
+        }
+
+        private static string FormatChatCommandTarget(ChatCommandTarget target)
+        {
+            if (target == null)
+            {
+                return "UnknownCharacter";
+            }
+
+            var name = !IsNullOrEmpty(target.CharacterName) ? target.CharacterName : "UnknownCharacter";
+            var account = target.AccountId != Guid.Empty ? target.AccountId.ToString("D") : string.Empty;
+            return account.Length > 0 ? (name + " (" + account + ")") : name;
+        }
+
+        private static string[] BuildPagedFeedbackMessages(string title, IList<string> lines)
+        {
+            if (lines == null || lines.Count == 0)
+            {
+                return IsNullOrEmpty(title) ? new string[0] : new[] { title };
+            }
+
+            var pages = new List<List<string>>();
+            var currentPage = new List<string>();
+            var currentChars = 0;
+            var baseChars = IsNullOrEmpty(title) ? 0 : title.Length + 8;
+
+            for (var i = 0; i < lines.Count; i++)
+            {
+                var line = lines[i] ?? string.Empty;
+                var nextChars = currentChars + line.Length + 1;
+                if (currentPage.Count > 0
+                    && (currentPage.Count >= SlashCommandFeedbackMaxLinesPerPage
+                        || baseChars + nextChars > SlashCommandFeedbackMaxCharsPerPage))
+                {
+                    pages.Add(currentPage);
+                    currentPage = new List<string>();
+                    currentChars = 0;
+                }
+
+                currentPage.Add(line);
+                currentChars += line.Length + 1;
+            }
+
+            if (currentPage.Count > 0)
+            {
+                pages.Add(currentPage);
+            }
+
+            var messages = new string[pages.Count];
+            for (var i = 0; i < pages.Count; i++)
+            {
+                var header = title ?? string.Empty;
+                if (pages.Count > 1)
+                {
+                    header = header + " (" + (i + 1).ToString() + "/" + pages.Count.ToString() + ")";
+                }
+
+                messages[i] = header + "\n" + string.Join("\n", pages[i].ToArray());
+            }
+
+            return messages;
+        }
+
         private T DeserializeMessage<T>(byte[] bytes) where T : class, ISerializableMessage
         {
             if (bytes == null || bytes.Length == 0)
@@ -1852,6 +2430,7 @@ namespace Shadowrun.LocalService.Core.Protocols
         private sealed class ConnectionState
         {
             public Guid ConnectionId;
+            public string ConnectionHash;
             public string Endpoint;
             public NetworkStream Stream;
 
@@ -1875,27 +2454,87 @@ namespace Shadowrun.LocalService.Core.Protocols
             public string RawCommandText;
         }
 
+        private sealed class ChatCommandTarget
+        {
+            public Guid AccountId;
+            public string IdentityHash;
+            public int ActiveCareerIndex;
+            public CareerSlot ActiveCareerSlot;
+            public string CharacterId;
+            public string CharacterName;
+            public string HubId;
+        }
+
+        private sealed class ChatCommandPlayerSummary
+        {
+            public Guid AccountId;
+            public string CharacterName;
+            public int Bucket;
+            public bool IsRequester;
+        }
+
+        private enum ChatCommandTargetMode
+        {
+            Self = 0,
+            OtherByAccountId = 1,
+        }
+
         private sealed class ChatCommandResult
         {
             public bool Success;
             public string FeedbackMessage;
+            public string[] FeedbackMessages;
 
             public static ChatCommandResult Ok(string message)
             {
+                return OkMany(message);
+            }
+
+            public static ChatCommandResult OkMany(params string[] messages)
+            {
+                var normalized = NormalizeFeedbackMessages(messages);
                 return new ChatCommandResult
                 {
                     Success = true,
-                    FeedbackMessage = message,
+                    FeedbackMessage = normalized.Length > 0 ? normalized[0] : string.Empty,
+                    FeedbackMessages = normalized,
                 };
             }
 
             public static ChatCommandResult Fail(string message)
             {
+                return FailMany(message);
+            }
+
+            public static ChatCommandResult FailMany(params string[] messages)
+            {
+                var normalized = NormalizeFeedbackMessages(messages);
                 return new ChatCommandResult
                 {
                     Success = false,
-                    FeedbackMessage = message,
+                    FeedbackMessage = normalized.Length > 0 ? normalized[0] : string.Empty,
+                    FeedbackMessages = normalized,
                 };
+            }
+
+            private static string[] NormalizeFeedbackMessages(string[] messages)
+            {
+                if (messages == null || messages.Length == 0)
+                {
+                    return new string[0];
+                }
+
+                var normalized = new List<string>(messages.Length);
+                for (var i = 0; i < messages.Length; i++)
+                {
+                    var message = messages[i];
+                    if (!IsNullOrEmpty(message))
+                    {
+                        normalized.Add(message);
+                    }
+                }
+
+                return normalized.ToArray();
             }
         }
 
@@ -1921,7 +2560,26 @@ namespace Shadowrun.LocalService.Core.Protocols
                 var isAdmin = owner.IsChatCommandAuthorized(context.SenderAccountId);
                 if (isAdmin)
                 {
-                    return ChatCommandResult.Ok("Commands: /help, /announce {message}, /activemissions, /setavailablemission {MissionId} [Available], /setkarma {X}, /setnuyen {X}, /additem {ItemCode} [Variant]");
+                    var lines = new List<string>
+                    {
+                        "/help",
+                        "/announce {message}",
+                        "/activemissions",
+                        "/onlineplayers",
+                        "/listplayers",
+                        "/setavailablemission {MissionId} [Available]",
+                        "/getkarma",
+                        "/getnuyen",
+                        "/setkarma {X}",
+                        "/setnuyen {X}",
+                        "/additem {ItemCode} [Variant]",
+                        "/othergetkarma {AccountId}",
+                        "/othergetnuyen {AccountId}",
+                        "/othersetkarma {AccountId} {X}",
+                        "/othersetnuyen {AccountId} {X}",
+                        "/otheradditem {AccountId} {ItemCode} [Variant]",
+                    };
+                    return ChatCommandResult.OkMany(BuildPagedFeedbackMessages("Admin commands:", lines));
                 }
 
                 return ChatCommandResult.Ok("Commands: /help");
@@ -1982,6 +2640,58 @@ namespace Shadowrun.LocalService.Core.Protocols
             {
                 var count = MissionRuntimeRegistry.GetActiveMissionCount();
                 return ChatCommandResult.Ok("Active missions in progress: " + count.ToString());
+            }
+        }
+
+        private sealed class OnlinePlayersChatCommand : IChatCommand
+        {
+            public string Name { get { return "onlineplayers"; } }
+            public bool RequiresAdmin { get { return true; } }
+
+            public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
+            {
+                if (owner == null || owner._chatAndFriends == null)
+                {
+                    return ChatCommandResult.Fail("Chat service is unavailable.");
+                }
+
+                var count = owner._chatAndFriends.GetOnlineAccountCount();
+                return ChatCommandResult.Ok("Players currently logged in: " + count.ToString());
+            }
+        }
+
+        private sealed class ListPlayersChatCommand : IChatCommand
+        {
+            public string Name { get { return "listplayers"; } }
+            public bool RequiresAdmin { get { return true; } }
+
+            public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
+            {
+                if (owner == null || context == null)
+                {
+                    return ChatCommandResult.Fail("Invalid command context.");
+                }
+
+                if (args != null && args.Length > 0)
+                {
+                    return ChatCommandResult.Fail("Usage: /listplayers");
+                }
+
+                var players = owner.BuildConnectedPlayerSummaries(context.SenderAccountId);
+                if (players.Length == 0)
+                {
+                    return ChatCommandResult.Ok("No connected players found.");
+                }
+
+                var lines = new List<string>(players.Length);
+                for (var i = 0; i < players.Length; i++)
+                {
+                    var bucket = players[i].Bucket == 0 ? "party" : (players[i].Bucket == 1 ? "hub" : "online");
+                    var selfSuffix = players[i].IsRequester ? " [you]" : string.Empty;
+                    lines.Add("[" + bucket + "] " + players[i].CharacterName + " | " + players[i].AccountId.ToString("D") + selfSuffix);
+                }
+
+                return ChatCommandResult.OkMany(BuildPagedFeedbackMessages("Connected players: " + players.Length.ToString(), lines));
             }
         }
 
@@ -2053,15 +2763,17 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
-        private sealed class SetBalanceCommand : IChatCommand
+        private sealed class GetBalanceCommand : IChatCommand
         {
             private readonly string _name;
             private readonly bool _isKarma;
+            private readonly ChatCommandTargetMode _targetMode;
 
-            public SetBalanceCommand(string name, bool isKarma)
+            public GetBalanceCommand(string name, bool isKarma, ChatCommandTargetMode targetMode)
             {
                 _name = name;
                 _isKarma = isKarma;
+                _targetMode = targetMode;
             }
 
             public string Name { get { return _name; } }
@@ -2074,54 +2786,76 @@ namespace Shadowrun.LocalService.Core.Protocols
                     return ChatCommandResult.Fail("Invalid command context.");
                 }
 
-                if (args == null || args.Length != 1)
+                if (_targetMode == ChatCommandTargetMode.Self)
                 {
-                    return ChatCommandResult.Fail("Usage: /" + _name + " {X}");
+                    if (args != null && args.Length != 0)
+                    {
+                        return ChatCommandResult.Fail("Usage: /" + _name);
+                    }
+                }
+                else if (args == null || args.Length != 1)
+                {
+                    return ChatCommandResult.Fail("Usage: /" + _name + " {AccountId}");
+                }
+
+                ChatCommandTarget target;
+                string error;
+                if (_targetMode == ChatCommandTargetMode.Self)
+                {
+                    if (!owner.TryResolveSenderCommandTarget(context, out target, out error))
+                    {
+                        return ChatCommandResult.Fail(error);
+                    }
+                }
+                else if (!owner.TryResolveConnectedCommandTarget(args[0], out target, out error))
+                {
+                    return ChatCommandResult.Fail(error);
                 }
 
                 int value;
-                if (!int.TryParse(args[0], out value) || value < 0)
+                string message;
+                var success = owner.TryGetBalanceForTarget(target, _isKarma, out value, out message);
+                if (_targetMode == ChatCommandTargetMode.OtherByAccountId)
                 {
-                    return ChatCommandResult.Fail("Value must be a non-negative integer.");
+                    owner.LogAdminEvent(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "chat-command",
+                        action = "target-balance-read",
+                        command = _name,
+                        senderAccountId = context.SenderAccountId,
+                        senderIdentity = context.SenderIdentityHash ?? string.Empty,
+                        senderCareerIndex = context.ActiveCareerIndex,
+                        targetAccountId = target != null && target.AccountId != Guid.Empty ? target.AccountId.ToString("D") : string.Empty,
+                        targetIdentityHash = target != null ? (target.IdentityHash ?? string.Empty) : string.Empty,
+                        targetCareerIndex = target != null ? target.ActiveCareerIndex : 0,
+                        targetCharacterId = target != null ? (target.CharacterId ?? string.Empty) : string.Empty,
+                        targetCharacterName = target != null ? (target.CharacterName ?? string.Empty) : string.Empty,
+                        targetHubId = target != null ? (target.HubId ?? string.Empty) : string.Empty,
+                        balanceType = _isKarma ? "karma" : "nuyen",
+                        value = value,
+                        success = success,
+                    });
                 }
 
-                if (owner._userStore == null || IsNullOrEmpty(context.SenderIdentityHash))
-                {
-                    return ChatCommandResult.Fail("Unable to resolve sender identity.");
-                }
-
-                var slot = context.ActiveCareerSlot;
-                if (slot == null)
-                {
-                    return ChatCommandResult.Fail("Unable to resolve active character.");
-                }
-
-                if (_isKarma)
-                {
-                    slot.Karma = value;
-                }
-                else
-                {
-                    slot.Nuyen = value;
-                }
-
-                owner._userStore.UpsertCareer(context.SenderIdentityHash, slot);
-
-                if (owner._characterStatePushBroker != null)
-                {
-                    owner._characterStatePushBroker.Enqueue(
-                        context.SenderAccountId,
-                        CharacterStatePushPaths.Wallet | CharacterStatePushPaths.MetaSnapshot | CharacterStatePushPaths.CareerSummaries);
-                }
-
-                var label = _isKarma ? "karma" : "nuyen";
-                return ChatCommandResult.Ok("Set " + label + " to " + value.ToString() + " for career slot " + context.ActiveCareerIndex.ToString() + ".");
+                return success ? ChatCommandResult.Ok(message) : ChatCommandResult.Fail(message);
             }
         }
 
-        private sealed class AddItemCommand : IChatCommand
+        private sealed class SetBalanceCommand : IChatCommand
         {
-            public string Name { get { return "additem"; } }
+            private readonly string _name;
+            private readonly bool _isKarma;
+            private readonly ChatCommandTargetMode _targetMode;
+
+            public SetBalanceCommand(string name, bool isKarma, ChatCommandTargetMode targetMode)
+            {
+                _name = name;
+                _isKarma = isKarma;
+                _targetMode = targetMode;
+            }
+
+            public string Name { get { return _name; } }
             public bool RequiresAdmin { get { return true; } }
 
             public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
@@ -2131,119 +2865,170 @@ namespace Shadowrun.LocalService.Core.Protocols
                     return ChatCommandResult.Fail("Invalid command context.");
                 }
 
-                if (args == null || args.Length < 1 || args.Length > 2)
+                if (_targetMode == ChatCommandTargetMode.Self)
                 {
-                    return ChatCommandResult.Fail("Usage: /additem {ItemCode} [Variant]");
+                    if (args == null || args.Length != 1)
+                    {
+                        return ChatCommandResult.Fail("Usage: /" + _name + " {X}");
+                    }
+                }
+                else if (args == null || args.Length != 2)
+                {
+                    return ChatCommandResult.Fail("Usage: /" + _name + " {AccountId} {X}");
                 }
 
-                var itemCode = args[0] != null ? args[0].Trim() : string.Empty;
+                var valueArgIndex = _targetMode == ChatCommandTargetMode.Self ? 0 : 1;
+                int value;
+                if (!int.TryParse(args[valueArgIndex], out value) || value < 0)
+                {
+                    return ChatCommandResult.Fail("Value must be a non-negative integer.");
+                }
+
+                ChatCommandTarget target;
+                string error;
+                if (_targetMode == ChatCommandTargetMode.Self)
+                {
+                    if (!owner.TryResolveSenderCommandTarget(context, out target, out error))
+                    {
+                        return ChatCommandResult.Fail(error);
+                    }
+                }
+                else if (!owner.TryResolveConnectedCommandTarget(args[0], out target, out error))
+                {
+                    return ChatCommandResult.Fail(error);
+                }
+
+                string message;
+                var success = owner.TrySetBalanceForTarget(target, value, _isKarma, out message);
+                if (_targetMode == ChatCommandTargetMode.OtherByAccountId)
+                {
+                    owner.LogAdminEvent(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "chat-command",
+                        action = "target-balance-write",
+                        command = _name,
+                        senderAccountId = context.SenderAccountId,
+                        senderIdentity = context.SenderIdentityHash ?? string.Empty,
+                        senderCareerIndex = context.ActiveCareerIndex,
+                        targetAccountId = target != null && target.AccountId != Guid.Empty ? target.AccountId.ToString("D") : string.Empty,
+                        targetIdentityHash = target != null ? (target.IdentityHash ?? string.Empty) : string.Empty,
+                        targetCareerIndex = target != null ? target.ActiveCareerIndex : 0,
+                        targetCharacterId = target != null ? (target.CharacterId ?? string.Empty) : string.Empty,
+                        targetCharacterName = target != null ? (target.CharacterName ?? string.Empty) : string.Empty,
+                        targetHubId = target != null ? (target.HubId ?? string.Empty) : string.Empty,
+                        balanceType = _isKarma ? "karma" : "nuyen",
+                        value = value,
+                        success = success,
+                    });
+                }
+
+                return success ? ChatCommandResult.Ok(message) : ChatCommandResult.Fail(message);
+            }
+        }
+
+        private sealed class AddItemCommand : IChatCommand
+        {
+            private readonly string _name;
+            private readonly ChatCommandTargetMode _targetMode;
+
+            public AddItemCommand(string name, ChatCommandTargetMode targetMode)
+            {
+                _name = name;
+                _targetMode = targetMode;
+            }
+
+            public string Name { get { return _name; } }
+            public bool RequiresAdmin { get { return true; } }
+
+            public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
+            {
+                if (owner == null || context == null)
+                {
+                    return ChatCommandResult.Fail("Invalid command context.");
+                }
+
+                if (_targetMode == ChatCommandTargetMode.Self)
+                {
+                    if (args == null || args.Length < 1 || args.Length > 2)
+                    {
+                        return ChatCommandResult.Fail("Usage: /" + _name + " {ItemCode} [Variant]");
+                    }
+                }
+                else if (args == null || args.Length < 2 || args.Length > 3)
+                {
+                    return ChatCommandResult.Fail("Usage: /" + _name + " {AccountId} {ItemCode} [Variant]");
+                }
+
+                ChatCommandTarget target;
+                string error;
+                var itemCodeArgIndex = 0;
+                var variantArgIndex = 1;
+                if (_targetMode == ChatCommandTargetMode.Self)
+                {
+                    if (!owner.TryResolveSenderCommandTarget(context, out target, out error))
+                    {
+                        return ChatCommandResult.Fail(error);
+                    }
+                }
+                else
+                {
+                    if (!owner.TryResolveConnectedCommandTarget(args[0], out target, out error))
+                    {
+                        return ChatCommandResult.Fail(error);
+                    }
+
+                    itemCodeArgIndex = 1;
+                    variantArgIndex = 2;
+                }
+
+                var itemCode = args[itemCodeArgIndex] != null ? args[itemCodeArgIndex].Trim() : string.Empty;
                 if (IsNullOrEmpty(itemCode))
                 {
                     return ChatCommandResult.Fail("Item code is required.");
                 }
 
-                var isValidItemCode = false;
-                var itemCategory = 0;
-                var canValidate = owner.TryResolveItemValidationInfo(itemCode, out isValidItemCode, out itemCategory);
-                if (!canValidate)
+                int? variantValue = null;
+                if (args.Length > variantArgIndex)
                 {
-                    return ChatCommandResult.Fail("Unable to validate item data from static-data.");
-                }
-
-                if (!isValidItemCode)
-                {
-                    return ChatCommandResult.Fail("Unknown item code '" + itemCode + "'.");
-                }
-
-                var quality = 0;
-                var variant = -1;
-                if (args.Length == 2)
-                {
-                    if (!int.TryParse(args[1], out variant))
+                    int parsedVariant;
+                    if (!int.TryParse(args[variantArgIndex], out parsedVariant))
                     {
                         return ChatCommandResult.Fail("Variant must be an integer between 2 and 405.");
                     }
 
-                    if (variant < 2 || variant > 405)
+                    variantValue = parsedVariant;
+                }
+
+                int appliedVariant;
+                int quality;
+                string message;
+                var success = owner.TryAddItemForTarget(target, itemCode, variantValue, out appliedVariant, out quality, out message);
+                if (_targetMode == ChatCommandTargetMode.OtherByAccountId)
+                {
+                    owner.LogAdminEvent(new
                     {
-                        return ChatCommandResult.Fail("Variant must be between 2 and 405.");
-                    }
-
-                    quality = variant <= 319 ? 1 : 2;
-
-                    if (itemCategory <= 0)
-                    {
-                        return ChatCommandResult.Fail("Item '" + itemCode + "' does not expose an item category for variant compatibility checks.");
-                    }
-
-                    var variantExists = false;
-                    var isCompatible = false;
-                    var canResolveCompatibility = owner.TryResolveVariantCompatibility(variant, itemCategory, out variantExists, out isCompatible);
-                    if (!canResolveCompatibility)
-                    {
-                        return ChatCommandResult.Fail("Unable to validate variant compatibility from static-data.");
-                    }
-
-                    if (!variantExists)
-                    {
-                        return ChatCommandResult.Fail("Unknown variant id '" + variant.ToString() + "'.");
-                    }
-
-                    if (!isCompatible)
-                    {
-                        return ChatCommandResult.Fail("Variant " + variant.ToString() + " is not compatible with item category " + itemCategory.ToString() + ".");
-                    }
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "chat-command",
+                        action = "target-item-write",
+                        command = _name,
+                        senderAccountId = context.SenderAccountId,
+                        senderIdentity = context.SenderIdentityHash ?? string.Empty,
+                        senderCareerIndex = context.ActiveCareerIndex,
+                        targetAccountId = target != null && target.AccountId != Guid.Empty ? target.AccountId.ToString("D") : string.Empty,
+                        targetIdentityHash = target != null ? (target.IdentityHash ?? string.Empty) : string.Empty,
+                        targetCareerIndex = target != null ? target.ActiveCareerIndex : 0,
+                        targetCharacterId = target != null ? (target.CharacterId ?? string.Empty) : string.Empty,
+                        targetCharacterName = target != null ? (target.CharacterName ?? string.Empty) : string.Empty,
+                        targetHubId = target != null ? (target.HubId ?? string.Empty) : string.Empty,
+                        itemCode = itemCode,
+                        variant = appliedVariant,
+                        quality = quality,
+                        success = success,
+                    });
                 }
 
-                if (owner._userStore == null || IsNullOrEmpty(context.SenderIdentityHash))
-                {
-                    return ChatCommandResult.Fail("Unable to resolve sender identity.");
-                }
-
-                var slot = context.ActiveCareerSlot;
-                if (slot == null)
-                {
-                    return ChatCommandResult.Fail("Unable to resolve active character.");
-                }
-
-                if (slot.ItemPossessions == null)
-                {
-                    slot.ItemPossessions = new Dictionary<string, int>(StringComparer.Ordinal);
-                }
-
-                var possessionKey = itemCode + "|" + quality.ToString() + "|" + variant.ToString();
-                int existing;
-                if (!slot.ItemPossessions.TryGetValue(possessionKey, out existing) || existing < 0)
-                {
-                    existing = 0;
-                }
-
-                var next = existing;
-                try
-                {
-                    next = checked(existing + 1);
-                }
-                catch
-                {
-                    next = int.MaxValue;
-                }
-
-                slot.ItemPossessions[possessionKey] = next;
-                owner._userStore.UpsertCareer(context.SenderIdentityHash, slot);
-
-                if (owner._characterStatePushBroker != null)
-                {
-                    owner._characterStatePushBroker.Enqueue(
-                        context.SenderAccountId,
-                        CharacterStatePushPaths.Inventory | CharacterStatePushPaths.MetaSnapshot | CharacterStatePushPaths.CareerSummaries);
-                }
-
-                if (variant >= 0)
-                {
-                    return ChatCommandResult.Ok("Added 1x " + itemCode + " (variant " + variant.ToString() + ", quality " + quality.ToString() + ") to career slot " + context.ActiveCareerIndex.ToString() + ".");
-                }
-
-                return ChatCommandResult.Ok("Added 1x " + itemCode + " to career slot " + context.ActiveCareerIndex.ToString() + ".");
+                return success ? ChatCommandResult.Ok(message) : ChatCommandResult.Fail(message);
             }
         }
 

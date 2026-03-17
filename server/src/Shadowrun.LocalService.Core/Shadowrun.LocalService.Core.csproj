@@ -7,7 +7,7 @@
     <OutputType>Library</OutputType>
     <RootNamespace>Shadowrun.LocalService.Core</RootNamespace>
     <AssemblyName>Shadowrun.LocalService.Core</AssemblyName>
-    <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
   </PropertyGroup>
 
@@ -71,6 +71,11 @@
       <SpecificVersion>False</SpecificVersion>
       <Private>True</Private>
     </Reference>
+    <Reference Include="Mono.Data.Sqlite">
+      <HintPath>..\Dependencies\Mono.Data.Sqlite.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>True</Private>
+    </Reference>
     <Reference Include="SRO.Core.Compatibility">
       <HintPath>..\Dependencies\SRO.Core.Compatibility.dll</HintPath>
       <SpecificVersion>False</SpecificVersion>
@@ -106,23 +111,57 @@
   <ItemGroup>
     <Compile Include="Career\CareerInfoGenerator.cs" />
     <Compile Include="Career\MatchConfigurationGenerator.cs" />
-    <Compile Include="AILogic\AiDecision.cs" />
+    <Compile Include="AILogic\AiAgentSnapshotFactory.cs" />
     <Compile Include="AILogic\AiMovementScorer.cs" />
+    <Compile Include="AILogic\Valuations\AValuation.cs" />
     <Compile Include="AILogic\BasicValuationContext.cs" />
     <Compile Include="AILogic\BasicValuationFactory.cs" />
-    <Compile Include="AILogic\ConfigDrivenAiDecisionEngine.cs" />
+    <Compile Include="AILogic\AiPlanningDiagnostics.cs" />
+    <Compile Include="AILogic\Valuations\CloseToPointOfInterest.cs" />
     <Compile Include="AILogic\EntityComponentAiBehaviourConfigLookup.cs" />
+    <Compile Include="AILogic\Valuations\Flanked.cs" />
+    <Compile Include="AILogic\Valuations\FlankingAvoidance.cs" />
     <Compile Include="AILogic\IAgentTemplateAiConfigLookup.cs" />
     <Compile Include="AILogic\IAiBehaviourConfigLookup.cs" />
-    <Compile Include="AILogic\IAiDecisionEngine.cs" />
+    <Compile Include="AILogic\IAiPlanner.cs" />
     <Compile Include="AILogic\NullAgentTemplateAiConfigLookup.cs" />
-    <Compile Include="AILogic\NullAiDecisionEngine.cs" />
+    <Compile Include="AILogic\AiSkillCatalog.cs" />
+    <Compile Include="AILogic\Valuations\OptimalDistance.cs" />
+    <Compile Include="AILogic\Valuations\OptimalDistanceEnemies.cs" />
+    <Compile Include="AILogic\Valuations\Opportunity.cs" />
+    <Compile Include="AILogic\PlannedAiAction.cs" />
+    <Compile Include="AILogic\PortedAIAttackPlanner.cs" />
+    <Compile Include="AILogic\PortedAIMovementPlanner.cs" />
+    <Compile Include="AILogic\PortedAiPlanner.cs" />
     <Compile Include="AILogic\SkillSelectionStrategyFactory.cs" />
+    <Compile Include="AILogic\Valuations\WalkDistanceToEnemies.cs" />
     <Compile Include="Persistence\LocalUserStore.cs" />
     <Compile Include="Persistence\LocalUserStore.IO.cs" />
+    <Compile Include="Persistence\LocalAccountStore.cs" />
+    <Compile Include="Persistence\LocalCouponService.cs" />
+    <Compile Include="Persistence\LocalCareerStore.cs" />
+    <Compile Include="Persistence\LocalCareerSeedService.cs" />
+    <Compile Include="Persistence\LocalSessionStore.cs" />
+    <Compile Include="Persistence\LocalPlayerInfoStore.cs" />
     <Compile Include="Persistence\FriendsStore.cs" />
+    <Compile Include="Persistence\SqliteLocalStore.cs" />
     <Compile Include="Persistence\ISessionIdentityMap.cs" />
     <Compile Include="Persistence\ExpiringSessionIdentityMap.cs" />
+    <Compile Include="Metagameplay\MetagameplayAvailabilityEvaluator.cs" />
+    <Compile Include="Metagameplay\EffectiveUnlockResolver.cs" />
+    <Compile Include="Metagameplay\LocalMetagameplaySnapshotFactory.cs" />
+    <Compile Include="Metagameplay\PortedStorySnapshotBuilder.cs" />
+    <Compile Include="Metagameplay\PortedHubInstance.cs" />
+    <Compile Include="Metagameplay\PortedHubInstanceManager.cs" />
+    <Compile Include="Metagameplay\PortedHubLoadBalancing.cs" />
+    <Compile Include="Metagameplay\PortedHubRepository.cs" />
+    <Compile Include="Metagameplay\PortedHubStateController.cs" />
+    <Compile Include="Metagameplay\PortedMissionRewardService.cs" />
+    <Compile Include="Metagameplay\RepeatableMissionUnlockService.cs" />
+    <Compile Include="Metagameplay\PortedStoryProgressionService.cs" />
+    <Compile Include="Metagameplay\MetagameplayStaticDataIndex.cs" />
+    <Compile Include="Metagameplay\PortedShopInventoryService.cs" />
+    <Compile Include="Metagameplay\PortedSkillPurchaseService.cs" />
     <Compile Include="Http\HttpStubServer.Account.cs" />
     <Compile Include="Http\HttpStubServer.cs" />
     <Compile Include="Http\HttpStubServer.Coupon.cs" />
@@ -131,9 +170,26 @@
     <Compile Include="Coupons\HonoredCouponCodes.cs" />
     <Compile Include="LocalServiceOptions.cs" />
     <Compile Include="Protocols\APlayTcpStub.cs" />
+    <Compile Include="Protocols\APlayTcpStub.CharacterChangeCompatibility.cs" />
+    <Compile Include="Protocols\APlayTcpStub.ConnectionLifecycle.cs" />
+    <Compile Include="Protocols\APlayTcpStub.CoopMissionSessions.cs" />
+    <Compile Include="Protocols\APlayTcpStub.HenchmanCompatibility.cs" />
+    <Compile Include="Protocols\APlayTcpStub.HubReadyFallback.cs" />
+    <Compile Include="Protocols\APlayTcpStub.HubTransport.cs" />
+    <Compile Include="Protocols\APlayTcpStub.MissionCleanup.cs" />
+    <Compile Include="Protocols\APlayTcpStub.MissionLaunch.cs" />
+    <Compile Include="Protocols\APlayTcpStub.MissionCommands.cs" />
+    <Compile Include="Protocols\APlayTcpStub.ProtocolCodec.cs" />
+    <Compile Include="Protocols\APlayTcpStub.SessionBootstrap.cs" />
+    <Compile Include="Protocols\APlayTcpStub.SoloMissionBootstrap.cs" />
+    <Compile Include="Protocols\APlayTcpStub.SocketHost.cs" />
     <Compile Include="Protocols\APlayTcpStub.StaticData.cs" />
+    <Compile Include="Protocols\APlayTcpStub.StoryProgression.cs" />
+    <Compile Include="Protocols\ConnectedPeerRegistry.cs" />
     <Compile Include="Protocols\CoopGroupHostRegistry.cs" />
     <Compile Include="Protocols\HubPresenceRegistry.cs" />
+    <Compile Include="Protocols\MissionCommands\MissionCommandKind.cs" />
+    <Compile Include="Protocols\MissionCommands\ParsedMissionCommandRequest.cs" />
     <Compile Include="Protocols\MissionRuntimeRegistry.cs" />
     <Compile Include="Protocols\PartyHubFollowRegistry.cs" />
     <Compile Include="Protocols\PhotonProxyTcpStub.cs" />
@@ -143,8 +199,13 @@
     <Compile Include="Simulation\LocalMissionLootController.cs" />
     <Compile Include="Simulation\EncounterActivationTracker.cs" />
     <Compile Include="Simulation\NullMetagameplayrelevantChangeObserver.cs" />
+    <Compile Include="Simulation\MissionEntityStateDiagnosticsListener.cs" />
+    <Compile Include="Simulation\PortedAiAgent.cs" />
+    <Compile Include="Simulation\PortedAiCommander.cs" />
+    <Compile Include="Simulation\PortedAiCommanderRepository.cs" />
     <Compile Include="Simulation\ServerSimulationSession.cs" />
     <Compile Include="Simulation\ServerSimulationSession.AiTurns.cs" />
+    <Compile Include="Simulation\ServerSimulationSession.Diagnostics.cs" />
     <Compile Include="Simulation\TurnObserver.cs" />
   </ItemGroup>
 

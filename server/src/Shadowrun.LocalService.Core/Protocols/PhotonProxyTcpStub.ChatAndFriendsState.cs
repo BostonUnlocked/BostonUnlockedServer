@@ -115,28 +115,31 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
 
                 List<PendingAccountEvent> pending = null;
+                List<string> channelsToNotifyLeft = null;
+                Guid accountId = Guid.Empty;
                 lock (_lock)
                 {
                     Peer peer;
                     if (_peersByConnId.TryGetValue(connectionId, out peer) && peer != null)
                     {
+                        accountId = peer.AccountId;
                         _peersByConnId.Remove(connectionId);
 
-                        if (peer.AccountId != Guid.Empty)
+                        if (accountId != Guid.Empty)
                         {
                             List<Guid> connIds;
-                            if (_connIdsByAccountId.TryGetValue(peer.AccountId, out connIds) && connIds != null)
+                            if (_connIdsByAccountId.TryGetValue(accountId, out connIds) && connIds != null)
                             {
                                 connIds.Remove(connectionId);
                                 var accountWentOffline = connIds.Count == 0;
                                 if (accountWentOffline)
                                 {
-                                    _connIdsByAccountId.Remove(peer.AccountId);
+                                    _connIdsByAccountId.Remove(accountId);
                                     if (pending == null)
                                     {
                                         pending = new List<PendingAccountEvent>();
                                     }
-                                    HandleAccountOffline_NoLock(peer.AccountId, pending);
+                                    HandleAccountOffline_NoLock(accountId, pending);
                                 }
                             }
                         }
@@ -144,10 +147,23 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                     foreach (var kvp in _channelMembers)
                     {
-                        if (kvp.Value != null)
+                        if (kvp.Value != null && kvp.Value.Remove(connectionId) && accountId != Guid.Empty && !ChannelHasAccountConnection_NoLock(kvp.Value, accountId))
                         {
-                            kvp.Value.Remove(connectionId);
+                            if (channelsToNotifyLeft == null)
+                            {
+                                channelsToNotifyLeft = new List<string>();
+                            }
+
+                            channelsToNotifyLeft.Add(kvp.Key);
                         }
+                    }
+                }
+
+                if (channelsToNotifyLeft != null)
+                {
+                    for (var i = 0; i < channelsToNotifyLeft.Count; i++)
+                    {
+                        BroadcastChannelParticipantChanged(channelsToNotifyLeft[i], accountId, false);
                     }
                 }
 
@@ -344,6 +360,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
 
                 Peer peer;
+                var notifyJoined = false;
                 lock (_lock)
                 {
                     if (!_peersByConnId.TryGetValue(connectionId, out peer) || peer == null)
@@ -362,10 +379,15 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                         return;
                     }
+
+                    notifyJoined = !ChannelHasAccountConnection_NoLock(members, peer.AccountId, connectionId);
                 }
 
-                // Notify participants (including the joiner) that someone joined.
-                BroadcastChannelParticipantChanged(channelName, peer.AccountId, true);
+                if (notifyJoined)
+                {
+                    // Notify participants (including the joiner) that someone joined.
+                    BroadcastChannelParticipantChanged(channelName, peer.AccountId, true);
+                }
             }
 
             public void LeaveChannel(Guid connectionId, string channelName)
@@ -377,6 +399,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                 Peer peer;
                 var removed = false;
+                var notifyLeft = false;
 
                 lock (_lock)
                 {
@@ -389,13 +412,46 @@ namespace Shadowrun.LocalService.Core.Protocols
                     if (_channelMembers.TryGetValue(channelName, out members) && members != null)
                     {
                         removed = members.Remove(connectionId);
+                        if (removed)
+                        {
+                            notifyLeft = !ChannelHasAccountConnection_NoLock(members, peer.AccountId);
+                        }
                     }
                 }
 
-                if (removed)
+                if (removed && notifyLeft)
                 {
                     BroadcastChannelParticipantChanged(channelName, peer.AccountId, false);
                 }
+            }
+
+            private bool ChannelHasAccountConnection_NoLock(HashSet<Guid> members, Guid accountId)
+            {
+                return ChannelHasAccountConnection_NoLock(members, accountId, Guid.Empty);
+            }
+
+            private bool ChannelHasAccountConnection_NoLock(HashSet<Guid> members, Guid accountId, Guid excludeConnectionId)
+            {
+                if (members == null || accountId == Guid.Empty)
+                {
+                    return false;
+                }
+
+                foreach (var memberConnectionId in members)
+                {
+                    if (memberConnectionId == excludeConnectionId)
+                    {
+                        continue;
+                    }
+
+                    Peer memberPeer;
+                    if (_peersByConnId.TryGetValue(memberConnectionId, out memberPeer) && memberPeer != null && memberPeer.AccountId == accountId)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
             }
 
             public List<User> GetChannelParticipants(string channelName)
@@ -816,6 +872,57 @@ namespace Shadowrun.LocalService.Core.Protocols
                     List<Guid> connIds;
                     return _connIdsByAccountId.TryGetValue(accountId, out connIds) && connIds != null && connIds.Count > 0;
                 }
+            }
+
+            public int GetOnlineAccountCount()
+            {
+                lock (_lock)
+                {
+                    return _connIdsByAccountId.Count;
+                }
+            }
+
+            public Guid[] GetOnlineAccountIds()
+            {
+                lock (_lock)
+                {
+                    if (_connIdsByAccountId.Count == 0)
+                    {
+                        return new Guid[0];
+                    }
+
+                    var accountIds = new Guid[_connIdsByAccountId.Count];
+                    _connIdsByAccountId.Keys.CopyTo(accountIds, 0);
+                    return accountIds;
+                }
+            }
+
+            public Guid[] GetGroupMemberAccountIds(Guid accountId)
+            {
+                if (accountId == Guid.Empty)
+                {
+                    return new Guid[0];
+                }
+
+                lock (_lock)
+                {
+                    foreach (var rec in _groupsById.Values)
+                    {
+                        if (rec == null || rec.Group == null || rec.MemberAccountIds == null || rec.MemberAccountIds.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        if (!rec.MemberAccountIds.Contains(accountId))
+                        {
+                            continue;
+                        }
+
+                        return rec.MemberAccountIds.ToArray();
+                    }
+                }
+
+                return new Guid[0];
             }
 
             // ----- Groups & invitations (minimal for party chat) -----

@@ -16,6 +16,8 @@
 
 # Extracted game resources (do not commit)
 /server/src/Dependencies/*.dll
+!/server/src/Dependencies/Mono.Data.Sqlite.dll
+!/server/src/Dependencies/sqlite3.dll
 /server/static-data/*.json
 /server/StreamingAssets/**
 

@@ -3,7 +3,10 @@ param(
     [int]$Port = 80,
     [int]$APlayPort = 5055,
     [int]$PhotonPort = 4530,
-    [switch]$NoFileLogs
+    [switch]$NoFileLogs,
+    [switch]$UseSqlite,
+    [switch]$MigrateJsonToSqlite,
+    [string]$SQLiteDbPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,9 +75,27 @@ if ($missingDlls.Count -gt 0 -or $missingStatic.Count -gt 0 -or -not (Test-Path 
     throw "Run: $extractor -GameRoot '<path-to-ShadowrunChronicles-install>'"
 }
 
+if ($UseSqlite) {
+    $sqliteDlls = @(
+        'Mono.Data.Sqlite.dll',
+        'sqlite3.dll'
+    )
+
+    $missingSqliteDlls = @()
+    foreach ($dll in $sqliteDlls) {
+        if (-not (Test-Path (Join-Path $depsDir $dll))) {
+            $missingSqliteDlls += $dll
+        }
+    }
+
+    if ($missingSqliteDlls.Count -gt 0) {
+        throw "SQLite requested but missing DLLs in ${depsDir}: $($missingSqliteDlls -join ', ')"
+    }
+}
+
 Push-Location (Join-Path $PSScriptRoot 'src')
 try {
-    Write-Output "[server] building (net35)..."
+    Write-Output "[server] building (net48 host/core with current MSBuild toolchain)..."
     & $msbuild .\Shadowrun.LocalService.Host\Shadowrun.LocalService.Host.csproj /p:Configuration=Release /v:m
     if ($LASTEXITCODE -ne 0) {
         throw "MSBuild failed with exit code $LASTEXITCODE"
@@ -85,8 +106,31 @@ finally {
 }
 
 $exe = Join-Path $PSScriptRoot 'src\Shadowrun.LocalService.Host\bin\Release\Shadowrun.LocalService.Host.exe'
+$hostOutDir = Split-Path -Parent $exe
+$coreDll = Join-Path $hostOutDir 'Shadowrun.LocalService.Core.dll'
+$coreBuildDir = Join-Path $PSScriptRoot 'src\Shadowrun.LocalService.Core\bin\Release'
+$depsBuildDir = Join-Path $PSScriptRoot 'src\Dependencies'
 if (-not (Test-Path $exe)) {
     throw "Host exe not found after build: $exe"
+}
+
+if (Test-Path $coreBuildDir) {
+    Get-ChildItem -LiteralPath $coreBuildDir -Filter *.dll | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $hostOutDir $_.Name) -Force
+    }
+    Get-ChildItem -LiteralPath $coreBuildDir -Filter *.pdb | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $hostOutDir $_.Name) -Force
+    }
+}
+
+if (Test-Path $depsBuildDir) {
+    Get-ChildItem -LiteralPath $depsBuildDir -Filter *.dll | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $hostOutDir $_.Name) -Force
+    }
+}
+
+if (-not (Test-Path $coreDll)) {
+    throw "Core dll not found beside host exe after build: $coreDll"
 }
 
 $argsList = @(
@@ -98,6 +142,19 @@ $argsList = @(
 
 if ($NoFileLogs) {
     $argsList += '--no-file-logs'
+}
+
+if ($UseSqlite) {
+    $argsList += '--use-sqlite'
+}
+
+if ($MigrateJsonToSqlite) {
+    $argsList += '--migrate-json-to-sqlite'
+}
+
+if (-not [string]::IsNullOrWhiteSpace($SQLiteDbPath)) {
+    $argsList += '--sqlite-db-path'
+    $argsList += $SQLiteDbPath
 }
 
 & $exe @argsList

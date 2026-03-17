@@ -4,7 +4,7 @@ using Cliffhanger.SRO.ServerClientCommons.Gameworld.StaticGameData;
 namespace Shadowrun.LocalService.Core.AILogic
 {
     /// <summary>
-    /// Placeholder implementation. We currently expect AI configs to be present on spawned entities.
+    /// Null implementation used when no template-level AI config lookup is available.
     /// </summary>
     public sealed class NullAgentTemplateAiConfigLookup : IAgentTemplateAiConfigLookup
     {

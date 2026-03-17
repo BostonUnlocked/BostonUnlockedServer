@@ -12,10 +12,12 @@ namespace Shadowrun.LocalService.Core.Persistence
         private readonly RequestLogger _logger;
         private readonly object _lock = new object();
         private readonly string _friendsPath;
+        private readonly SqliteLocalStore _sqliteStore;
 
         public FriendsStore(LocalServiceOptions options, RequestLogger logger)
         {
             _logger = logger;
+            _sqliteStore = new SqliteLocalStore(options, logger);
 
             var dataDir = options != null ? options.DataDir : null;
             if (string.IsNullOrEmpty(dataDir))
@@ -39,6 +41,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public List<Guid> GetFriends(Guid accountId)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.GetFriends(accountId);
+            }
+
             if (accountId == Guid.Empty)
             {
                 return new List<Guid>();
@@ -79,6 +86,12 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public void AddFriendship(Guid a, Guid b)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                _sqliteStore.AddFriendship(a, b);
+                return;
+            }
+
             if (a == Guid.Empty || b == Guid.Empty || a == b)
             {
                 return;
@@ -96,6 +109,12 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public void RemoveFriendship(Guid a, Guid b)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                _sqliteStore.RemoveFriendship(a, b);
+                return;
+            }
+
             if (a == Guid.Empty || b == Guid.Empty)
             {
                 return;

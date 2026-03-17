@@ -8,7 +8,7 @@ using SRO.Core.Compatibility.Math;
 namespace Shadowrun.LocalService.Core.AILogic
 {
     /// <summary>
-    /// Placeholder movement scorer: converts assessment definitions into valuations and sums them for candidate positions.
+    /// Converts serialized movement assessments into runtime valuations and sums them for candidate positions.
     /// </summary>
     public sealed class AiMovementScorer
     {

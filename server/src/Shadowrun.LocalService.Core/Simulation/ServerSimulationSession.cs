@@ -24,12 +24,15 @@ using SRO.Core.Compatibility.Logging;
 using SRO.Core.Compatibility.Math;
 using SRO.Core.Compatibility.Utilities;
 using Shadowrun.LocalService.Core.AILogic;
+using Shadowrun.LocalService.Core.Persistence;
 
 namespace Shadowrun.LocalService.Core.Simulation
 {
     public sealed partial class ServerSimulationSession
     {
+        public const int EndActorTurnSkillId = 99996;
         public const int EndTeamTurnSkillId = 99997;
+        public const int SwitchToCombatSkillId = 90011;
 
         private readonly RequestLogger _logger;
         private readonly string _peer;
@@ -46,13 +49,15 @@ namespace Shadowrun.LocalService.Core.Simulation
         private readonly TurnObserver _turnObserver;
 
         private readonly bool _enableAiLogic;
-        private readonly IAiDecisionEngine _aiDecisionEngine;
+        private readonly IAiPlanner _aiPlanner;
 
         private readonly LocalMissionLootController _lootController;
         private readonly EncounterActivationTracker _encounterActivationTracker;
 
         private readonly object _lootPreviewLock;
         private readonly List<string> _pendingLootPreviews;
+        private readonly object _missionStartSync = new object();
+        private bool _missionPlayStarted;
 
         private ServerSimulationSession(
             RequestLogger logger,
@@ -71,7 +76,7 @@ namespace Shadowrun.LocalService.Core.Simulation
             object lootPreviewLock,
             List<string> pendingLootPreviews,
             bool enableAiLogic,
-            IAiDecisionEngine aiDecisionEngine)
+            IAiPlanner aiPlanner)
         {
             _logger = logger;
             _peer = peer;
@@ -91,12 +96,21 @@ namespace Shadowrun.LocalService.Core.Simulation
             _pendingLootPreviews = pendingLootPreviews ?? new List<string>();
 
             _enableAiLogic = enableAiLogic;
-            _aiDecisionEngine = aiDecisionEngine;
+            _aiPlanner = aiPlanner;
         }
 
-        internal LocalMissionLootController.LootGrant[] DrainPendingLoot()
+        internal LocalMissionLootController.LootGrant[] ResolvePendingLootForParticipant(string participantKey, LocalUserStore userStore, Guid identityGuid, CareerSlot slot)
         {
-            return _lootController != null ? _lootController.DrainPending() : new LocalMissionLootController.LootGrant[0];
+            return _lootController != null
+                ? _lootController.ResolveLootForParticipant(participantKey, userStore, identityGuid, slot)
+                : new LocalMissionLootController.LootGrant[0];
+        }
+
+        internal LocalMissionLootController.LootGrant[] ResolvePendingLootPreviewsForParticipant(string participantKey, LocalUserStore userStore, Guid identityGuid, CareerSlot slot)
+        {
+            return _lootController != null
+                ? _lootController.ResolvePreviewLootForParticipant(participantKey, userStore, identityGuid, slot)
+                : new LocalMissionLootController.LootGrant[0];
         }
 
         internal string[] DrainPendingLootPreviews()
@@ -209,42 +223,12 @@ namespace Shadowrun.LocalService.Core.Simulation
             var pendingLootPreviews = new List<string>();
             var lootController = new LocalMissionLootController(
                 staticData,
-                random,
+                seed0,
+                seed1,
+                seed2,
+                seed3,
                 storyLine,
                 chapter,
-                delegate(LocalMissionLootController.LootGrant grant)
-                {
-                    if (grant == null)
-                    {
-                        return;
-                    }
-
-                    if (!string.IsNullOrEmpty(grant.ItemId))
-                    {
-                        lock (lootPreviewLock)
-                        {
-                            pendingLootPreviews.Add(grant.ItemId);
-                        }
-                    }
-
-                    try
-                    {
-                        logger.Log(new
-                        {
-                            ts = RequestLogger.UtcNowIso(),
-                            type = "mission-loot-grant",
-                            peer = peer,
-                            lootTable = grant.LootTable,
-                            itemId = grant.ItemId,
-                            delta = grant.Delta,
-                            sellPrice = grant.SellPrice,
-                            nuyen = grant.Nuyen,
-                        });
-                    }
-                    catch
-                    {
-                    }
-                },
                 delegate(string lootTable)
                 {
                     try
@@ -291,20 +275,25 @@ namespace Shadowrun.LocalService.Core.Simulation
             var summoningSpawnServiceModule = new SummoningSpawnServiceModule(gameworldInstance.EntitySystem, summonAttributeModificationFactory);
             gameworldInstance.CharacterSpawnService = new CharacterSpawnService(gameworldInstance, summoningSpawnServiceModule);
             gameworldInstance.EntityStateChangeObserver.AddListener(gameworldInstance.CharacterSpawnService);
+            gameworldInstance.EntityStateChangeObserver.AddListener(new MissionEntityStateDiagnosticsListener(logger, peer, gameworldInstance.EntitySystem));
 
             gameworldInstance.PointOfInterestController = new PointOfInterestController(gameworldInstance.TriggerSystem, levelData, gameworldInstance.EntitySystem);
 
             var turnObserver = new TurnObserver();
             simulation.AddTurnPhaseListener(turnObserver);
 
-            var encounterActivationTracker = new EncounterActivationTracker(logger, peer, gameworldInstance.EntitySystem);
+            var encounterActivationTracker = new EncounterActivationTracker(
+                logger,
+                peer,
+                gameworldInstance.EntitySystem,
+                gameworldInstance.LineOfSightEvaluator,
+                staticData,
+                gameworldInstance.Factions,
+                missionDefinition != null ? missionDefinition.Name : null);
             if (gameworldInstance.InMissionEventObserver != null)
             {
                 gameworldInstance.InMissionEventObserver.Add(encounterActivationTracker);
             }
-
-            controller.StartMission();
-            controller.StartFirstRound();
 
             try
             {
@@ -313,7 +302,7 @@ namespace Shadowrun.LocalService.Core.Simulation
                     ts = RequestLogger.UtcNowIso(),
                     type = "sim",
                     peer = peer,
-                    status = "roster",
+                    status = "created",
                     mapName = mapName,
                     missionLevel = missionDefinition.Level,
                     staticDataVersion = staticData.Globals.VersioningInfo != null ? (int?)staticData.Globals.VersioningInfo.Version : null,
@@ -360,18 +349,13 @@ namespace Shadowrun.LocalService.Core.Simulation
                 staticDataDir = staticDataDir,
             });
 
-            IAiDecisionEngine aiDecisionEngine;
-            if (enableAiLogic)
-            {
-                aiDecisionEngine = new ConfigDrivenAiDecisionEngine(
-                    new EntityComponentAiBehaviourConfigLookup(),
-                    new SkillSelectionStrategyFactory(),
-                    random);
-            }
-            else
-            {
-                aiDecisionEngine = new NullAiDecisionEngine();
-            }
+            IAiPlanner aiPlanner = new PortedAiPlanner(
+                enableAiLogic,
+                gameworldInstance,
+                random,
+                new EntityComponentAiBehaviourConfigLookup(),
+                new SkillSelectionStrategyFactory(gameworldInstance),
+                new BasicValuationFactory());
 
             return new ServerSimulationSession(
                 logger,
@@ -390,7 +374,7 @@ namespace Shadowrun.LocalService.Core.Simulation
                 lootPreviewLock,
                 pendingLootPreviews,
                 enableAiLogic,
-                aiDecisionEngine);
+                aiPlanner);
         }
 
         private static void PopulateMissionEntityTemplateResolver(MatchConfiguration matchConfiguration, ILevelData levelData, GameworldInstance gameworldInstance)
@@ -647,9 +631,76 @@ namespace Shadowrun.LocalService.Core.Simulation
             return _random.CreateSeedPackage();
         }
 
+        public bool CanPlayerControlAgent(ulong playerId, int agentId)
+        {
+            if (playerId == 0UL || _gameworld == null || _gameworld.EntitySystem == null)
+            {
+                return false;
+            }
+
+            Entity entity;
+            if (!_gameworld.EntitySystem.TryGet(agentId, out entity) || entity == null)
+            {
+                return false;
+            }
+
+            ControlComponent control;
+            if (!_gameworld.EntitySystem.TryGetComponent<ControlComponent>(entity, out control) || control == null)
+            {
+                return false;
+            }
+
+            if (control.IsAIControlled)
+            {
+                return false;
+            }
+
+            return control.PlayerId == playerId;
+        }
+
         public void Stop()
         {
             _controller.Stop();
+        }
+
+        public bool StartMissionPlay()
+        {
+            lock (_missionStartSync)
+            {
+                if (_simulation == null || _simulation.IsMissionStopped)
+                {
+                    return false;
+                }
+
+                if (_missionPlayStarted || _simulation.IsMissionStarted)
+                {
+                    return false;
+                }
+
+                _controller.StartMission();
+                _controller.StartFirstRound();
+                _missionPlayStarted = true;
+
+                try
+                {
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "sim",
+                        peer = _peer,
+                        status = "mission-play-started",
+                        mapName = _missionDefinition != null ? _missionDefinition.Name : null,
+                        level = _missionDefinition != null ? _missionDefinition.Level : null,
+                        teamId = _turnObserver.CurrentTeam != null ? (int?)_turnObserver.CurrentTeam.ID : null,
+                        teamAi = _turnObserver.CurrentTeam != null ? (bool?)_turnObserver.CurrentTeam.AIControlled : null,
+                    });
+                }
+                catch
+                {
+                }
+
+                return true;
+            }
         }
 
         private bool ExecuteCommand(
@@ -783,6 +834,40 @@ namespace Shadowrun.LocalService.Core.Simulation
                 // Best-effort diagnostics only.
             }
 
+            var meaningfulProgress = false;
+            if (beforeTeamId != afterTeamId)
+            {
+                meaningfulProgress = true;
+            }
+            else if (beforeTeamAi != afterTeamAi)
+            {
+                meaningfulProgress = true;
+            }
+            else if (beforeActivatable != afterActivatable)
+            {
+                meaningfulProgress = true;
+            }
+            else if (beforePosX != afterPosX || beforePosY != afterPosY)
+            {
+                meaningfulProgress = true;
+            }
+            else if (Math.Abs(beforeStd - afterStd) > 0.001f)
+            {
+                meaningfulProgress = true;
+            }
+            else if (Math.Abs(beforeMove - afterMove) > 0.001f)
+            {
+                meaningfulProgress = true;
+            }
+
+            // Original SRO.Server allows the transition-to-combat activity to hand control back to the
+            // turn system without forcing an immediate fallback end-turn, even though the activity does
+            // not consume actions or move the agent. Treat it as meaningful progress for diagnostics.
+            if (!meaningfulProgress && skillId.HasValue && skillId.Value == SwitchToCombatSkillId)
+            {
+                meaningfulProgress = true;
+            }
+
             _logger.Log(new
             {
                 ts = RequestLogger.UtcNowIso(),
@@ -816,52 +901,28 @@ namespace Shadowrun.LocalService.Core.Simulation
                 afterWalkRange = afterWalkRange,
                 afterSprintRange = afterSprintRange,
                 afterEffectiveMoveRange = afterEffectiveMoveRange,
+                meaningfulProgress = meaningfulProgress,
             });
 
-            // Heuristic: did this command actually advance state? Used to prevent AI loops from spamming
-            // when an action is repeatedly rejected by conditions.
-            if (beforeTeamId != afterTeamId)
-            {
-                return true;
-            }
-            if (beforeTeamAi != afterTeamAi)
-            {
-                return true;
-            }
-            if (beforeActivatable != afterActivatable)
-            {
-                return true;
-            }
-            if (beforePosX != afterPosX || beforePosY != afterPosY)
-            {
-                return true;
-            }
-            if (Math.Abs(beforeStd - afterStd) > 0.001f)
-            {
-                return true;
-            }
-            if (Math.Abs(beforeMove - afterMove) > 0.001f)
-            {
-                return true;
-            }
-
-            return false;
+            // For player-issued commands, retail behavior is to relay once the authoritative execution
+            // path has accepted the command for processing. We keep the progress heuristic as diagnostics,
+            // but a no-op authoritative execution should still be mirrored back to the client.
+            return true;
         }
 
-        public void ExecuteFollowPath(int agentId, int targetX, int targetY)
+        public bool ExecuteFollowPath(int agentId, int targetX, int targetY)
         {
             var cmd = new FollowPathCommand(agentId, new IntVector2D(targetX, targetY), _gameworld);
-            ExecuteCommand(cmd, "FollowPath", null, null, null, targetX, targetY);
+            return ExecuteCommand(cmd, "FollowPath", null, null, null, targetX, targetY);
         }
 
-        public void ExecuteActivateSkill(int weaponIndex, int skillIndex, int skillId, int agentId, int targetX, int targetY, SeedPackage seeds)
+        public bool ExecuteActivateSkill(int weaponIndex, int skillIndex, int skillId, int agentId, int targetX, int targetY, SeedPackage seeds)
         {
             IntVector2D targetPos;
 
-            // Client EndTurn() is encoded as ActivateActiveSkill(skillId=99997, x=0, y=0).
-            // The shared command type is position-targeted, but the end-turn activity is effectively positionless.
-            // Using (0,0) breaks the authoritative sim's turn advancement, which in turn prevents AI turns from being auto-ended.
-            if (skillId == EndTeamTurnSkillId)
+            // End-turn activities are encoded as ActivateActiveSkill, but are effectively positionless.
+            // Using (0,0) breaks the authoritative sim's turn advancement.
+            if (skillId == EndTeamTurnSkillId || skillId == EndActorTurnSkillId)
             {
                 Entity entity;
                 if (_gameworld.EntitySystem.TryGet(agentId, out entity))
@@ -900,7 +961,7 @@ namespace Shadowrun.LocalService.Core.Simulation
                 _random,
                 seeds);
 
-            ExecuteCommand(cmd, "ActivateActiveSkill", weaponIndex, skillIndex, skillId, targetPos.X, targetPos.Y);
+            return ExecuteCommand(cmd, "ActivateActiveSkill", weaponIndex, skillIndex, skillId, targetPos.X, targetPos.Y);
         }
 
         private void TryLogInteractionTarget(int agentId, IntVector2D targetPos)

@@ -20,43 +20,13 @@ using SRO.Core.Compatibility.Math;
 using SRO.Core.Compatibility.Utilities;
 using Shadowrun.LocalService.Core.Simulation;
 using Shadowrun.LocalService.Core.Career;
+using Shadowrun.LocalService.Core.Metagameplay;
 using Shadowrun.LocalService.Core.Persistence;
 
 namespace Shadowrun.LocalService.Core.Protocols
 {
     public sealed partial class APlayTcpStub
     {
-        private sealed class CoopMissionSessionState
-        {
-            public CoopMissionSessionState(string coopGroupName)
-            {
-                CoopGroupName = coopGroupName;
-                SyncRoot = new object();
-                CreatedUtc = DateTime.UtcNow;
-
-                LootSnapshot = null;
-                LootAppliedToParticipants = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-            }
-
-            public readonly string CoopGroupName;
-            public readonly object SyncRoot;
-            public readonly DateTime CreatedUtc;
-
-            public string MapName;
-            public uint Seed0;
-            public uint Seed1;
-            public uint Seed2;
-            public uint Seed3;
-            public string CompressedMatchConfiguration;
-            public ServerSimulationSession Simulation;
-
-            // Coop loot is shared at the simulation level (one LocalMissionLootController), but rewards must be
-            // applied per-player. If the first client to leave drains the loot, other clients would miss it.
-            // Snapshot the drained loot once per coop run and apply to each participant (identity+career) once.
-            public Shadowrun.LocalService.Core.Simulation.LocalMissionLootController.LootGrant[] LootSnapshot;
-            public Dictionary<string, bool> LootAppliedToParticipants;
-        }
-
         private const string DefaultHubId = "Act01_HUB_02";
         private const string FallbackSerializedHubState = "CwAAAEgAVQBCAF8AcwBjAGUAbgBlAF8AMQALAAAASABVAEIAXwBzAGMAZQBuAGUAXwAxAAA=";
         private static long _hubInstanceSequence;
@@ -65,1222 +35,8 @@ namespace Shadowrun.LocalService.Core.Protocols
         private static long _hubReadyFallbackSkippedTotal;
         private static readonly object HenchmanCollectionCacheLock = new object();
         private static string CachedSerializedHenchmanCollection;
-        private static DateTime CachedSerializedHenchmanCollectionLastWriteUtc;
         private static int CachedHenchmanCollectionCreationIndex;
         private static List<PlayerCharacterSnapshot> CachedHenchmanCollectionSnapshots;
-
-        private static readonly object ShopPriceCacheLock = new object();
-        private static readonly Dictionary<string, Dictionary<string, int>> CachedShopPrices = new Dictionary<string, Dictionary<string, int>>(StringComparer.OrdinalIgnoreCase);
-        private static DateTime CachedShopPricesLastWriteUtc;
-        private static string CachedShopPricesPath;
-
-        private readonly object _coopMissionLock = new object();
-        private readonly Dictionary<string, List<CoopMissionParticipant>> _coopMissionParticipants = new Dictionary<string, List<CoopMissionParticipant>>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, CoopMissionSessionState> _coopMissionSessions = new Dictionary<string, CoopMissionSessionState>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, Dictionary<Guid, List<ParsedHenchmanSelection>>> _coopMissionHenchSelections = new Dictionary<string, Dictionary<Guid, List<ParsedHenchmanSelection>>>(StringComparer.OrdinalIgnoreCase);
-
-        private static string SerializeDefaultHenchmanCollection()
-        {
-            lock (HenchmanCollectionCacheLock)
-            {
-                try
-                {
-                    var staticDataPath = TryFindMetagameplayStaticDataPath();
-                    if (!IsNullOrWhiteSpace(staticDataPath) && File.Exists(staticDataPath))
-                    {
-                        var lastWriteUtc = File.GetLastWriteTimeUtc(staticDataPath);
-                        if (CachedSerializedHenchmanCollection != null && lastWriteUtc == CachedSerializedHenchmanCollectionLastWriteUtc)
-                        {
-                            return CachedSerializedHenchmanCollection;
-                        }
-
-                        var henchSnapshots = TryLoadDefaultHenchmanSnapshotsFromMetagameplay(staticDataPath);
-                        if (henchSnapshots != null && henchSnapshots.Count > 0)
-                        {
-                            var serialized = SerializeHenchmanCollectionFromSnapshots(henchSnapshots, lastWriteUtc);
-                            CachedSerializedHenchmanCollection = serialized;
-                            CachedSerializedHenchmanCollectionLastWriteUtc = lastWriteUtc;
-                            CachedHenchmanCollectionSnapshots = henchSnapshots;
-                            return serialized;
-                        }
-                    }
-                }
-                catch
-                {
-                }
-
-                // If anything fails, fall back to a small built-in list so UI isn't empty.
-                return SerializeFallbackHenchmanCollection();
-            }
-        }
-
-        private static string TryFindMetagameplayStaticDataPath()
-        {
-            try
-            {
-                var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                if (IsNullOrWhiteSpace(baseDir))
-                {
-                    return null;
-                }
-
-                // Portable layout: <exeDir>/Resources/static-data/metagameplay.json
-                var portable = Path.Combine(Path.Combine(Path.Combine(baseDir, "Resources"), "static-data"), "metagameplay.json");
-                if (File.Exists(portable))
-                {
-                    return portable;
-                }
-
-                var dir = new DirectoryInfo(baseDir);
-                for (var i = 0; i < 8 && dir != null; i++)
-                {
-                    var candidate = Path.Combine(Path.Combine(dir.FullName, "static-data"), "metagameplay.json");
-                    if (File.Exists(candidate))
-                    {
-                        return candidate;
-                    }
-
-                    dir = dir.Parent;
-                }
-            }
-            catch
-            {
-            }
-
-            return null;
-        }
-
-        private static List<PlayerCharacterSnapshot> TryLoadDefaultHenchmanSnapshotsFromMetagameplay(string metagameplayJsonPath)
-        {
-            if (IsNullOrWhiteSpace(metagameplayJsonPath) || !File.Exists(metagameplayJsonPath))
-            {
-                return null;
-            }
-
-            string json;
-            try
-            {
-                json = File.ReadAllText(metagameplayJsonPath);
-            }
-            catch
-            {
-                return null;
-            }
-
-            if (IsNullOrWhiteSpace(json))
-            {
-                return null;
-            }
-
-            // There are exactly 9 PlayerCharacterSnapshot entries in the static-data file, all of which are default henchmen.
-            const string marker = "\"TypeName\": \"Cliffhanger.SRO.ServerClientCommons.Metagameplay.PlayerCharacterSnapshot, Cliffhanger.SRO.ServerClientCommons\"";
-
-            var serializer = new JavaScriptSerializer();
-            serializer.MaxJsonLength = int.MaxValue;
-            serializer.RecursionLimit = 256;
-
-            var snapshots = new List<PlayerCharacterSnapshot>();
-            var index = 0;
-            while (true)
-            {
-                var markerIndex = json.IndexOf(marker, index, StringComparison.Ordinal);
-                if (markerIndex < 0)
-                {
-                    break;
-                }
-
-                var objStart = json.LastIndexOf('{', markerIndex);
-                if (objStart < 0)
-                {
-                    break;
-                }
-
-                var objEnd = FindMatchingBrace(json, objStart);
-                if (objEnd <= objStart)
-                {
-                    break;
-                }
-
-                var objJson = json.Substring(objStart, (objEnd - objStart) + 1);
-                try
-                {
-                    // Avoid deserializing into PlayerCharacterSnapshot directly:
-                    // the embedded inventory/equipped-items include types without trivial constructors,
-                    // and JavaScriptSerializer can throw. We only need cosmetic fields; loadout is set server-side.
-                    var obj = serializer.DeserializeObject(objJson) as IDictionary;
-                    if (obj == null)
-                    {
-                        continue;
-                    }
-
-                    var isHenchman = false;
-                    try
-                    {
-                        var raw = obj.Contains("IsHenchman") ? obj["IsHenchman"] : null;
-                        if (raw is bool)
-                        {
-                            isHenchman = (bool)raw;
-                        }
-                        else if (raw != null)
-                        {
-                            isHenchman = Convert.ToBoolean(raw, CultureInfo.InvariantCulture);
-                        }
-                    }
-                    catch
-                    {
-                        isHenchman = false;
-                    }
-
-                    if (!isHenchman)
-                    {
-                        continue;
-                    }
-
-                    var snapshot = new PlayerCharacterSnapshot();
-                    snapshot.DataVersion = GetInt32Value(obj, "DataVersion", 48);
-                    snapshot.IsHenchman = true;
-                    snapshot.CharacterIdentifier = GetStringValue(obj, "CharacterIdentifier");
-                    snapshot.CharacterName = GetStringValue(obj, "CharacterName");
-                    snapshot.Voiceset = GetStringValue(obj, "Voiceset");
-                    snapshot.PortraitPath = GetStringValue(obj, "PortraitPath");
-                    snapshot.Bodytype = GetUInt64Value(obj, "Bodytype", PlayerCharacterDefaultValues.Bodytype);
-                    snapshot.SkinTextureIndex = GetInt32Value(obj, "SkinTextureIndex", PlayerCharacterDefaultValues.SkinTextureIndex);
-                    snapshot.BackgroundStory = GetUInt64Value(obj, "BackgroundStory", PlayerCharacterDefaultValues.BackgroundStory);
-                    snapshot.PlayerId = 0UL;
-                    snapshot.WantsBackgroundChange = false;
-
-                    // Provide a stable (but minimal) skill-tree layout; progression will overwrite this when the client
-                    // runs HenchmanProgressionCalculator.ModifyHenchFromReference().
-                    snapshot.SkillTreeDefinitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
-
-                    // Try to preserve each hench's intended reference weapon from static-data so progression
-                    // resolves a matching skill tree (instead of all henches sharing the same default weapon).
-                    // We still force SecondaryWeapon empty later to avoid the client indexing Weapons[1].
-                    var invObj = obj.Contains("PlayerCharacterInventory") ? (obj["PlayerCharacterInventory"] as IDictionary) : null;
-                    var primaryItemId = TryGetNestedItemId(invObj, "PrimaryWeapon");
-                    var armorItemId = TryGetNestedItemId(invObj, "Armor");
-                    if (!IsNullOrWhiteSpace(primaryItemId))
-                    {
-                        if (snapshot.PlayerCharacterInventory == null)
-                        {
-                            snapshot.PlayerCharacterInventory = new PlayerCharacterInventory();
-                        }
-                        snapshot.PlayerCharacterInventory.PrimaryWeapon = CreateInventoryItem(primaryItemId, 0);
-                    }
-                    if (!IsNullOrWhiteSpace(armorItemId))
-                    {
-                        if (snapshot.PlayerCharacterInventory == null)
-                        {
-                            snapshot.PlayerCharacterInventory = new PlayerCharacterInventory();
-                        }
-                        snapshot.PlayerCharacterInventory.Armor = CreateInventoryItem(armorItemId, 2);
-                    }
-
-                    // Preserve the intended hench appearance (cosmetic equipment) from static-data.
-                    // This is critical: the client renders visuals from PlayerCharacterInventory.EquippedItems.
-                    var equipped = TryReadEquippedItems(invObj);
-                    if (equipped != null && equipped.Count > 0)
-                    {
-                        if (snapshot.PlayerCharacterInventory == null)
-                        {
-                            snapshot.PlayerCharacterInventory = new PlayerCharacterInventory();
-                        }
-                        snapshot.PlayerCharacterInventory.EquippedItems = equipped;
-                    }
-
-                    EnsureHenchmanSnapshotHasValidLoadout(snapshot);
-                    snapshots.Add(snapshot);
-                }
-                catch
-                {
-                }
-
-                index = objEnd + 1;
-            }
-
-            if (snapshots.Count == 0)
-            {
-                return null;
-            }
-
-            // Ensure deterministic ordering to keep indices stable across restarts.
-            snapshots.Sort(
-                delegate(PlayerCharacterSnapshot a, PlayerCharacterSnapshot b)
-                {
-                    var an = a != null ? a.CharacterName : null;
-                    var bn = b != null ? b.CharacterName : null;
-                    return string.CompareOrdinal(an ?? string.Empty, bn ?? string.Empty);
-                });
-
-            // Populate missing identifiers (static-data templates leave them empty).
-            for (var i = 0; i < snapshots.Count; i++)
-            {
-                var snap = snapshots[i];
-                if (snap == null)
-                {
-                    continue;
-                }
-
-                if (IsNullOrWhiteSpace(snap.CharacterIdentifier))
-                {
-                    // Keep the "GUID:index" pattern the client already uses elsewhere.
-                    snap.CharacterIdentifier = "00000000-0000-0000-0000-000000000000:" + (100 + i).ToString(CultureInfo.InvariantCulture);
-                }
-
-                // Ensure loadout stays safe even if the earlier Ensure call was skipped for some reason.
-                EnsureHenchmanSnapshotHasValidLoadout(snap);
-            }
-
-            return snapshots;
-        }
-
-        private static List<ItemSlot> TryReadEquippedItems(IDictionary inventoryObj)
-        {
-            try
-            {
-                if (inventoryObj == null || !inventoryObj.Contains("EquippedItems") || inventoryObj["EquippedItems"] == null)
-                {
-                    return null;
-                }
-
-                IEnumerable rawList = null;
-                var asArray = inventoryObj["EquippedItems"] as object[];
-                if (asArray != null)
-                {
-                    rawList = asArray;
-                }
-                else
-                {
-                    rawList = inventoryObj["EquippedItems"] as IEnumerable;
-                }
-
-                if (rawList == null)
-                {
-                    return null;
-                }
-
-                var results = new List<ItemSlot>();
-                var nextKey = 1000;
-
-                foreach (var entryObj in rawList)
-                {
-                    var entry = entryObj as IDictionary;
-                    if (entry == null)
-                    {
-                        continue;
-                    }
-
-                    var defObj = entry.Contains("Definition") ? (entry["Definition"] as IDictionary) : null;
-                    var itemObj = entry.Contains("Item") ? (entry["Item"] as IDictionary) : null;
-                    if (defObj == null || itemObj == null)
-                    {
-                        continue;
-                    }
-
-                    var slotId = GetUInt64Value(defObj, "Id", 0UL);
-                    var itemId = GetStringValue(itemObj, "ItemId");
-                    if (slotId == 0UL || IsNullOrWhiteSpace(itemId))
-                    {
-                        continue;
-                    }
-
-                    // Skip explicit "empty" placeholder items; leaving the slot absent is safer and allows
-                    // client-side fallbacks (e.g., default underwear).
-                    if (itemId.StartsWith("Item_Empty", StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    var assignable = TryReadAssignableItemTypes(defObj);
-                    var def = new LogicItemslotDefinition
-                    {
-                        Id = slotId,
-                        AssignableItemTypes = assignable ?? new ulong[0],
-                        CannotBeEmpty = false,
-                        DefaultItem = null,
-                    };
-
-                    results.Add(new ItemSlot(def)
-                    {
-                        Item = CreateInventoryItem(itemId, nextKey++),
-                    });
-                }
-
-                return results.Count > 0 ? results : null;
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static ulong[] TryReadAssignableItemTypes(IDictionary defObj)
-        {
-            try
-            {
-                if (defObj == null || !defObj.Contains("AssignableItemTypes") || defObj["AssignableItemTypes"] == null)
-                {
-                    return null;
-                }
-
-                var raw = defObj["AssignableItemTypes"] as IEnumerable;
-                if (raw == null)
-                {
-                    return null;
-                }
-
-                var list = new List<ulong>();
-                foreach (var v in raw)
-                {
-                    if (v == null)
-                    {
-                        continue;
-                    }
-
-                    try
-                    {
-                        if (v is ulong)
-                        {
-                            list.Add((ulong)v);
-                        }
-                        else if (v is long)
-                        {
-                            list.Add(unchecked((ulong)(long)v));
-                        }
-                        else if (v is int)
-                        {
-                            list.Add(unchecked((ulong)(int)v));
-                        }
-                        else
-                        {
-                            list.Add(Convert.ToUInt64(v, CultureInfo.InvariantCulture));
-                        }
-                    }
-                    catch
-                    {
-                    }
-                }
-
-                return list.Count > 0 ? list.ToArray() : null;
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static string TryGetNestedItemId(IDictionary inventoryObj, string slotKey)
-        {
-            try
-            {
-                if (inventoryObj == null || IsNullOrWhiteSpace(slotKey) || !inventoryObj.Contains(slotKey) || inventoryObj[slotKey] == null)
-                {
-                    return null;
-                }
-                var slotObj = inventoryObj[slotKey] as IDictionary;
-                if (slotObj == null || !slotObj.Contains("ItemId") || slotObj["ItemId"] == null)
-                {
-                    return null;
-                }
-                return slotObj["ItemId"] as string;
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static int FindMatchingBrace(string json, int startIndex)
-        {
-            if (json == null || startIndex < 0 || startIndex >= json.Length || json[startIndex] != '{')
-            {
-                return -1;
-            }
-
-            var depth = 0;
-            var inString = false;
-            var isEscaped = false;
-
-            for (var i = startIndex; i < json.Length; i++)
-            {
-                var c = json[i];
-                if (inString)
-                {
-                    if (isEscaped)
-                    {
-                        isEscaped = false;
-                        continue;
-                    }
-
-                    if (c == '\\')
-                    {
-                        isEscaped = true;
-                        continue;
-                    }
-
-                    if (c == '"')
-                    {
-                        inString = false;
-                    }
-
-                    continue;
-                }
-
-                if (c == '"')
-                {
-                    inString = true;
-                    continue;
-                }
-
-                if (c == '{')
-                {
-                    depth++;
-                    continue;
-                }
-
-                if (c == '}')
-                {
-                    depth--;
-                    if (depth == 0)
-                    {
-                        return i;
-                    }
-                }
-            }
-
-            return -1;
-        }
-
-        private static string SerializeHenchmanCollectionFromSnapshots(List<PlayerCharacterSnapshot> snapshots, DateTime lastWriteUtc)
-        {
-            // The client expects a compressed binary string produced by Cliffhanger.SRO.ServerClientCommons.HenchRepoSerializer.
-            // Important subtlety: HenchmanCollectionController ignores updates when CreationIndex is unchanged.
-
-            // Another client quirk: it filters OUT entries where OwnerCharacterIdentifier == local player's CharacterIdentifier.
-            // Using a sentinel owner keeps the entries visible to the local client.
-            const string ownerCharacterIdentifier = "DEFAULT";
-
-            var henches = new List<HenchmanRepositoryPlayerCharacterSnapshot>();
-            for (var i = 0; i < snapshots.Count; i++)
-            {
-                var snapshot = snapshots[i];
-                if (snapshot == null)
-                {
-                    continue;
-                }
-
-                // Defensive: ensure the required flags are present.
-                snapshot.IsHenchman = true;
-                snapshot.DataVersion = snapshot.DataVersion != 0 ? snapshot.DataVersion : 48;
-                snapshot.PlayerId = 0UL;
-                snapshot.WantsBackgroundChange = false;
-
-                // Important: the client resolves weapon info by indexing into the *template's* SkillLoadoutComponent.Weapons.
-                // It will always access index 0, and it accesses index 1 only when SecondaryWeapon is present.
-                // Some hench templates (especially when derived from partial static-data snapshots) result in a template
-                // with only one weapon, so we must avoid advertising a secondary weapon to prevent IndexOutOfRangeException.
-                EnsureHenchmanSnapshotHasValidLoadout(snapshot);
-
-                var entry = new HenchmanRepositoryPlayerCharacterSnapshot(ownerCharacterIdentifier);
-                entry.IsDefaultHench = true;
-                entry.PlayerCharacterSnapshot = snapshot;
-                henches.Add(entry);
-            }
-
-            // HenchmanCollectionController ignores updates when CreationIndex is unchanged.
-            // Using a per-process value makes iterative LocalService changes visible without needing to touch static-data.
-            var creationIndex = unchecked((int)(DateTime.UtcNow.Ticks & 0x7fffffff)) + 1;
-            var collection = new HenchmanCollection
-            {
-                CreationIndex = creationIndex,
-                Data = henches.ToArray(),
-            };
-
-            CachedHenchmanCollectionCreationIndex = creationIndex;
-            CachedHenchmanCollectionSnapshots = snapshots;
-
-            return HenchRepoSerializer.SerializeHenchmanCollection(collection);
-        }
-
-        private static void EnsureHenchmanSnapshotHasValidLoadout(PlayerCharacterSnapshot snapshot)
-        {
-            if (snapshot == null)
-            {
-                return;
-            }
-
-            if (snapshot.PlayerCharacterInventory == null)
-            {
-                snapshot.PlayerCharacterInventory = new PlayerCharacterInventory();
-            }
-
-            if (Item.IsNullOrEmpty(snapshot.PlayerCharacterInventory.PrimaryWeapon))
-            {
-                snapshot.PlayerCharacterInventory.PrimaryWeapon = CreateInventoryItem(PlayerCharacterDefaultValues.PrimaryWeapon, 0);
-            }
-
-            // Force empty to prevent client from indexing skillLoadoutComponent.Weapons[1] for henchmen.
-            // Use Item.Empty (not null) because it round-trips through PCSSerializer consistently.
-            snapshot.PlayerCharacterInventory.SecondaryWeapon = Item.Empty;
-
-            if (Item.IsNullOrEmptyArmor(snapshot.PlayerCharacterInventory.Armor))
-            {
-                snapshot.PlayerCharacterInventory.Armor = CreateInventoryItem(PlayerCharacterDefaultValues.Armor, 2);
-            }
-        }
-
-        private static string SerializeFallbackHenchmanCollection()
-        {
-            const string ownerCharacterIdentifier = "DEFAULT";
-
-            var henches = new List<HenchmanRepositoryPlayerCharacterSnapshot>();
-            for (var i = 0; i < 8; i++)
-            {
-                var extension = (100 + i).ToString(CultureInfo.InvariantCulture);
-                var snapshot = new PlayerCharacterSnapshot();
-                snapshot.DataVersion = 48;
-                snapshot.PlayerId = 0UL;
-                snapshot.IsHenchman = true;
-                snapshot.CharacterIdentifier = "00000000-0000-0000-0000-000000000000:" + extension;
-                snapshot.CharacterName = "Henchman " + (i + 1).ToString(CultureInfo.InvariantCulture);
-                snapshot.PortraitPath = (i % 2 == 0)
-                    ? "GUI/Textures/Metagameplay/player_portraits/portrait_male_troll_shaman_"
-                    : "GUI/Textures/Metagameplay/player_portraits/portrait_male_elf_jellyfish_kelly_";
-                snapshot.Voiceset = PlayerCharacterDefaultValues.Voiceset;
-                snapshot.Bodytype = (i % 2 == 0) ? 196716UL : 196714UL;
-                snapshot.SkinTextureIndex = (i % 3) + 1;
-                snapshot.BackgroundStory = PlayerCharacterDefaultValues.BackgroundStory;
-                snapshot.WantsBackgroundChange = false;
-
-                if (snapshot.Wallet != null)
-                {
-                    snapshot.Wallet.Reset(CurrencyId.Karma, 0, 0);
-                    snapshot.Wallet.Reset(CurrencyId.Nuyen, 0, 0);
-                }
-
-                if (snapshot.PlayerCharacterInventory != null)
-                {
-                    snapshot.PlayerCharacterInventory.PrimaryWeapon = CreateInventoryItem(PlayerCharacterDefaultValues.PrimaryWeapon, 0);
-                    snapshot.PlayerCharacterInventory.SecondaryWeapon = Item.Empty;
-                    snapshot.PlayerCharacterInventory.Armor = CreateInventoryItem(PlayerCharacterDefaultValues.Armor, 2);
-                }
-
-                var entry = new HenchmanRepositoryPlayerCharacterSnapshot(ownerCharacterIdentifier);
-                entry.IsDefaultHench = false;
-                entry.PlayerCharacterSnapshot = snapshot;
-                henches.Add(entry);
-            }
-
-            var collection = new HenchmanCollection
-            {
-                CreationIndex = 1,
-                Data = henches.ToArray(),
-            };
-
-            CachedHenchmanCollectionCreationIndex = 1;
-            CachedHenchmanCollectionSnapshots = henches.Select(h => h != null ? h.PlayerCharacterSnapshot : null).Where(s => s != null).ToList();
-
-            return HenchRepoSerializer.SerializeHenchmanCollection(collection);
-        }
-
-        private static bool TryResolveShopPrice(string shopKeeper, string itemId, out int price)
-        {
-            price = 0;
-            if (IsNullOrWhiteSpace(shopKeeper) || IsNullOrWhiteSpace(itemId))
-            {
-                return false;
-            }
-
-            try
-            {
-                lock (ShopPriceCacheLock)
-                {
-                    var staticDataPath = TryFindMetagameplayStaticDataPath();
-                    if (IsNullOrWhiteSpace(staticDataPath) || !File.Exists(staticDataPath))
-                    {
-                        return false;
-                    }
-
-                    var lastWriteUtc = File.GetLastWriteTimeUtc(staticDataPath);
-                    if (!string.Equals(CachedShopPricesPath, staticDataPath, StringComparison.OrdinalIgnoreCase)
-                        || CachedShopPricesLastWriteUtc != lastWriteUtc)
-                    {
-                        CachedShopPrices.Clear();
-                        CachedShopPricesPath = staticDataPath;
-                        CachedShopPricesLastWriteUtc = lastWriteUtc;
-                    }
-
-                    Dictionary<string, int> shopMap;
-                    if (!CachedShopPrices.TryGetValue(shopKeeper, out shopMap) || shopMap == null)
-                    {
-                        shopMap = ParseShopPricesFromMetagameplayJson(staticDataPath, shopKeeper);
-                        CachedShopPrices[shopKeeper] = shopMap ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                    }
-
-                    if (shopMap != null && shopMap.TryGetValue(itemId, out price))
-                    {
-                        return true;
-                    }
-                }
-            }
-            catch
-            {
-            }
-
-            price = 0;
-            return false;
-        }
-
-        private static Dictionary<string, int> ParseShopPricesFromMetagameplayJson(string metagameplayJsonPath, string shopKeeper)
-        {
-            if (IsNullOrWhiteSpace(metagameplayJsonPath) || IsNullOrWhiteSpace(shopKeeper) || !File.Exists(metagameplayJsonPath))
-            {
-                return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            }
-
-            try
-            {
-                var text = File.ReadAllText(metagameplayJsonPath);
-                if (IsNullOrWhiteSpace(text))
-                {
-                    return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                }
-
-                var anchor = "\"InternalName\": \"" + shopKeeper + "\"";
-                var start = text.IndexOf(anchor, StringComparison.OrdinalIgnoreCase);
-                if (start < 0)
-                {
-                    return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                }
-
-                var entriesKey = "\"ShopListEntries\"";
-                var entriesStart = text.IndexOf(entriesKey, start, StringComparison.OrdinalIgnoreCase);
-                if (entriesStart < 0)
-                {
-                    return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                }
-
-                var nextShop = text.IndexOf("\"InternalName\":", entriesStart + entriesKey.Length, StringComparison.OrdinalIgnoreCase);
-                if (nextShop < 0)
-                {
-                    nextShop = text.Length;
-                }
-
-                var section = text.Substring(entriesStart, nextShop - entriesStart);
-                var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-
-                var pos = 0;
-                while (pos >= 0 && pos < section.Length)
-                {
-                    var priceIdx = section.IndexOf("\"Price\":", pos, StringComparison.OrdinalIgnoreCase);
-                    if (priceIdx < 0)
-                    {
-                        break;
-                    }
-
-                    var afterColon = section.IndexOf(':', priceIdx);
-                    if (afterColon < 0)
-                    {
-                        break;
-                    }
-
-                    afterColon++;
-                    while (afterColon < section.Length && char.IsWhiteSpace(section[afterColon])) afterColon++;
-
-                    var endNum = afterColon;
-                    while (endNum < section.Length && char.IsDigit(section[endNum])) endNum++;
-
-                    int parsedPrice;
-                    if (!int.TryParse(section.Substring(afterColon, endNum - afterColon), NumberStyles.Integer, CultureInfo.InvariantCulture, out parsedPrice))
-                    {
-                        pos = endNum;
-                        continue;
-                    }
-
-                    var itemIdx = section.IndexOf("\"ItemId\":", endNum, StringComparison.OrdinalIgnoreCase);
-                    if (itemIdx < 0)
-                    {
-                        break;
-                    }
-
-                    var itemColon = section.IndexOf(':', itemIdx);
-                    if (itemColon < 0)
-                    {
-                        break;
-                    }
-
-                    var firstQuote = section.IndexOf('"', itemColon + 1);
-                    if (firstQuote < 0)
-                    {
-                        break;
-                    }
-
-                    var secondQuote = section.IndexOf('"', firstQuote + 1);
-                    if (secondQuote < 0)
-                    {
-                        break;
-                    }
-
-                    var itemId = section.Substring(firstQuote + 1, secondQuote - firstQuote - 1);
-                    if (!IsNullOrWhiteSpace(itemId))
-                    {
-                        result[itemId] = parsedPrice;
-                    }
-
-                    pos = secondQuote + 1;
-                }
-
-                return result;
-            }
-            catch
-            {
-                return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            }
-        }
-
-        private static string SerializeInventoryFromSlot(CareerSlot slot)
-        {
-            try
-            {
-                var inventory = new Inventory();
-                if (slot != null && slot.ItemPossessions != null && slot.ItemPossessions.Count > 0)
-                {
-                    var items = new List<Item>();
-                    var keys = new List<string>(slot.ItemPossessions.Keys);
-                    keys.Sort(StringComparer.OrdinalIgnoreCase);
-                    var nextKey = 0;
-                    for (var i = 0; i < keys.Count; i++)
-                    {
-                        var packed = keys[i];
-                        int amount;
-                        if (IsNullOrWhiteSpace(packed) || !slot.ItemPossessions.TryGetValue(packed, out amount) || amount <= 0)
-                        {
-                            continue;
-                        }
-
-                        var itemId = packed;
-                        var quality = 0;
-                        var flavour = -1;
-                        try
-                        {
-                            var parts = packed.Split('|');
-                            if (parts != null && parts.Length >= 1)
-                            {
-                                itemId = parts[0];
-                            }
-                            if (parts != null && parts.Length >= 2)
-                            {
-                                int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out quality);
-                            }
-                            if (parts != null && parts.Length >= 3)
-                            {
-                                int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out flavour);
-                            }
-                        }
-                        catch
-                        {
-                            itemId = packed;
-                            quality = 0;
-                            flavour = -1;
-                        }
-
-                        if (IsNullOrWhiteSpace(itemId))
-                        {
-                            continue;
-                        }
-
-                        var item = new Item();
-                        item.InventoryKey = nextKey++;
-                        item.ItemId = itemId;
-                        item.Amount = amount;
-                        item.Quality = quality;
-                        item.FlavourIndex = flavour;
-                        items.Add(item);
-                    }
-
-                    if (items.Count > 0)
-                    {
-                        inventory.AddRangeWithValidInventoryKey(items);
-                    }
-                }
-
-                // NOTE: MetaGameplayCommunicationObject.onInventoryChanged expects a compressed binary string
-                // produced by Cliffhanger.SRO.ServerClientCommons.InventorySerializer, not JSON.
-                return InventorySerializer.SerializeInventory(inventory);
-            }
-            catch
-            {
-                try
-                {
-                    return InventorySerializer.SerializeInventory(new Inventory());
-                }
-                catch
-                {
-                    return string.Empty;
-                }
-            }
-        }
-
-        private static string SerializeWalletForSlot(CareerSlot slot)
-        {
-            var wallet = new Wallet();
-            try
-            {
-                wallet.Reset(CurrencyId.Karma, slot != null ? slot.Karma : 0, slot != null ? slot.SpentKarma : 0);
-                wallet.Reset(CurrencyId.Nuyen, slot != null ? slot.Nuyen : 0, 0);
-            }
-            catch
-            {
-                wallet.Reset(CurrencyId.Karma, 0, 0);
-                wallet.Reset(CurrencyId.Nuyen, 0, 0);
-            }
-            return JsonFxSerializerProvider.Current.Serialize<Wallet>(wallet);
-        }
-
-        private static bool TryInferSkillLevelFromTechnicalName(string skillTechnicalName, out int skillLevel)
-        {
-            skillLevel = 0;
-            try
-            {
-                if (IsNullOrWhiteSpace(skillTechnicalName))
-                {
-                    return false;
-                }
-
-                // Common patterns seen in client payloads:
-                // - MindLevelSkill_7_2
-                // - PistolLevelSkill_4_1
-                // Try to read the number immediately after "LevelSkill_".
-                var token = "LevelSkill_";
-                var idx = skillTechnicalName.IndexOf(token, StringComparison.OrdinalIgnoreCase);
-                if (idx >= 0)
-                {
-                    idx += token.Length;
-                    var start = idx;
-                    while (idx < skillTechnicalName.Length && char.IsDigit(skillTechnicalName[idx]))
-                    {
-                        idx++;
-                    }
-                    if (idx > start)
-                    {
-                        int parsed;
-                        if (int.TryParse(skillTechnicalName.Substring(start, idx - start), NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed) && parsed > 0)
-                        {
-                            skillLevel = parsed;
-                            return true;
-                        }
-                    }
-                }
-
-                // Fallback: pick the first underscore-delimited numeric segment, e.g. "..._7_2" => 7.
-                for (var i = 0; i < skillTechnicalName.Length; i++)
-                {
-                    if (skillTechnicalName[i] != '_')
-                    {
-                        continue;
-                    }
-
-                    var j = i + 1;
-                    if (j >= skillTechnicalName.Length || !char.IsDigit(skillTechnicalName[j]))
-                    {
-                        continue;
-                    }
-
-                    var start = j;
-                    while (j < skillTechnicalName.Length && char.IsDigit(skillTechnicalName[j]))
-                    {
-                        j++;
-                    }
-
-                    if (j < skillTechnicalName.Length && skillTechnicalName[j] == '_')
-                    {
-                        int parsed;
-                        if (int.TryParse(skillTechnicalName.Substring(start, j - start), NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed) && parsed > 0)
-                        {
-                            skillLevel = parsed;
-                            return true;
-                        }
-                    }
-
-                    i = j;
-                }
-
-                return false;
-            }
-            catch
-            {
-                skillLevel = 0;
-                return false;
-            }
-        }
-
-        private struct ParsedHenchmanSelection
-        {
-            public int CollectionCreationIndex;
-            public int HenchmanId;
-        }
-
-        private static List<ParsedHenchmanSelection> TryExtractHenchmanSelections(string rawMessage)
-        {
-            if (IsNullOrWhiteSpace(rawMessage))
-            {
-                return null;
-            }
-
-            var keyPattern = "\"HenchmanSelection\"";
-            var idx = rawMessage.IndexOf(keyPattern, StringComparison.Ordinal);
-            if (idx < 0)
-            {
-                return null;
-            }
-
-            idx = rawMessage.IndexOf(':', idx);
-            if (idx < 0)
-            {
-                return null;
-            }
-
-            idx++;
-            while (idx < rawMessage.Length && char.IsWhiteSpace(rawMessage[idx]))
-            {
-                idx++;
-            }
-            if (idx >= rawMessage.Length)
-            {
-                return null;
-            }
-
-            if (rawMessage[idx] == 'n')
-            {
-                // null
-                return null;
-            }
-
-            if (rawMessage[idx] != '[')
-            {
-                return null;
-            }
-
-            var arrEnd = FindMatchingBracket(rawMessage, idx);
-            if (arrEnd <= idx)
-            {
-                return null;
-            }
-
-            var arrayJson = rawMessage.Substring(idx, (arrEnd - idx) + 1);
-            var results = new List<ParsedHenchmanSelection>();
-
-            var cursor = 0;
-            while (cursor < arrayJson.Length)
-            {
-                var objStart = arrayJson.IndexOf('{', cursor);
-                if (objStart < 0)
-                {
-                    break;
-                }
-                var objEnd = FindMatchingBrace(arrayJson, objStart);
-                if (objEnd <= objStart)
-                {
-                    break;
-                }
-
-                var objJson = arrayJson.Substring(objStart, (objEnd - objStart) + 1);
-                var rawCreation = ExtractJsonStringValue(objJson, "HenchmanCollectionCreationIndex");
-                var rawId = ExtractJsonStringValue(objJson, "HenchmanId");
-
-                int creationIndex;
-                int henchId;
-                if (TryParseInt32(rawCreation, out creationIndex) && TryParseInt32(rawId, out henchId))
-                {
-                    results.Add(new ParsedHenchmanSelection { CollectionCreationIndex = creationIndex, HenchmanId = henchId });
-                }
-
-                cursor = objEnd + 1;
-            }
-
-            return results.Count > 0 ? results : null;
-        }
-
-        private static List<ParsedHenchmanSelection> TryExtractCoopPayloadHenchmanSelections(string payload)
-        {
-            if (IsNullOrWhiteSpace(payload))
-            {
-                return null;
-            }
-
-            var trimmed = payload.Trim();
-            if (trimmed.Length == 0)
-            {
-                return null;
-            }
-
-            // Coop start sends the selection array directly as payload string #4, not wrapped under a "HenchmanSelection" key.
-            // Reuse the singleplayer parser by wrapping into a small object.
-            if (trimmed[0] == '[')
-            {
-                return TryExtractHenchmanSelections("{\"HenchmanSelection\":" + trimmed + "}");
-            }
-
-            return TryExtractHenchmanSelections(trimmed);
-        }
-
-        private static int FindMatchingBracket(string json, int startIndex)
-        {
-            if (json == null || startIndex < 0 || startIndex >= json.Length || json[startIndex] != '[')
-            {
-                return -1;
-            }
-
-            var depth = 0;
-            var inString = false;
-            var isEscaped = false;
-
-            for (var i = startIndex; i < json.Length; i++)
-            {
-                var c = json[i];
-                if (inString)
-                {
-                    if (isEscaped)
-                    {
-                        isEscaped = false;
-                        continue;
-                    }
-
-                    if (c == '\\')
-                    {
-                        isEscaped = true;
-                        continue;
-                    }
-
-                    if (c == '"')
-                    {
-                        inString = false;
-                    }
-
-                    continue;
-                }
-
-                if (c == '"')
-                {
-                    inString = true;
-                    continue;
-                }
-
-                if (c == '[')
-                {
-                    depth++;
-                    continue;
-                }
-
-                if (c == ']')
-                {
-                    depth--;
-                    if (depth == 0)
-                    {
-                        return i;
-                    }
-                }
-            }
-
-            return -1;
-        }
-
-        private static PlayerCharacterSnapshot CloneHenchSnapshotForMission(PlayerCharacterSnapshot src, Guid ownerAccountGuid, int slotIndex, int ownerKarma, int ownerSpentKarma, int ownerNuyen)
-        {
-            if (src == null)
-            {
-                return null;
-            }
-
-            var clone = new PlayerCharacterSnapshot();
-            clone.DataVersion = src.DataVersion != 0 ? src.DataVersion : 48;
-            clone.IsHenchman = true;
-            clone.PlayerId = 0UL;
-
-            clone.CharacterName = src.CharacterName;
-            clone.Voiceset = src.Voiceset;
-            clone.PortraitPath = src.PortraitPath;
-            clone.Bodytype = src.Bodytype;
-            clone.SkinTextureIndex = src.SkinTextureIndex;
-            clone.BackgroundStory = src.BackgroundStory;
-            clone.WantsBackgroundChange = false;
-
-            var extension = SafeGetIdentifierExtension(src);
-            if (IsNullOrWhiteSpace(extension))
-            {
-                extension = "HENCH" + slotIndex.ToString(CultureInfo.InvariantCulture);
-            }
-            clone.CharacterIdentifier = ownerAccountGuid != Guid.Empty
-                ? (ownerAccountGuid.ToString() + ":" + extension)
-                : ("00000000-0000-0000-0000-000000000000:" + extension);
-
-            clone.SkillTreeDefinitions = src.SkillTreeDefinitions != null
-                ? new Dictionary<string, string[]>(src.SkillTreeDefinitions, StringComparer.Ordinal)
-                : new Dictionary<string, string[]>(StringComparer.Ordinal);
-
-            clone.PlayerCharacterInventory = new PlayerCharacterInventory();
-            if (src.PlayerCharacterInventory != null)
-            {
-                clone.PlayerCharacterInventory.PrimaryWeapon = src.PlayerCharacterInventory.PrimaryWeapon;
-                clone.PlayerCharacterInventory.Armor = src.PlayerCharacterInventory.Armor;
-            }
-            EnsureHenchmanSnapshotHasValidLoadout(clone);
-
-            // Cosmetics/appearance in missions are driven by EquippedItems; preserve them from the hub roster.
-            // The client will also inject default underwear if those slots are empty.
-            try
-            {
-                if (src.PlayerCharacterInventory != null
-                    && src.PlayerCharacterInventory.EquippedItems != null
-                    && src.PlayerCharacterInventory.EquippedItems.Count > 0
-                    && clone.PlayerCharacterInventory != null)
-                {
-                    for (var i = 0; i < src.PlayerCharacterInventory.EquippedItems.Count; i++)
-                    {
-                        var srcSlot = src.PlayerCharacterInventory.EquippedItems[i];
-                        if (srcSlot == null || srcSlot.Definition == null || srcSlot.Item == null || IsNullOrWhiteSpace(srcSlot.Item.ItemId))
-                        {
-                            continue;
-                        }
-
-                        var def = new LogicItemslotDefinition();
-                        def.Id = srcSlot.Definition.Id;
-                        def.AssignableItemTypes = srcSlot.Definition.AssignableItemTypes ?? new ulong[0];
-                        def.CannotBeEmpty = srcSlot.Definition.CannotBeEmpty;
-                        def.DefaultItem = srcSlot.Definition.DefaultItem;
-
-                        var dstSlot = new ItemSlot(def);
-                        var item = new Item();
-                        item.ItemId = srcSlot.Item.ItemId;
-                        item.InventoryKey = srcSlot.Item.InventoryKey;
-                        item.Amount = srcSlot.Item.Amount;
-                        item.FlavourIndex = srcSlot.Item.FlavourIndex;
-                        item.Quality = srcSlot.Item.Quality;
-                        dstSlot.Item = item;
-
-                        clone.PlayerCharacterInventory.EquippedItems.Add(dstSlot);
-                    }
-                }
-            }
-            catch
-            {
-            }
-
-            clone.Wallet = new Wallet();
-            clone.Wallet.Reset(CurrencyId.Karma, ownerKarma, ownerSpentKarma);
-            clone.Wallet.Reset(CurrencyId.Nuyen, ownerNuyen, 0);
-
-            return clone;
-        }
-
-        private static Item CreateInventoryItem(string itemId, int inventoryKey)
-        {
-            var item = new Item();
-            item.ItemId = itemId ?? string.Empty;
-            item.InventoryKey = inventoryKey;
-            item.Amount = 1;
-            return item;
-        }
 
         private static string BuildProgressionHubInstanceId(string hubName)
         {
@@ -1289,101 +45,109 @@ namespace Shadowrun.LocalService.Core.Protocols
             return canonicalHubName + "#" + sequence.ToString(CultureInfo.InvariantCulture);
         }
 
-        private static byte[] BuildHubStatePayloadForSlot(CareerSlot slot, string characterIdentifier, bool forceNewHubInstanceId)
+        private PlayerCharacterSnapshot BuildMappedPlayerCharacterSnapshotForHub(Guid identityGuid, string characterIdentifier, string characterName, CareerSlot slot)
         {
-            var hubName = slot != null && !IsNullOrWhiteSpace(slot.HubId) ? slot.HubId : DefaultHubId;
-            var hubId = forceNewHubInstanceId ? BuildProgressionHubInstanceId(hubName) : hubName;
-            var name = slot != null ? slot.CharacterName : null;
-            return BuildMetaHubPushPayload(4, SerializeHubStateOrFallback(hubId, characterIdentifier, name, slot, hubName));
-        }
-
-        private static string SerializeHubStateOrFallback(string hubId, string characterIdentifier, string characterName, CareerSlot slot)
-        {
-            return SerializeHubStateOrFallback(hubId, characterIdentifier, characterName, slot, null);
-        }
-
-        private static string SerializeHubStateOrFallback(string hubId, string characterIdentifier, string characterName, CareerSlot slot, string hubNameOverride)
-        {
-            if (IsNullOrWhiteSpace(hubId))
+            if (IsNullOrWhiteSpace(characterIdentifier))
             {
-                return FallbackSerializedHubState;
+                return null;
             }
 
-            try
+            var snapshot = BuildPlayerCharacterSnapshotForSlot(characterIdentifier, characterName, slot);
+            var accountId = identityGuid != Guid.Empty ? identityGuid : TryParseAccountIdFromCharacterIdentifier(characterIdentifier);
+            ulong mappedPlayerId;
+            if (accountId != Guid.Empty
+                && TryGetGameClientEntityIdForIdentity(accountId, out mappedPlayerId)
+                && mappedPlayerId != 0UL)
             {
-                var state = new HubState { HubId = hubId, Name = !IsNullOrWhiteSpace(hubNameOverride) ? hubNameOverride : hubId };
+                snapshot.PlayerId = mappedPlayerId;
+            }
 
-                if (!IsNullOrWhiteSpace(characterIdentifier))
+            return snapshot;
+        }
+
+        private PortedHubTransitionResult TryExecutePortedHubTransition(string requestedHubId, Guid identityGuid, string characterIdentifier, string characterName, CareerSlot slot, PortedHubInstance currentHubInstance)
+        {
+            if (_portedHubInstanceManager == null || IsNullOrWhiteSpace(requestedHubId) || IsNullOrWhiteSpace(characterIdentifier))
+            {
+                return null;
+            }
+
+            var authoritativeCurrentHubInstance = currentHubInstance;
+            var hubInstanceForCharacter = _portedHubInstanceManager.RequestHubInstance(characterIdentifier);
+            if (hubInstanceForCharacter != null)
+            {
+                authoritativeCurrentHubInstance = hubInstanceForCharacter;
+            }
+
+            var snapshot = BuildMappedPlayerCharacterSnapshotForHub(identityGuid, characterIdentifier, characterName, slot);
+            if (snapshot == null)
+            {
+                return null;
+            }
+
+            var exactTargetHub = _portedHubInstanceManager.RequestHubInstanceByHubId(requestedHubId);
+            if (exactTargetHub != null)
+            {
+                return _portedHubInstanceManager.ExecuteRequestHubInstance(exactTargetHub, snapshot, authoritativeCurrentHubInstance);
+            }
+
+            return _portedHubInstanceManager.ExecuteRequestHubInstance(GetHubNameFromHubInstanceId(requestedHubId), snapshot, authoritativeCurrentHubInstance, new GroupStatus());
+        }
+
+        private byte[] BuildPortedHubStatePayloadForSlot(CareerSlot slot, Guid identityGuid, int careerIndex, bool forceNewHubInstanceId, PortedHubInstance currentHubInstance, out string resolvedHubId, out PortedHubInstance resolvedHubInstance)
+        {
+            var storylineHubId = _storyProgressionService != null
+                ? _storyProgressionService.GetCurrentStoryHubId(identityGuid, slot, "Main Campaign")
+                : null;
+            resolvedHubId = !IsNullOrWhiteSpace(storylineHubId)
+                ? storylineHubId
+                : (slot != null && !IsNullOrWhiteSpace(slot.HubId) ? slot.HubId : DefaultHubId);
+            resolvedHubInstance = currentHubInstance;
+
+            var characterIdentifier = slot != null && !IsNullOrWhiteSpace(slot.CharacterIdentifier)
+                ? slot.CharacterIdentifier
+                : (identityGuid.ToString() + ":" + careerIndex.ToString(CultureInfo.InvariantCulture));
+            var characterName = slot != null ? slot.CharacterName : null;
+            var requestedHubId = forceNewHubInstanceId ? BuildProgressionHubInstanceId(resolvedHubId) : resolvedHubId;
+
+            if (_portedHubInstanceManager != null && !IsNullOrWhiteSpace(characterIdentifier))
+            {
+                if (resolvedHubInstance == null)
                 {
-                    var snapshot = new PlayerCharacterSnapshot();
-                    snapshot.CharacterIdentifier = characterIdentifier;
-                    snapshot.PlayerId = 1UL;
-                    snapshot.DataVersion = 48;
-                    snapshot.CharacterName = !IsNullOrWhiteSpace(characterName) ? characterName : PlayerCharacterDefaultValues.PlayerName;
-                    snapshot.PortraitPath = (slot != null && !IsNullOrWhiteSpace(slot.PortraitPath)) ? slot.PortraitPath : PlayerCharacterDefaultValues.PortraitPath;
-                    snapshot.Voiceset = (slot != null && !IsNullOrWhiteSpace(slot.Voiceset)) ? slot.Voiceset : PlayerCharacterDefaultValues.Voiceset;
-                    snapshot.Bodytype = (slot != null && slot.Bodytype != 0UL) ? slot.Bodytype : PlayerCharacterDefaultValues.Bodytype;
-                    snapshot.SkinTextureIndex = (slot != null) ? slot.SkinTextureIndex : PlayerCharacterDefaultValues.SkinTextureIndex;
-                    snapshot.BackgroundStory = (slot != null && slot.BackgroundStory != 0UL) ? slot.BackgroundStory : PlayerCharacterDefaultValues.BackgroundStory;
-                    snapshot.WantsBackgroundChange = slot != null && slot.WantsBackgroundChange;
-                    if (snapshot.Wallet != null)
-                    {
-                        snapshot.Wallet.Reset(CurrencyId.Karma, slot != null ? slot.Karma : 0, slot != null ? slot.SpentKarma : 0);
-                        snapshot.Wallet.Reset(CurrencyId.Nuyen, slot != null ? slot.Nuyen : 0, 0);
-                    }
-
-                    // Provide a minimal valid loadout so hub UI (e.g., shop inspectors) can resolve equipped weapons.
-                    var pcInv = new PlayerCharacterInventory();
-                    var primaryItemId = (slot != null && !IsNullOrWhiteSpace(slot.PrimaryWeaponItemId)) ? slot.PrimaryWeaponItemId : PlayerCharacterDefaultValues.PrimaryWeapon;
-                    var primaryKey = slot != null ? slot.PrimaryWeaponInventoryKey : 0;
-                    pcInv.PrimaryWeapon = CreateInventoryItem(primaryItemId, primaryKey);
-
-                    var secondaryItemId = (slot != null && !IsNullOrWhiteSpace(slot.SecondaryWeaponItemId)) ? slot.SecondaryWeaponItemId : PlayerCharacterDefaultValues.SecondaryWeapon;
-                    var secondaryKey = slot != null ? slot.SecondaryWeaponInventoryKey : 1;
-                    pcInv.SecondaryWeapon = CreateInventoryItem(secondaryItemId, secondaryKey);
-
-                    var armorItemId = (slot != null && !IsNullOrWhiteSpace(slot.ArmorItemId)) ? slot.ArmorItemId : PlayerCharacterDefaultValues.Armor;
-                    var armorKey = slot != null ? slot.ArmorInventoryKey : 2;
-                    pcInv.Armor = CreateInventoryItem(armorItemId, armorKey);
-
-                    // Cosmetic equipment slots (hair/clothes/etc) chosen in character editor.
-                    if (slot != null && slot.EquippedItems != null && slot.EquippedItems.Count > 0)
-                    {
-                        foreach (var kvp in slot.EquippedItems)
-                        {
-                            if (IsNullOrWhiteSpace(kvp.Key) || IsNullOrWhiteSpace(kvp.Value))
-                            {
-                                continue;
-                            }
-                            ulong slotId;
-                            if (!TryParseUInt64(kvp.Key, out slotId) || slotId == 0UL)
-                            {
-                                continue;
-                            }
-
-                            var def = new LogicItemslotDefinition();
-                            def.Id = slotId;
-                            def.AssignableItemTypes = new ulong[0];
-                            def.CannotBeEmpty = false;
-                            def.DefaultItem = string.Empty;
-
-                            var itemSlot = new ItemSlot(def);
-                            itemSlot.Item = CreateInventoryItem(kvp.Value, 10);
-                            pcInv.EquippedItems.Add(itemSlot);
-                        }
-                    }
-                    snapshot.PlayerCharacterInventory = pcInv;
-
-                    // The hub scene expects at least one player character to spawn.
-                    state.Add(snapshot, new Vector2D(0f, 0f));
+                    resolvedHubInstance = _portedHubInstanceManager.RequestHubInstance(characterIdentifier);
                 }
 
-                return HubSerializer.SerializeHubState(state);
+                var snapshot = BuildMappedPlayerCharacterSnapshotForHub(identityGuid, characterIdentifier, characterName, slot);
+                if (snapshot != null)
+                {
+                    var currentHubName = resolvedHubInstance != null
+                        ? GetHubNameFromHubInstanceId(resolvedHubInstance.HubId)
+                        : null;
+                    if (!forceNewHubInstanceId
+                        && resolvedHubInstance != null
+                        && !IsNullOrWhiteSpace(resolvedHubInstance.HubId)
+                        && string.Equals(currentHubName, resolvedHubId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        resolvedHubId = resolvedHubInstance.HubId;
+                        _portedHubInstanceManager.UpdatePlayerCharacterSnapshot(snapshot);
+                        return BuildMetaHubPushPayload(HubEntityId, resolvedHubInstance.SerializedHubState());
+                    }
+
+                    PortedHubTransitionResult transition = forceNewHubInstanceId
+                        ? _portedHubInstanceManager.ExecuteRequestExactHubInstance(requestedHubId, snapshot, resolvedHubInstance)
+                        : TryExecutePortedHubTransition(requestedHubId, identityGuid, characterIdentifier, characterName, slot, resolvedHubInstance);
+
+                    if (transition != null && transition.TargetHubInstance != null)
+                    {
+                        resolvedHubInstance = transition.TargetHubInstance;
+                        resolvedHubId = resolvedHubInstance.HubId;
+                        return BuildMetaHubPushPayload(HubEntityId, resolvedHubInstance.SerializedHubState());
+                    }
+                }
             }
-            catch
-            {
-                return FallbackSerializedHubState;
-            }
+
+            resolvedHubId = requestedHubId;
+            return BuildMetaHubPushPayload(HubEntityId, FallbackSerializedHubState);
         }
 
         private string BuildSerializedSharedHubStateOrFallback(string hubId, string fallbackCharacterIdentifier, string fallbackCharacterName, CareerSlot fallbackSlot)
@@ -1393,70 +157,34 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return FallbackSerializedHubState;
             }
 
-            try
+            if (_portedHubInstanceManager != null)
             {
-                var state = new HubState
+                var portedHubInstance = _portedHubInstanceManager.RequestHubInstanceByHubId(hubId);
+                if (portedHubInstance == null && !IsNullOrWhiteSpace(fallbackCharacterIdentifier))
                 {
-                    HubId = hubId,
-                    Name = GetHubNameFromHubInstanceId(hubId),
-                };
-
-                var participants = _hubPresenceRegistry.GetParticipantsInHub(hubId);
-                var anyAdded = false;
-                if (participants != null)
-                {
-                    for (var i = 0; i < participants.Count; i++)
+                    var identityGuid = TryParseAccountIdFromCharacterIdentifier(fallbackCharacterIdentifier);
+                    var snapshot = BuildMappedPlayerCharacterSnapshotForHub(identityGuid, fallbackCharacterIdentifier, fallbackCharacterName, fallbackSlot);
+                    if (snapshot != null)
                     {
-                        var participant = participants[i];
-                        if (participant == null || IsNullOrWhiteSpace(participant.CharacterId))
+                        var transition = _portedHubInstanceManager.ExecuteRequestExactHubInstance(hubId, snapshot, null);
+                        if (transition != null)
                         {
-                            continue;
+                            portedHubInstance = transition.TargetHubInstance;
                         }
-
-                        CareerSlot slot = null;
-                        if (fallbackSlot != null && !IsNullOrWhiteSpace(fallbackCharacterIdentifier)
-                            && string.Equals(fallbackCharacterIdentifier, participant.CharacterId, StringComparison.OrdinalIgnoreCase))
-                        {
-                            slot = fallbackSlot;
-                        }
-                        else if (_userStore != null && !IsNullOrWhiteSpace(participant.IdentityHash))
-                        {
-                            try
-                            {
-                                slot = _userStore.GetOrCreateCareer(participant.IdentityHash, participant.CareerIndex, false);
-                            }
-                            catch
-                            {
-                                slot = null;
-                            }
-                        }
-
-                        var characterName = !IsNullOrWhiteSpace(participant.CharacterName) ? participant.CharacterName : fallbackCharacterName;
-                        var snapshot = BuildPlayerCharacterSnapshotForSlot(participant.CharacterId, characterName, slot);
-                        ulong mappedPlayerId;
-                        var participantAccountId = TryParseAccountIdFromCharacterIdentifier(participant.CharacterId);
-                        if (participantAccountId != Guid.Empty
-                            && TryGetGameClientEntityIdForIdentity(participantAccountId, out mappedPlayerId)
-                            && mappedPlayerId != 0UL)
-                        {
-                            snapshot.PlayerId = mappedPlayerId;
-                        }
-                        state.Add(snapshot, new Vector2D(participant.X, participant.Y));
-                        anyAdded = true;
                     }
                 }
 
-                if (!anyAdded)
+                if (portedHubInstance != null)
                 {
-                    return SerializeHubStateOrFallback(hubId, fallbackCharacterIdentifier, fallbackCharacterName, fallbackSlot, GetHubNameFromHubInstanceId(hubId));
+                    var serializedHubState = portedHubInstance.SerializedHubState();
+                    if (!IsNullOrWhiteSpace(serializedHubState))
+                    {
+                        return serializedHubState;
+                    }
                 }
+            }
 
-                return HubSerializer.SerializeHubState(state);
-            }
-            catch
-            {
-                return SerializeHubStateOrFallback(hubId, fallbackCharacterIdentifier, fallbackCharacterName, fallbackSlot, GetHubNameFromHubInstanceId(hubId));
-            }
+            return FallbackSerializedHubState;
         }
 
         private static string GetHubNameFromHubInstanceId(string hubId)
@@ -1512,1306 +240,6 @@ namespace Shadowrun.LocalService.Core.Protocols
             return true;
         }
 
-        private HubPlayerCharacter BuildHubPlayerCharacterFromParticipant(HubPresenceRegistry.Participant participant)
-        {
-            if (participant == null || IsNullOrWhiteSpace(participant.CharacterId))
-            {
-                return null;
-            }
-
-            CareerSlot slot = null;
-            if (_userStore != null && !IsNullOrWhiteSpace(participant.IdentityHash))
-            {
-                try
-                {
-                    slot = _userStore.GetOrCreateCareer(participant.IdentityHash, participant.CareerIndex, false);
-                }
-                catch
-                {
-                    slot = null;
-                }
-            }
-
-            var snapshot = BuildPlayerCharacterSnapshotForSlot(participant.CharacterId, participant.CharacterName, slot);
-            ulong mappedPlayerId;
-            var participantAccountId = TryParseAccountIdFromCharacterIdentifier(participant.CharacterId);
-            if (participantAccountId != Guid.Empty
-                && TryGetGameClientEntityIdForIdentity(participantAccountId, out mappedPlayerId)
-                && mappedPlayerId != 0UL)
-            {
-                snapshot.PlayerId = mappedPlayerId;
-            }
-            return new HubPlayerCharacter(participant.CharacterId, new Vector2D(participant.X, participant.Y), snapshot);
-        }
-
-        private void RegisterHubPeerStream(string peer, NetworkStream stream)
-        {
-            if (IsNullOrWhiteSpace(peer) || stream == null)
-            {
-                return;
-            }
-
-            lock (_hubPeerStreamsLock)
-            {
-                _hubPeerStreams[peer] = stream;
-            }
-        }
-
-        private void UnregisterHubPeerStream(string peer, NetworkStream stream)
-        {
-            if (IsNullOrWhiteSpace(peer))
-            {
-                return;
-            }
-
-            lock (_hubPeerStreamsLock)
-            {
-                NetworkStream existing;
-                if (_hubPeerStreams.TryGetValue(peer, out existing) && (stream == null || object.ReferenceEquals(existing, stream)))
-                {
-                    _hubPeerStreams.Remove(peer);
-                }
-            }
-
-            ClearHubAnnouncementsForPeer(peer);
-        }
-
-        private static string BuildHubAnnouncementToken(string hubId, string characterId)
-        {
-            return (hubId ?? string.Empty) + "|" + (characterId ?? string.Empty);
-        }
-
-        private static bool IsHubAnnouncementTokenForHub(string token, string hubId)
-        {
-            if (IsNullOrWhiteSpace(token) || IsNullOrWhiteSpace(hubId))
-            {
-                return false;
-            }
-
-            var prefix = hubId + "|";
-            return token.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private bool TryMarkHubCharacterAnnounced(string targetPeer, string hubId, string characterId)
-        {
-            if (IsNullOrWhiteSpace(targetPeer) || IsNullOrWhiteSpace(hubId) || IsNullOrWhiteSpace(characterId))
-            {
-                return false;
-            }
-
-            var token = BuildHubAnnouncementToken(hubId, characterId);
-            lock (_hubAnnouncedByPeerLock)
-            {
-                HashSet<string> announced;
-                if (!_hubAnnouncedByPeer.TryGetValue(targetPeer, out announced) || announced == null)
-                {
-                    announced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    _hubAnnouncedByPeer[targetPeer] = announced;
-                }
-
-                if (announced.Contains(token))
-                {
-                    return false;
-                }
-
-                announced.Add(token);
-                return true;
-            }
-        }
-
-        private bool IsHubCharacterAnnounced(string targetPeer, string hubId, string characterId)
-        {
-            if (IsNullOrWhiteSpace(targetPeer) || IsNullOrWhiteSpace(hubId) || IsNullOrWhiteSpace(characterId))
-            {
-                return false;
-            }
-
-            var token = BuildHubAnnouncementToken(hubId, characterId);
-            lock (_hubAnnouncedByPeerLock)
-            {
-                HashSet<string> announced;
-                if (!_hubAnnouncedByPeer.TryGetValue(targetPeer, out announced) || announced == null)
-                {
-                    return false;
-                }
-
-                return announced.Contains(token);
-            }
-        }
-
-        private void SendHubStateAddToTarget(string hubId, HubPresenceRegistry.Participant participant, HubPeerTarget target, string mode, string source)
-        {
-            if (IsNullOrWhiteSpace(hubId)
-                || participant == null
-                || target == null
-                || target.Stream == null
-                || IsNullOrWhiteSpace(target.Peer)
-                || IsNullOrWhiteSpace(participant.CharacterId))
-            {
-                return;
-            }
-
-            var hubPlayerCharacter = BuildHubPlayerCharacterFromParticipant(participant);
-            if (hubPlayerCharacter == null)
-            {
-                return;
-            }
-
-            var update = HubStateUpdate.CreateForCharacterAddtion(hubPlayerCharacter, hubId);
-            var serializedUpdate = HubSerializer.SerializeHubStateUpdate(update);
-            var data = BuildUtf16StringPayload(serializedUpdate);
-
-            LogHubAddPayloadSummary(
-                mode,
-                hubId,
-                target.Peer,
-                participant,
-                hubPlayerCharacter,
-                data,
-                source ?? string.Empty);
-
-            var msgNo = ReserveMetaGameplayMsgNos(1);
-            var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, HubEntityId, 7, data), msgNo);
-            SendRawFrame(target.Stream, target.Peer, PrefixLength(core), "sent HubCommunicationObject HubStateChanged add (" + (mode ?? string.Empty) + ")");
-
-            _logger.Log(new
-            {
-                ts = RequestLogger.UtcNowIso(),
-                type = "hub-add-send",
-                mode = mode ?? string.Empty,
-                source = source ?? string.Empty,
-                hubId = hubId,
-                senderPeer = participant.Peer ?? string.Empty,
-                characterId = participant.CharacterId,
-                sentCount = 1,
-                targetPeers = new[] { target.Peer },
-            });
-        }
-
-        private bool EnsureHubCharacterAnnouncedForTarget(string hubId, HubPresenceRegistry.Participant participant, HubPeerTarget target, string source)
-        {
-            if (IsNullOrWhiteSpace(hubId)
-                || participant == null
-                || target == null
-                || IsNullOrWhiteSpace(target.Peer)
-                || IsNullOrWhiteSpace(participant.CharacterId))
-            {
-                return false;
-            }
-
-            if (IsHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId))
-            {
-                return true;
-            }
-
-            if (!TryMarkHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId))
-            {
-                return IsHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId);
-            }
-
-            SendHubStateAddToTarget(hubId, participant, target, "ensure-announced", source ?? string.Empty);
-            return true;
-        }
-
-        private void ClearHubAnnouncementsForPeer(string peer)
-        {
-            if (IsNullOrWhiteSpace(peer))
-            {
-                return;
-            }
-
-            lock (_hubAnnouncedByPeerLock)
-            {
-                _hubAnnouncedByPeer.Remove(peer);
-            }
-
-            lock (_hubReadyByPeerLock)
-            {
-                _hubReadyByPeer.Remove(peer);
-            }
-
-        }
-
-        private void ClearHubAnnouncementsForPeerHub(string peer, string hubId)
-        {
-            if (IsNullOrWhiteSpace(peer) || IsNullOrWhiteSpace(hubId))
-            {
-                return;
-            }
-
-            lock (_hubAnnouncedByPeerLock)
-            {
-                HashSet<string> announced;
-                if (_hubAnnouncedByPeer.TryGetValue(peer, out announced) && announced != null)
-                {
-                    announced.RemoveWhere(token => IsHubAnnouncementTokenForHub(token, hubId));
-                    if (announced.Count == 0)
-                    {
-                        _hubAnnouncedByPeer.Remove(peer);
-                    }
-                }
-            }
-
-
-            lock (_hubReadyByPeerLock)
-            {
-                HashSet<string> readyHubs;
-                if (_hubReadyByPeer.TryGetValue(peer, out readyHubs) && readyHubs != null)
-                {
-                    readyHubs.Remove(hubId);
-                    if (readyHubs.Count == 0)
-                    {
-                        _hubReadyByPeer.Remove(peer);
-                    }
-                }
-            }
-
-        }
-
-        private void ClearHubAnnouncementForAllPeers(string hubId, string characterId)
-        {
-            if (IsNullOrWhiteSpace(hubId) || IsNullOrWhiteSpace(characterId))
-            {
-                return;
-            }
-
-            var token = BuildHubAnnouncementToken(hubId, characterId);
-            lock (_hubAnnouncedByPeerLock)
-            {
-                foreach (var pair in _hubAnnouncedByPeer)
-                {
-                    if (pair.Value != null)
-                    {
-                        pair.Value.Remove(token);
-                    }
-                }
-            }
-
-        }
-
-        private static string ResolveHubCharacterIdentifier(CareerSlot slot, Guid identityGuid, int careerIndex, string existingCharacterId)
-        {
-            if (!IsNullOrWhiteSpace(existingCharacterId))
-            {
-                return existingCharacterId;
-            }
-
-            if (slot != null && !IsNullOrWhiteSpace(slot.CharacterIdentifier))
-            {
-                return slot.CharacterIdentifier;
-            }
-
-            return identityGuid != Guid.Empty
-                ? (identityGuid.ToString() + ":" + careerIndex.ToString(CultureInfo.InvariantCulture))
-                : string.Empty;
-        }
-
-        private bool TryMarkHubPeerReady(string peer, string hubId)
-        {
-            if (IsNullOrWhiteSpace(peer) || IsNullOrWhiteSpace(hubId))
-            {
-                return false;
-            }
-
-            lock (_hubReadyByPeerLock)
-            {
-                HashSet<string> readyHubs;
-                if (!_hubReadyByPeer.TryGetValue(peer, out readyHubs) || readyHubs == null)
-                {
-                    readyHubs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    _hubReadyByPeer[peer] = readyHubs;
-                }
-
-                if (readyHubs.Contains(hubId))
-                {
-                    return false;
-                }
-
-                readyHubs.Add(hubId);
-                return true;
-            }
-        }
-
-        private bool IsHubPeerReady(string peer, string hubId)
-        {
-            if (IsNullOrWhiteSpace(peer) || IsNullOrWhiteSpace(hubId))
-            {
-                return false;
-            }
-
-            lock (_hubReadyByPeerLock)
-            {
-                HashSet<string> readyHubs;
-                if (!_hubReadyByPeer.TryGetValue(peer, out readyHubs) || readyHubs == null)
-                {
-                    return false;
-                }
-
-                return readyHubs.Contains(hubId);
-            }
-        }
-
-        private IList<HubPeerTarget> GetHubBroadcastTargets(string hubId, string senderPeer)
-        {
-            var targets = new List<HubPeerTarget>();
-            if (IsNullOrWhiteSpace(hubId))
-            {
-                return targets;
-            }
-
-            var participants = _hubPresenceRegistry.GetParticipantsInHub(hubId);
-            if (participants == null || participants.Count == 0)
-            {
-                return targets;
-            }
-
-            lock (_hubPeerStreamsLock)
-            {
-                for (var i = 0; i < participants.Count; i++)
-                {
-                    var participant = participants[i];
-                    if (participant == null || IsNullOrWhiteSpace(participant.Peer))
-                    {
-                        continue;
-                    }
-                    if (!IsNullOrWhiteSpace(senderPeer) && string.Equals(participant.Peer, senderPeer, StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    NetworkStream stream;
-                    if (!_hubPeerStreams.TryGetValue(participant.Peer, out stream) || stream == null)
-                    {
-                        continue;
-                    }
-
-                    targets.Add(new HubPeerTarget(participant.Peer, stream));
-                }
-            }
-
-            return targets;
-        }
-
-        private static string ComputePayloadSha1(byte[] payload)
-        {
-            if (payload == null || payload.Length == 0)
-            {
-                return string.Empty;
-            }
-
-            try
-            {
-                using (var sha1 = new SHA1Managed())
-                {
-                    var hash = sha1.ComputeHash(payload);
-                    var sb = new StringBuilder(hash.Length * 2);
-                    for (var i = 0; i < hash.Length; i++)
-                    {
-                        sb.Append(hash[i].ToString("x2", CultureInfo.InvariantCulture));
-                    }
-
-                    return sb.ToString();
-                }
-            }
-            catch
-            {
-                return string.Empty;
-            }
-        }
-
-        private static string GetInventoryItemId(Item item)
-        {
-            if (Item.IsNullOrEmpty(item) || IsNullOrWhiteSpace(item.ItemId))
-            {
-                return string.Empty;
-            }
-
-            return item.ItemId;
-        }
-
-        private static object[] BuildEquippedItemsDiagnostics(PlayerCharacterInventory inventory)
-        {
-            if (inventory == null || inventory.EquippedItems == null || inventory.EquippedItems.Count == 0)
-            {
-                return new object[0];
-            }
-
-            var diagnostics = new List<object>(inventory.EquippedItems.Count);
-            for (var i = 0; i < inventory.EquippedItems.Count; i++)
-            {
-                var equipped = inventory.EquippedItems[i];
-                if (equipped == null)
-                {
-                    continue;
-                }
-
-                var item = equipped.Item;
-                diagnostics.Add(new
-                {
-                    slotId = equipped.Definition != null ? equipped.Definition.Id : 0UL,
-                    itemId = GetInventoryItemId(item),
-                    inventoryKey = item != null ? item.InventoryKey : 0,
-                    amount = item != null ? item.Amount : 0,
-                    flavourIndex = item != null ? item.FlavourIndex : 0,
-                    quality = item != null ? item.Quality : 0,
-                });
-            }
-
-            return diagnostics.ToArray();
-        }
-
-        private void LogHubAddPayloadSummary(
-            string source,
-            string hubId,
-            string targetPeer,
-            HubPresenceRegistry.Participant participant,
-            HubPlayerCharacter hubPlayerCharacter,
-            byte[] payload,
-            string replaySource)
-        {
-            if (participant == null || IsNullOrWhiteSpace(targetPeer))
-            {
-                return;
-            }
-
-            var snapshot = hubPlayerCharacter != null ? hubPlayerCharacter.Snapshot : null;
-            var inventory = snapshot != null ? snapshot.PlayerCharacterInventory : null;
-            HubPresenceRegistry.Participant targetParticipant;
-            _hubPresenceRegistry.TryGetParticipantForPeer(targetPeer, out targetParticipant);
-
-            _logger.Log(new
-            {
-                ts = RequestLogger.UtcNowIso(),
-                type = "hub-add-payload-summary",
-                source = source ?? string.Empty,
-                hubId = hubId ?? string.Empty,
-                targetPeer = targetPeer,
-                sourcePeer = participant.Peer ?? string.Empty,
-                accountId = participant.AccountId != Guid.Empty ? participant.AccountId.ToString() : string.Empty,
-                identityHash = participant.IdentityHash ?? string.Empty,
-                targetAccountId = (targetParticipant != null && targetParticipant.AccountId != Guid.Empty)
-                    ? targetParticipant.AccountId.ToString()
-                    : string.Empty,
-                targetIdentityHash = targetParticipant != null ? (targetParticipant.IdentityHash ?? string.Empty) : string.Empty,
-                targetCharacterId = targetParticipant != null ? (targetParticipant.CharacterId ?? string.Empty) : string.Empty,
-                targetHubId = targetParticipant != null ? (targetParticipant.HubId ?? string.Empty) : string.Empty,
-                participantCharacterId = participant.CharacterId ?? string.Empty,
-                participantCharacterName = participant.CharacterName ?? string.Empty,
-                snapshotCharacterId = snapshot != null ? (snapshot.CharacterIdentifier ?? string.Empty) : string.Empty,
-                snapshotCharacterName = snapshot != null ? (snapshot.CharacterName ?? string.Empty) : string.Empty,
-                playerId = snapshot != null ? snapshot.PlayerId : 0UL,
-                dataVersion = snapshot != null ? snapshot.DataVersion : 0,
-                // TEMP DEBUG DIAGNOSTICS: remove these fields once hub add-materialization issues are resolved.
-                snapshotBodytype = snapshot != null ? snapshot.Bodytype : 0UL,
-                snapshotSkinTextureIndex = snapshot != null ? snapshot.SkinTextureIndex : 0,
-                snapshotBackgroundStory = snapshot != null ? snapshot.BackgroundStory : 0UL,
-                snapshotVoiceSet = snapshot != null ? (snapshot.Voiceset ?? string.Empty) : string.Empty,
-                snapshotPortraitPath = snapshot != null ? (snapshot.PortraitPath ?? string.Empty) : string.Empty,
-                snapshotPrimaryWeaponItemId = inventory != null ? GetInventoryItemId(inventory.PrimaryWeapon) : string.Empty,
-                snapshotSecondaryWeaponItemId = inventory != null ? GetInventoryItemId(inventory.SecondaryWeapon) : string.Empty,
-                snapshotArmorItemId = inventory != null ? GetInventoryItemId(inventory.Armor) : string.Empty,
-                snapshotEquippedItems = BuildEquippedItemsDiagnostics(inventory),
-                payloadBytes = payload != null ? payload.Length : 0,
-                payloadSha1 = ComputePayloadSha1(payload),
-                replaySource = replaySource ?? string.Empty,
-            });
-        }
-
-        private void ReplayHubRosterToPeer(string hubId, string targetPeer, string source)
-        {
-            if (IsNullOrWhiteSpace(hubId) || IsNullOrWhiteSpace(targetPeer))
-            {
-                return;
-            }
-
-            NetworkStream targetStream;
-            lock (_hubPeerStreamsLock)
-            {
-                if (!_hubPeerStreams.TryGetValue(targetPeer, out targetStream) || targetStream == null)
-                {
-                    return;
-                }
-            }
-
-            var participants = _hubPresenceRegistry.GetParticipantsInHub(hubId);
-            if (participants == null || participants.Count == 0)
-            {
-                return;
-            }
-
-            var updates = new List<byte[]>();
-            var sentPlayerIds = new List<ulong>();
-            var candidateCount = 0;
-            var sentCharacterIds = new List<string>();
-            for (var i = 0; i < participants.Count; i++)
-            {
-                var participant = participants[i];
-                if (participant == null
-                    || IsNullOrWhiteSpace(participant.Peer)
-                    || IsNullOrWhiteSpace(participant.CharacterId)
-                    || string.Equals(participant.Peer, targetPeer, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                candidateCount++;
-
-                if (IsHubCharacterAnnounced(targetPeer, hubId, participant.CharacterId))
-                {
-                    continue;
-                }
-
-                if (!TryMarkHubCharacterAnnounced(targetPeer, hubId, participant.CharacterId))
-                {
-                    continue;
-                }
-
-                var hubPlayerCharacter = BuildHubPlayerCharacterFromParticipant(participant);
-                if (hubPlayerCharacter == null)
-                {
-                    continue;
-                }
-
-                var update = HubStateUpdate.CreateForCharacterAddtion(hubPlayerCharacter, hubId);
-                var serializedUpdate = HubSerializer.SerializeHubStateUpdate(update);
-                var payload = BuildUtf16StringPayload(serializedUpdate);
-                updates.Add(payload);
-                sentCharacterIds.Add(participant.CharacterId);
-                sentPlayerIds.Add(hubPlayerCharacter.Snapshot != null ? hubPlayerCharacter.Snapshot.PlayerId : 0UL);
-
-                LogHubAddPayloadSummary(
-                    "roster-replay",
-                    hubId,
-                    targetPeer,
-                    participant,
-                    hubPlayerCharacter,
-                    payload,
-                    source);
-            }
-
-            if (updates.Count == 0)
-            {
-                return;
-            }
-
-            var firstMsgNo = ReserveMetaGameplayMsgNos(updates.Count);
-            for (var i = 0; i < updates.Count; i++)
-            {
-                try
-                {
-                    var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, HubEntityId, 7, updates[i]), firstMsgNo + (ulong)i);
-                    SendRawFrame(targetStream, targetPeer, PrefixLength(core), "sent HubCommunicationObject HubStateChanged add (roster replay)");
-                }
-                catch
-                {
-                }
-            }
-
-            _logger.Log(new
-            {
-                ts = RequestLogger.UtcNowIso(),
-                type = "hub-roster-replay",
-                targetPeer = targetPeer,
-                hubId = hubId,
-                candidates = candidateCount,
-                sent = updates.Count,
-                sentCharacterIds = sentCharacterIds,
-                sentPlayerIds = sentPlayerIds,
-                source = source ?? string.Empty,
-            });
-
-            _logger.Log(new
-            {
-                ts = RequestLogger.UtcNowIso(),
-                type = "hub-add-send",
-                mode = "roster-replay",
-                targetPeer = targetPeer,
-                hubId = hubId,
-                source = source ?? string.Empty,
-                sentCount = updates.Count,
-                sentCharacterIds = sentCharacterIds,
-            });
-        }
-
-        private bool TryActivateHubReadiness(string peer, string hubId, string reason)
-        {
-            if (IsNullOrWhiteSpace(peer) || IsNullOrWhiteSpace(hubId))
-            {
-                return false;
-            }
-
-            HubPresenceRegistry.Participant participant;
-            if (!_hubPresenceRegistry.TryGetParticipantForPeer(peer, out participant)
-                || participant == null
-                || IsNullOrWhiteSpace(participant.HubId)
-                || !string.Equals(participant.HubId, hubId, StringComparison.OrdinalIgnoreCase)
-                || IsNullOrWhiteSpace(participant.CharacterId))
-            {
-                return false;
-            }
-
-            if (!TryMarkHubPeerReady(peer, hubId))
-            {
-                return false;
-            }
-
-            ReplayHubRosterToPeer(hubId, peer, reason ?? string.Empty);
-            BroadcastHubStateAddToReadyPeers(hubId, peer, participant, reason ?? string.Empty);
-
-            _logger.Log(new
-            {
-                ts = RequestLogger.UtcNowIso(),
-                type = "hub-first-move-sync",
-                peer = peer,
-                hubId = hubId,
-                characterId = participant.CharacterId,
-                reason = reason ?? string.Empty,
-            });
-
-            _logger.Log(new
-            {
-                ts = RequestLogger.UtcNowIso(),
-                type = "hub-ready",
-                peer = peer,
-                hubId = hubId,
-                characterId = participant.CharacterId,
-                reason = reason ?? string.Empty,
-            });
-
-            return true;
-        }
-
-        private void BroadcastHubMovement(string hubId, string senderPeer, string characterId, float x, float y)
-        {
-            if (IsNullOrWhiteSpace(hubId) || IsNullOrWhiteSpace(characterId))
-            {
-                return;
-            }
-
-            var targets = GetHubBroadcastTargets(hubId, senderPeer);
-            if (targets.Count == 0)
-            {
-                return;
-            }
-
-            HubPresenceRegistry.Participant senderParticipant;
-            var canEnsureAnnouncement = _hubPresenceRegistry.TryGetParticipantForPeer(senderPeer, out senderParticipant)
-                && senderParticipant != null
-                && !IsNullOrWhiteSpace(senderParticipant.CharacterId)
-                && string.Equals(senderParticipant.CharacterId, characterId, StringComparison.OrdinalIgnoreCase);
-
-            var filteredTargets = new List<HubPeerTarget>(targets.Count);
-            var ensuredTargets = new List<string>();
-            var blockedTargets = new List<string>();
-            for (var i = 0; i < targets.Count; i++)
-            {
-                var target = targets[i];
-                if (target == null || IsNullOrWhiteSpace(target.Peer))
-                {
-                    continue;
-                }
-
-                if (IsHubCharacterAnnounced(target.Peer, hubId, characterId))
-                {
-                    filteredTargets.Add(target);
-                }
-                else if (canEnsureAnnouncement
-                    && IsHubPeerReady(target.Peer, hubId)
-                    && EnsureHubCharacterAnnouncedForTarget(hubId, senderParticipant, target, "move-send"))
-                {
-                    filteredTargets.Add(target);
-                    ensuredTargets.Add(target.Peer);
-                }
-                else
-                {
-                    blockedTargets.Add(target.Peer);
-                }
-            }
-
-            if (filteredTargets.Count == 0)
-            {
-                return;
-            }
-
-            var targetPeers = new List<string>(filteredTargets.Count);
-            for (var i = 0; i < filteredTargets.Count; i++)
-            {
-                if (filteredTargets[i] != null && !IsNullOrWhiteSpace(filteredTargets[i].Peer))
-                {
-                    targetPeers.Add(filteredTargets[i].Peer);
-                }
-            }
-
-            _logger.Log(new
-            {
-                ts = RequestLogger.UtcNowIso(),
-                type = "hub-move-broadcast",
-                hubId = hubId,
-                senderPeer = senderPeer ?? string.Empty,
-                characterId = characterId,
-                x = x,
-                y = y,
-                targets = targetPeers,
-            });
-
-            _logger.Log(new
-            {
-                ts = RequestLogger.UtcNowIso(),
-                type = "hub-move-send",
-                hubId = hubId,
-                senderPeer = senderPeer ?? string.Empty,
-                characterId = characterId,
-                totalTargets = targets.Count,
-                eligibleTargets = filteredTargets.Count,
-                ensuredTargets = ensuredTargets,
-                blockedTargets = blockedTargets,
-            });
-
-            var moveRequests = new[]
-            {
-                new KeyValuePair<string, Vector2D>(characterId, new Vector2D(x, y))
-            };
-
-            var serializedMoves = HubMovementSerializer.Serialize(moveRequests);
-            var data = BuildUtf16StringPayload(serializedMoves);
-
-            BroadcastHubFieldEvent(filteredTargets, 4, data, "sent HubCommunicationObject ExecuteMoveToPosition (broadcast)");
-        }
-
-        private void BroadcastHubStateAddToReadyPeers(string hubId, string senderPeer, HubPresenceRegistry.Participant participant, string source)
-        {
-            if (IsNullOrWhiteSpace(hubId) || participant == null)
-            {
-                return;
-            }
-
-            var hubPlayerCharacter = BuildHubPlayerCharacterFromParticipant(participant);
-            if (hubPlayerCharacter == null)
-            {
-                return;
-            }
-
-            var update = HubStateUpdate.CreateForCharacterAddtion(hubPlayerCharacter, hubId);
-            var serializedUpdate = HubSerializer.SerializeHubStateUpdate(update);
-            var data = BuildUtf16StringPayload(serializedUpdate);
-
-            var targets = GetHubBroadcastTargets(hubId, senderPeer);
-            if (targets.Count == 0)
-            {
-                return;
-            }
-
-            var filteredTargets = new List<HubPeerTarget>(targets.Count);
-            for (var i = 0; i < targets.Count; i++)
-            {
-                var target = targets[i];
-                if (target == null || IsNullOrWhiteSpace(target.Peer))
-                {
-                    continue;
-                }
-
-                if (!IsHubPeerReady(target.Peer, hubId))
-                {
-                    continue;
-                }
-
-                if (TryMarkHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId))
-                {
-                    filteredTargets.Add(target);
-                }
-            }
-
-            if (filteredTargets.Count == 0)
-            {
-                _logger.Log(new
-                {
-                    ts = RequestLogger.UtcNowIso(),
-                    type = "hub-add-broadcast",
-                    hubId = hubId,
-                    senderPeer = senderPeer ?? string.Empty,
-                    characterId = participant.CharacterId,
-                    playerId = (hubPlayerCharacter.Snapshot != null ? hubPlayerCharacter.Snapshot.PlayerId : 0UL),
-                    targets = targets.Count,
-                    sentTargets = 0,
-                });
-                return;
-            }
-
-            _logger.Log(new
-            {
-                ts = RequestLogger.UtcNowIso(),
-                type = "hub-add-broadcast",
-                hubId = hubId,
-                senderPeer = senderPeer ?? string.Empty,
-                characterId = participant.CharacterId,
-                playerId = (hubPlayerCharacter.Snapshot != null ? hubPlayerCharacter.Snapshot.PlayerId : 0UL),
-                targets = targets.Count,
-                sentTargets = filteredTargets.Count,
-                targetPeers = filteredTargets.Select(t => t != null ? t.Peer : string.Empty).ToList(),
-            });
-
-            _logger.Log(new
-            {
-                ts = RequestLogger.UtcNowIso(),
-                type = "hub-add-send",
-                mode = "broadcast",
-                source = source ?? string.Empty,
-                hubId = hubId,
-                senderPeer = senderPeer ?? string.Empty,
-                characterId = participant.CharacterId,
-                sentCount = filteredTargets.Count,
-                targetPeers = filteredTargets.Select(t => t != null ? t.Peer : string.Empty).ToList(),
-            });
-
-            for (var i = 0; i < filteredTargets.Count; i++)
-            {
-                var target = filteredTargets[i];
-                if (target == null || IsNullOrWhiteSpace(target.Peer))
-                {
-                    continue;
-                }
-
-                LogHubAddPayloadSummary(
-                    "broadcast",
-                    hubId,
-                    target.Peer,
-                    participant,
-                    hubPlayerCharacter,
-                    data,
-                    source ?? string.Empty);
-            }
-
-            BroadcastHubFieldEvent(filteredTargets, 7, data, "sent HubCommunicationObject HubStateChanged add (broadcast)");
-        }
-
-        private void BroadcastHubStateRemove(string hubId, string senderPeer, string removedCharacterId)
-        {
-            if (IsNullOrWhiteSpace(hubId) || IsNullOrWhiteSpace(removedCharacterId))
-            {
-                return;
-            }
-
-            ClearHubAnnouncementForAllPeers(hubId, removedCharacterId);
-
-            var update = HubStateUpdate.CreateForRemoveCharacter(removedCharacterId, hubId);
-            var serializedUpdate = HubSerializer.SerializeHubStateUpdate(update);
-            var data = BuildUtf16StringPayload(serializedUpdate);
-
-            var targets = GetHubBroadcastTargets(hubId, senderPeer);
-            if (targets.Count == 0)
-            {
-                return;
-            }
-
-            _logger.Log(new
-            {
-                ts = RequestLogger.UtcNowIso(),
-                type = "hub-remove-send",
-                hubId = hubId,
-                senderPeer = senderPeer ?? string.Empty,
-                removedCharacterId = removedCharacterId,
-                sentCount = targets.Count,
-                targetPeers = targets.Select(t => t != null ? t.Peer : string.Empty).ToList(),
-            });
-
-            BroadcastHubFieldEvent(targets, 7, data, "sent HubCommunicationObject HubStateChanged remove (broadcast)");
-        }
-
-        private void BroadcastHubFieldEvent(IList<HubPeerTarget> targets, ushort fieldId, byte[] data, string note)
-        {
-            if (targets == null || targets.Count == 0 || data == null)
-            {
-                return;
-            }
-
-            var firstMsgNo = ReserveMetaGameplayMsgNos(targets.Count);
-            for (var i = 0; i < targets.Count; i++)
-            {
-                var target = targets[i];
-                if (target == null || target.Stream == null)
-                {
-                    continue;
-                }
-
-                try
-                {
-                    var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, HubEntityId, fieldId, data), firstMsgNo + (ulong)i);
-                    SendRawFrame(target.Stream, target.Peer, PrefixLength(core), note);
-                }
-                catch
-                {
-                }
-            }
-        }
-
-        private void RemoveHubPresenceWithBroadcast(string peer)
-        {
-            if (IsNullOrWhiteSpace(peer))
-            {
-                return;
-            }
-
-            ClearHubAnnouncementsForPeer(peer);
-
-            HubPresenceRegistry.Participant existing;
-            if (_hubPresenceRegistry.TryGetParticipantForPeer(peer, out existing)
-                && existing != null
-                && !IsNullOrWhiteSpace(existing.HubId)
-                && !IsNullOrWhiteSpace(existing.CharacterId))
-            {
-                BroadcastHubStateRemove(existing.HubId, peer, existing.CharacterId);
-            }
-
-            _hubPresenceRegistry.RemovePeer(peer);
-        }
-
-        private void RegisterOrUpdateHubPresenceWithDuplicateRetire(
-            string peer,
-            Guid accountId,
-            string identityHash,
-            int careerIndex,
-            string characterId,
-            string characterName,
-            string hubId,
-            float x,
-            float y,
-            string reason)
-        {
-            if (!IsNullOrWhiteSpace(characterId))
-            {
-                string existingPeer;
-                if (_hubPresenceRegistry.TryGetPeerForCharacter(characterId, out existingPeer)
-                    && !IsNullOrWhiteSpace(existingPeer)
-                    && !string.Equals(existingPeer, peer, StringComparison.OrdinalIgnoreCase))
-                {
-                    var total = Interlocked.Increment(ref _hubDuplicateSessionRetiredTotal);
-                    _logger.Log(new
-                    {
-                        ts = RequestLogger.UtcNowIso(),
-                        type = "hub-duplicate-session-retired",
-                        reason = reason ?? string.Empty,
-                        characterId = characterId,
-                        replacementPeer = peer ?? string.Empty,
-                        retiredPeer = existingPeer,
-                        total = total,
-                    });
-
-                    RemoveHubPresenceWithBroadcast(existingPeer);
-                    UnregisterHubPeerStream(existingPeer, null);
-                }
-            }
-
-            _hubPresenceRegistry.RegisterOrUpdate(
-                peer,
-                accountId,
-                identityHash,
-                careerIndex,
-                characterId,
-                characterName,
-                hubId,
-                x,
-                y);
-        }
-
-        private bool IsHubMoveOwnershipValid(
-            string peer,
-            Guid activeIdentityGuid,
-            string movedCharacterId,
-            HubPresenceRegistry.Participant movementParticipant)
-        {
-            if (IsNullOrWhiteSpace(movedCharacterId))
-            {
-                return true;
-            }
-
-            if (activeIdentityGuid == Guid.Empty)
-            {
-                _logger.Log(new
-                {
-                    ts = RequestLogger.UtcNowIso(),
-                    type = "hub-move-rejected-owner-mismatch",
-                    reason = "unauthenticated-identity",
-                    peer = peer ?? string.Empty,
-                    characterId = movedCharacterId,
-                });
-                return false;
-            }
-
-            var ownerAccountId = TryParseAccountIdFromCharacterIdentifier(movedCharacterId);
-            if (ownerAccountId == Guid.Empty || ownerAccountId != activeIdentityGuid)
-            {
-                _logger.Log(new
-                {
-                    ts = RequestLogger.UtcNowIso(),
-                    type = "hub-move-rejected-owner-mismatch",
-                    reason = ownerAccountId == Guid.Empty ? "invalid-character-id" : "account-mismatch",
-                    peer = peer ?? string.Empty,
-                    characterId = movedCharacterId,
-                    activeIdentityGuid = activeIdentityGuid.ToString(),
-                    parsedOwnerAccountId = ownerAccountId != Guid.Empty ? ownerAccountId.ToString() : string.Empty,
-                });
-                return false;
-            }
-
-            if (movementParticipant != null
-                && !IsNullOrWhiteSpace(movementParticipant.CharacterId)
-                && !string.Equals(movementParticipant.CharacterId, movedCharacterId, StringComparison.OrdinalIgnoreCase))
-            {
-                _logger.Log(new
-                {
-                    ts = RequestLogger.UtcNowIso(),
-                    type = "hub-move-rejected-owner-mismatch",
-                    reason = "registered-character-mismatch",
-                    peer = peer ?? string.Empty,
-                    characterId = movedCharacterId,
-                    registeredCharacterId = movementParticipant.CharacterId,
-                });
-                return false;
-            }
-
-            return true;
-        }
-
-        private static PlayerCharacterSnapshot BuildPlayerCharacterSnapshotForSlot(string characterIdentifier, string characterName, CareerSlot slot)
-        {
-            var snapshot = new PlayerCharacterSnapshot();
-            snapshot.IsHenchman = false;
-            snapshot.PlayerId = 1UL;
-            snapshot.DataVersion = 48;
-            snapshot.CharacterIdentifier = characterIdentifier ?? string.Empty;
-            snapshot.CharacterName = !IsNullOrWhiteSpace(characterName) ? characterName : PlayerCharacterDefaultValues.PlayerName;
-            snapshot.PortraitPath = (slot != null && !IsNullOrWhiteSpace(slot.PortraitPath)) ? slot.PortraitPath : PlayerCharacterDefaultValues.PortraitPath;
-            snapshot.Voiceset = (slot != null && !IsNullOrWhiteSpace(slot.Voiceset)) ? slot.Voiceset : PlayerCharacterDefaultValues.Voiceset;
-            snapshot.Bodytype = (slot != null && slot.Bodytype != 0UL) ? slot.Bodytype : PlayerCharacterDefaultValues.Bodytype;
-            snapshot.SkinTextureIndex = (slot != null) ? slot.SkinTextureIndex : PlayerCharacterDefaultValues.SkinTextureIndex;
-            snapshot.BackgroundStory = (slot != null && slot.BackgroundStory != 0UL) ? slot.BackgroundStory : PlayerCharacterDefaultValues.BackgroundStory;
-            snapshot.WantsBackgroundChange = slot != null && slot.WantsBackgroundChange;
-
-            // Wallet is what PCSSerializer uses; Karma/Nuyen properties are derived/read-only in this build.
-            if (snapshot.Wallet != null)
-            {
-                var karma = slot != null ? slot.Karma : 0;
-                var spentKarma = slot != null ? slot.SpentKarma : 0;
-                var nuyen = slot != null ? slot.Nuyen : 0;
-                snapshot.Wallet.Reset(CurrencyId.Karma, karma, spentKarma);
-                snapshot.Wallet.Reset(CurrencyId.Nuyen, nuyen, 0);
-            }
-
-            if (snapshot.SkillTreeDefinitions == null)
-            {
-                snapshot.SkillTreeDefinitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
-            }
-            if (slot != null && slot.SkillTreeDefinitions != null && slot.SkillTreeDefinitions.Count > 0)
-            {
-                foreach (var kvp in slot.SkillTreeDefinitions)
-                {
-                    if (IsNullOrWhiteSpace(kvp.Key) || kvp.Value == null)
-                    {
-                        continue;
-                    }
-                    snapshot.SkillTreeDefinitions[kvp.Key] = kvp.Value;
-                }
-            }
-
-            var pcInv = new PlayerCharacterInventory();
-            var primaryItemId = (slot != null && !IsNullOrWhiteSpace(slot.PrimaryWeaponItemId)) ? slot.PrimaryWeaponItemId : PlayerCharacterDefaultValues.PrimaryWeapon;
-            var primaryKey = slot != null ? slot.PrimaryWeaponInventoryKey : 0;
-            pcInv.PrimaryWeapon = CreateInventoryItem(primaryItemId, primaryKey);
-
-            var secondaryItemId = (slot != null && !IsNullOrWhiteSpace(slot.SecondaryWeaponItemId)) ? slot.SecondaryWeaponItemId : PlayerCharacterDefaultValues.SecondaryWeapon;
-            var secondaryKey = slot != null ? slot.SecondaryWeaponInventoryKey : 1;
-            pcInv.SecondaryWeapon = CreateInventoryItem(secondaryItemId, secondaryKey);
-
-            var armorItemId = (slot != null && !IsNullOrWhiteSpace(slot.ArmorItemId)) ? slot.ArmorItemId : PlayerCharacterDefaultValues.Armor;
-            var armorKey = slot != null ? slot.ArmorInventoryKey : 2;
-            pcInv.Armor = CreateInventoryItem(armorItemId, armorKey);
-            if (slot != null && slot.EquippedItems != null && slot.EquippedItems.Count > 0)
-            {
-                foreach (var kvp in slot.EquippedItems)
-                {
-                    if (IsNullOrWhiteSpace(kvp.Key) || IsNullOrWhiteSpace(kvp.Value))
-                    {
-                        continue;
-                    }
-                    ulong slotId;
-                    if (!TryParseUInt64(kvp.Key, out slotId) || slotId == 0UL)
-                    {
-                        continue;
-                    }
-
-                    var def = new LogicItemslotDefinition();
-                    def.Id = slotId;
-                    def.AssignableItemTypes = new ulong[0];
-                    def.CannotBeEmpty = false;
-                    def.DefaultItem = string.Empty;
-
-                    var itemSlot = new ItemSlot(def);
-                    itemSlot.Item = CreateInventoryItem(kvp.Value, 10);
-                    pcInv.EquippedItems.Add(itemSlot);
-                }
-            }
-            snapshot.PlayerCharacterInventory = pcInv;
-
-            return snapshot;
-        }
-
-        private static Guid TryParseAccountIdFromCharacterIdentifier(string characterIdentifier)
-        {
-            if (IsNullOrWhiteSpace(characterIdentifier))
-            {
-                return Guid.Empty;
-            }
-
-            var separator = characterIdentifier.IndexOf(':');
-            var guidPart = separator > 0 ? characterIdentifier.Substring(0, separator) : characterIdentifier;
-            Guid parsed;
-            try
-            {
-                parsed = new Guid(guidPart);
-            }
-            catch
-            {
-                return Guid.Empty;
-            }
-
-            return parsed;
-        }
-
-        private static IDictionary TryDeserializeJsonDict(string json)
-        {
-            if (IsNullOrWhiteSpace(json))
-            {
-                return null;
-            }
-            try
-            {
-                return Json.DeserializeObject(json) as IDictionary;
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static IDictionary GetDictValue(IDictionary dict, string key)
-        {
-            if (dict == null || IsNullOrWhiteSpace(key) || !dict.Contains(key) || dict[key] == null)
-            {
-                return null;
-            }
-            return dict[key] as IDictionary;
-        }
-
-        private static object[] GetArrayValue(IDictionary dict, string key)
-        {
-            if (dict == null || IsNullOrWhiteSpace(key) || !dict.Contains(key) || dict[key] == null)
-            {
-                return null;
-            }
-
-            var arr = dict[key] as object[];
-            if (arr != null)
-            {
-                return arr;
-            }
-
-            var list = dict[key] as ArrayList;
-            if (list != null)
-            {
-                return list.ToArray();
-            }
-
-            return null;
-        }
-
-        private static string GetStringValue(IDictionary dict, string key)
-        {
-            if (dict == null || IsNullOrWhiteSpace(key) || !dict.Contains(key) || dict[key] == null)
-            {
-                return null;
-            }
-            return dict[key] as string;
-        }
-
-        private static ulong GetUInt64Value(IDictionary dict, string key, ulong fallback)
-        {
-            if (dict == null || IsNullOrWhiteSpace(key) || !dict.Contains(key) || dict[key] == null)
-            {
-                return fallback;
-            }
-            try
-            {
-                return Convert.ToUInt64(dict[key], CultureInfo.InvariantCulture);
-            }
-            catch
-            {
-                return fallback;
-            }
-        }
-
-        private static int GetInt32Value(IDictionary dict, string key, int fallback)
-        {
-            if (dict == null || IsNullOrWhiteSpace(key) || !dict.Contains(key) || dict[key] == null)
-            {
-                return fallback;
-            }
-            try
-            {
-                return Convert.ToInt32(dict[key], CultureInfo.InvariantCulture);
-            }
-            catch
-            {
-                return fallback;
-            }
-        }
-
-        private static bool TryInferMetatypeAndGenderFromPortrait(string portraitPath, out ulong metatypeId, out ulong genderId)
-        {
-            metatypeId = 0UL;
-            genderId = 0UL;
-            if (IsNullOrWhiteSpace(portraitPath))
-            {
-                return false;
-            }
-
-            // Portrait paths look like:
-            // GUI/Textures/Metagameplay/player_portraits/portrait_male_troll_frederick_eccher_
-            // GUI/Textures/Metagameplay/player_portraits/portrait_female_human_mage_
-            // We use this as a fallback when the client doesn't send BodyChange.
-            var p = portraitPath;
-            if (p.IndexOf("portrait_male_", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                genderId = 196610UL; // Male
-            }
-            else if (p.IndexOf("portrait_female_", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                genderId = 196609UL; // Female
-            }
-
-            if (p.IndexOf("_human_", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                metatypeId = 197009UL;
-            }
-            else if (p.IndexOf("_orc_", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                metatypeId = 197010UL;
-            }
-            else if (p.IndexOf("_troll_", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                metatypeId = 197011UL;
-            }
-            else if (p.IndexOf("_dwarf_", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                metatypeId = 197012UL;
-            }
-            else if (p.IndexOf("_elf_", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                metatypeId = 197013UL;
-            }
-
-            return metatypeId != 0UL && genderId != 0UL;
-        }
-
         private static readonly byte[] CoreHelloPayloadPrefix = HexToBytes("02310000000007000000322E302E322E3720000000433245314137464537424233463930443330413242414331333135443431463001");
         private static readonly byte[] CoreIntroduceGameClientPayload = HexToBytes("012500000003010000000000000005001600000000090000003132372E302E302E3101000000000000000100000000000000");
         private static readonly byte[] CoreInitPayload = HexToBytes("0116000000000D02EA0710280000000100000001000000000000000100000000000000");
@@ -2833,6 +261,11 @@ namespace Shadowrun.LocalService.Core.Protocols
         private readonly CareerInfoGenerator _careerInfoGenerator;
         private readonly MatchConfigurationGenerator _matchConfigurationGenerator;
         private readonly CharacterStatePushBroker _characterStatePushBroker;
+        private readonly PortedMissionRewardService _missionRewardService;
+        private readonly PortedStoryProgressionService _storyProgressionService;
+        private readonly PortedSkillPurchaseService _skillPurchaseService;
+        private readonly PortedShopInventoryService _shopInventoryService;
+        private readonly PortedHubInstanceManager _portedHubInstanceManager;
 
         // APlay DirectSystem messages include an 8-byte message number the client may use for ordering/dedup.
         // For MetaGameplay pushes we must keep these monotonic even if the client repeats a request with a lower MsgNo.
@@ -2842,7 +275,7 @@ namespace Shadowrun.LocalService.Core.Protocols
         private const int CreationInfoDedupWindowMs = 10000;
         private readonly object _hubPushDedupLock = new object();
         private readonly Dictionary<string, HubPushDedupState> _hubPushDedupByPeer = new Dictionary<string, HubPushDedupState>(StringComparer.OrdinalIgnoreCase);
-        private readonly HubPresenceRegistry _hubPresenceRegistry = new HubPresenceRegistry();
+        private readonly HubPresenceRegistry _hubPresenceRegistry;
         private readonly object _hubPeerStreamsLock = new object();
         private readonly Dictionary<string, NetworkStream> _hubPeerStreams = new Dictionary<string, NetworkStream>(StringComparer.OrdinalIgnoreCase);
         private readonly object _hubAnnouncedByPeerLock = new object();
@@ -2931,102 +364,41 @@ namespace Shadowrun.LocalService.Core.Protocols
         }
 
         public APlayTcpStub(LocalServiceOptions options, RequestLogger logger)
-            : this(options, logger, new LocalUserStore(options, logger), null, null)
+            : this(options, logger, new LocalUserStore(options, logger), null, null, null)
         {
         }
 
         public APlayTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore)
-            : this(options, logger, userStore, null, null)
+            : this(options, logger, userStore, null, null, null)
         {
         }
 
         public APlayTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap)
-            : this(options, logger, userStore, sessionIdentityMap, null)
+            : this(options, logger, userStore, sessionIdentityMap, null, null)
         {
         }
 
         public APlayTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap, CharacterStatePushBroker characterStatePushBroker)
+            : this(options, logger, userStore, sessionIdentityMap, characterStatePushBroker, null)
+        {
+        }
+
+        public APlayTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap, CharacterStatePushBroker characterStatePushBroker, HubPresenceRegistry hubPresenceRegistry)
         {
             _options = options;
             _logger = logger;
             _userStore = userStore ?? new LocalUserStore(options, logger);
             _sessionIdentityMap = sessionIdentityMap;
-            _careerInfoGenerator = new CareerInfoGenerator(logger, _userStore);
+            _careerInfoGenerator = new CareerInfoGenerator(logger, _userStore, _options);
             _matchConfigurationGenerator = new MatchConfigurationGenerator(logger);
             _characterStatePushBroker = characterStatePushBroker ?? CharacterStatePushBroker.Shared;
-        }
-
-        private ulong AllocateGameClientEntityId()
-        {
-            var next = Interlocked.Increment(ref _nextGameClientEntityId);
-            if (next <= 0)
-            {
-                // Should never happen, but avoid returning 0 which would break player ownership comparisons.
-                next = 1000;
-                Interlocked.Exchange(ref _nextGameClientEntityId, next);
-            }
-            return unchecked((ulong)next);
-        }
-
-        private void RegisterGameClientEntityIdForIdentity(Guid identityGuid, ulong gameClientEntityId, string peer)
-        {
-            if (identityGuid == Guid.Empty || gameClientEntityId == 0UL)
-            {
-                return;
-            }
-
-            lock (_identityEntityIdLock)
-            {
-                _gameClientEntityIdByIdentity[identityGuid] = gameClientEntityId;
-            }
-
-            _logger.Log(new
-            {
-                ts = RequestLogger.UtcNowIso(),
-                type = "aplay-identity-entityid",
-                peer = peer,
-                identityGuid = identityGuid,
-                gameClientEntityId = gameClientEntityId,
-            });
-        }
-
-        private bool TryGetGameClientEntityIdForIdentity(Guid identityGuid, out ulong gameClientEntityId)
-        {
-            gameClientEntityId = 0UL;
-            if (identityGuid == Guid.Empty)
-            {
-                return false;
-            }
-
-            lock (_identityEntityIdLock)
-            {
-                return _gameClientEntityIdByIdentity.TryGetValue(identityGuid, out gameClientEntityId) && gameClientEntityId != 0UL;
-            }
-        }
-
-        private ulong ReserveMetaGameplayMsgNos(int count)
-        {
-            if (count <= 0)
-            {
-                count = 1;
-            }
-
-            while (true)
-            {
-                var observed = Interlocked.Read(ref _metaGameplayOutMsgNoHighWatermark);
-                var observedU = observed > 0 ? (ulong)observed : 0UL;
-                var first = observedU + 1UL;
-                if (first == 0UL)
-                {
-                    first = 1UL;
-                }
-
-                var last = first + (ulong)count - 1UL;
-                if (Interlocked.CompareExchange(ref _metaGameplayOutMsgNoHighWatermark, (long)last, observed) == observed)
-                {
-                    return first;
-                }
-            }
+            _missionRewardService = new PortedMissionRewardService(_options);
+            _storyProgressionService = new PortedStoryProgressionService(_options, _userStore);
+            _skillPurchaseService = new PortedSkillPurchaseService(_options);
+            _shopInventoryService = new PortedShopInventoryService(_options, _userStore);
+            _portedHubInstanceManager = new PortedHubInstanceManager(new PortedHubRepository(new PortedHubLoader(_options != null ? _options.StreamingAssetsDir : null)), false);
+            _hubPresenceRegistry = hubPresenceRegistry ?? new HubPresenceRegistry();
+            _missionCleanupTimer = new Timer(SweepDisconnectedMissionSessions, null, MissionCleanupInterval, MissionCleanupInterval);
         }
 
         private void TryFlushPendingCharacterStatePushes(Guid identityGuid, string identityHash, int activeCareerIndex, string peer, NetworkStream stream)
@@ -3196,49 +568,178 @@ namespace Shadowrun.LocalService.Core.Protocols
             return Concat(BitConverter.GetBytes(raw.Length), raw);
         }
 
-        private void SendPendingLootPreviews(ServerSimulationSession simulationSession, System.Net.Sockets.NetworkStream stream, string peer, ulong msgNoBase)
+        private void SendPendingLootPreviews(
+            ServerSimulationSession simulationSession,
+            System.Net.Sockets.NetworkStream stream,
+            string peer,
+            ulong msgNoBase,
+            string currentCoopGroupName,
+            string activeIdentityHash,
+            Guid activeIdentityGuid,
+            int activeCareerIndex)
         {
             if (simulationSession == null || stream == null)
             {
                 return;
             }
 
-            string[] previews;
+            if (!IsNullOrWhiteSpace(currentCoopGroupName))
+            {
+                RegisterCoopMissionParticipant(currentCoopGroupName, peer, stream, activeIdentityHash, activeIdentityGuid, activeCareerIndex);
+
+                var participants = GetCoopMissionParticipantsSnapshot(currentCoopGroupName);
+                var sent = 0;
+                for (var i = 0; i < participants.Length; i++)
+                {
+                    var participant = participants[i];
+                    if (participant == null || participant.Stream == null)
+                    {
+                        continue;
+                    }
+
+                    sent += SendResolvedLootPreviewsForParticipant(
+                        simulationSession,
+                        participant.Stream,
+                        participant.Peer,
+                        msgNoBase,
+                        participant.IdentityHash,
+                        participant.IdentityGuid,
+                        participant.CareerIndex,
+                        "live-mission-coop");
+                }
+
+                if (sent == 0)
+                {
+                    SendResolvedLootPreviewsForParticipant(
+                        simulationSession,
+                        stream,
+                        peer,
+                        msgNoBase,
+                        activeIdentityHash,
+                        activeIdentityGuid,
+                        activeCareerIndex,
+                        "live-mission-coop-fallback");
+                }
+
+                return;
+            }
+
+            SendResolvedLootPreviewsForParticipant(
+                simulationSession,
+                stream,
+                peer,
+                msgNoBase,
+                activeIdentityHash,
+                activeIdentityGuid,
+                activeCareerIndex,
+                "live-mission-solo");
+        }
+
+        private int SendResolvedLootPreviewsForParticipant(
+            ServerSimulationSession simulationSession,
+            NetworkStream stream,
+            string peer,
+            ulong msgNoBase,
+            string identityHash,
+            Guid identityGuid,
+            int careerIndex,
+            string reason)
+        {
+            if (simulationSession == null || stream == null)
+            {
+                return 0;
+            }
+
+            CareerSlot slot = null;
+            if (_userStore != null && !IsNullOrWhiteSpace(identityHash))
+            {
+                try
+                {
+                    slot = _userStore.GetOrCreateCareer(identityHash, careerIndex, false);
+                }
+                catch
+                {
+                    slot = null;
+                }
+            }
+
+            var participantKey = BuildMissionParticipantKey(identityHash, identityGuid, careerIndex);
+            LocalMissionLootController.LootGrant[] previews;
             try
             {
-                previews = simulationSession.DrainPendingLootPreviews();
+                previews = simulationSession.ResolvePendingLootPreviewsForParticipant(participantKey, _userStore, identityGuid, slot);
             }
             catch
             {
-                return;
+                return 0;
             }
 
             if (previews == null || previews.Length == 0)
             {
-                return;
+                return 0;
             }
 
-            var idx = 0;
+            var lootItemChanges = new List<ItemChange>(previews.Length);
             for (var i = 0; i < previews.Length; i++)
             {
-                var itemId = previews[i];
-                if (IsNullOrWhiteSpace(itemId))
+                var preview = previews[i];
+                if (preview == null || IsNullOrWhiteSpace(preview.ItemId) || preview.Delta <= 0)
+                {
+                    continue;
+                }
+
+                lootItemChanges.Add(new ItemChange(preview.ItemId, preview.Delta)
+                {
+                    Quality = preview.Quality,
+                    Flavour = preview.Flavour,
+                });
+            }
+
+            if (lootItemChanges.Count == 0)
+            {
+                return 0;
+            }
+
+            var sent = SendLootPreviewItems(stream, peer, msgNoBase, lootItemChanges, reason);
+            return sent;
+        }
+
+        private static string BuildMissionParticipantKey(string identityHash, Guid identityGuid, int careerIndex)
+        {
+            return !IsNullOrWhiteSpace(identityHash)
+                ? identityHash + ":" + careerIndex.ToString(CultureInfo.InvariantCulture)
+                : identityGuid.ToString() + ":" + careerIndex.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private int SendLootPreviewItems(NetworkStream stream, string peer, ulong msgNoBase, IList<ItemChange> lootItemChanges, string reason)
+        {
+            if (stream == null || lootItemChanges == null || lootItemChanges.Count == 0)
+            {
+                return 0;
+            }
+
+            var sent = 0;
+            for (var i = 0; i < lootItemChanges.Count; i++)
+            {
+                var change = lootItemChanges[i];
+                if (change == null || IsNullOrWhiteSpace(change.ItemDefintionId) || change.Delta <= 0)
                 {
                     continue;
                 }
 
                 try
                 {
-                    // MetaGameplayCommunicationObject.onLootPreview(string item)
-                    var payload = BuildUtf16StringPayload(itemId);
-                    var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 30, payload), msgNoBase + (ulong)idx);
-                    SendRawFrame(stream, peer, PrefixLength(core), "sent MetaGameplayCommunicationObject LootPreview (itemId=" + itemId + ")");
-                    idx++;
+                    var payload = BuildUtf16StringPayload(change.ItemDefintionId);
+                    var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 30, payload), msgNoBase + (ulong)sent);
+                    SendRawFrame(stream, peer, PrefixLength(core), "sent MetaGameplayCommunicationObject LootPreview (itemId=" + change.ItemDefintionId + ")" + (IsNullOrWhiteSpace(reason) ? string.Empty : " (" + reason + ")"));
+                    sent++;
                 }
                 catch
                 {
                 }
             }
+
+            return sent;
         }
 
         private static StoryMissionstate ParseStoryMissionStateOrDefault(string value, StoryMissionstate fallback)
@@ -3260,6 +761,11 @@ namespace Shadowrun.LocalService.Core.Protocols
         private bool IsMissionCompletedForCareer(string identityHash, int careerIndex, string missionName, HashSet<string> fallbackCompletedMissions)
         {
             if (IsNullOrWhiteSpace(missionName))
+            {
+                return false;
+            }
+
+            if (IsRepeatableMission(missionName))
             {
                 return false;
             }
@@ -3292,269 +798,101 @@ namespace Shadowrun.LocalService.Core.Protocols
             return fallbackCompletedMissions != null && fallbackCompletedMissions.Contains(missionName);
         }
 
-        private bool TryMarkCurrentChapterDialogNpcsAsInteracted(CareerSlot slot, string storylineName)
+        private void SendUnlocksChanged(NetworkStream stream, string peer, ulong msgNo, string[] activatedUnlocks, string[] deactivatedUnlocks, string reason)
         {
-            var npcIds = GetCurrentChapterDialogNpcIds(slot, storylineName);
-            if (npcIds == null || npcIds.Count == 0)
+            if (stream == null)
             {
-                return false;
+                return;
             }
 
-            if (slot.MainCampaignInteractedNpcs == null)
+            var changes = new UnlockChanges();
+            AddUnlockChangeEntries(changes.ActivatedUnlocks, activatedUnlocks);
+            AddUnlockChangeEntries(changes.DeactivatedUnlocks, deactivatedUnlocks);
+            if (changes.IsEmpty())
             {
-                slot.MainCampaignInteractedNpcs = new List<string>();
+                return;
             }
 
-            var changed = false;
-            for (var i = 0; i < npcIds.Count; i++)
+            var payload = BuildUtf16StringPayload(Json.Serialize(changes));
+            var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 28, payload), msgNo);
+            SendRawFrame(stream, peer, PrefixLength(core), "sent MetaGameplayCommunicationObject UnlocksChanged" + (IsNullOrWhiteSpace(reason) ? string.Empty : " (" + reason + ")"));
+        }
+
+        private void SendMissionReward(NetworkStream stream, string peer, ulong msgNo, MissionReward missionReward, string reason)
+        {
+            if (stream == null || missionReward == null)
             {
-                var npcId = npcIds[i];
-                if (IsNullOrWhiteSpace(npcId))
+                return;
+            }
+
+            var earnedCurrencies = new List<object>();
+            var currencies = missionReward.EarnedCurrencies ?? new CurrencyReward[0];
+            for (var i = 0; i < currencies.Length; i++)
+            {
+                var currency = currencies[i];
+                if (currency == null || currency.EarnedValue == 0)
                 {
                     continue;
                 }
 
-                if (!slot.MainCampaignInteractedNpcs.Contains(npcId))
+                earnedCurrencies.Add(new Dictionary<string, object>
                 {
-                    slot.MainCampaignInteractedNpcs.Add(npcId);
-                    changed = true;
-                }
+                    { "CurrencyId", currency.CurrencyId.ToString() },
+                    { "EarnedValue", currency.EarnedValue },
+                });
             }
 
-            return changed;
-        }
-
-        private List<string> GetCurrentChapterDialogNpcIds(CareerSlot slot, string storylineName)
-        {
-            var npcIds = new List<string>();
-            if (slot == null || IsNullOrWhiteSpace(storylineName))
+            var itemChangesPayload = new List<object>();
+            var itemChanges = missionReward.ItemChanges ?? new ItemChange[0];
+            for (var i = 0; i < itemChanges.Length; i++)
             {
-                return npcIds;
-            }
-
-            try
-            {
-                StorylineInfo storyline;
-                if (!TryGetStoryline(storylineName, out storyline) || storyline == null || storyline.Chapters == null || storyline.Chapters.Count == 0)
-                {
-                    return npcIds;
-                }
-
-                var currentIndex = slot.MainCampaignCurrentChapter;
-                if (currentIndex < 0)
-                {
-                    currentIndex = 0;
-                }
-                if (currentIndex >= storyline.Chapters.Count)
-                {
-                    currentIndex = storyline.Chapters.Count - 1;
-                }
-
-                var chapter = storyline.Chapters[currentIndex];
-                if (chapter == null || chapter.DialogNpcIds == null || chapter.DialogNpcIds.Count == 0)
-                {
-                    return npcIds;
-                }
-
-                for (var i = 0; i < chapter.DialogNpcIds.Count; i++)
-                {
-                    var npcId = chapter.DialogNpcIds[i];
-                    if (IsNullOrWhiteSpace(npcId))
-                    {
-                        continue;
-                    }
-
-                    if (!npcIds.Contains(npcId))
-                    {
-                        npcIds.Add(npcId);
-                    }
-                }
-            }
-            catch
-            {
-                npcIds.Clear();
-            }
-
-            return npcIds;
-        }
-
-        private bool TryGetRefreshTriggerChapterIndexWithDifferentHub(string storylineName, int currentIndex, string currentHub, out int triggerIndex)
-        {
-            triggerIndex = -1;
-            try
-            {
-                StorylineInfo storyline;
-                if (!TryGetStoryline(storylineName, out storyline) || storyline == null || storyline.Chapters == null || storyline.Chapters.Count == 0)
-                {
-                    return false;
-                }
-
-                var boundedCurrent = currentIndex;
-                if (boundedCurrent < 0)
-                {
-                    boundedCurrent = 0;
-                }
-                if (boundedCurrent >= storyline.Chapters.Count)
-                {
-                    boundedCurrent = storyline.Chapters.Count - 1;
-                }
-
-                var currentHubResolved = currentHub;
-                if (IsNullOrWhiteSpace(currentHubResolved))
-                {
-                    var currentChapter = storyline.Chapters[boundedCurrent];
-                    if (currentChapter != null && !IsNullOrWhiteSpace(currentChapter.Hub))
-                    {
-                        currentHubResolved = currentChapter.Hub;
-                    }
-                }
-
-                for (var i = 0; i < storyline.Chapters.Count; i++)
-                {
-                    if (i == boundedCurrent)
-                    {
-                        continue;
-                    }
-
-                    var chapter = storyline.Chapters[i];
-                    if (chapter == null || IsNullOrWhiteSpace(chapter.Hub))
-                    {
-                        continue;
-                    }
-
-                    if (!IsNullOrWhiteSpace(currentHubResolved) && string.Equals(chapter.Hub, currentHubResolved, StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    triggerIndex = i;
-                    return true;
-                }
-
-                return false;
-            }
-            catch
-            {
-                triggerIndex = -1;
-                return false;
-            }
-        }
-
-        private bool TryAdvanceMainCampaignIfEligible(string identityHash, CareerSlot slot, string peer, NetworkStream stream, string storylineName, ulong msgNoBase, ref byte[] cachedHubStatePayload, byte[] cachedCreationInfoPayload, bool nudgeClient)
-        {
-            if (slot == null)
-            {
-                return false;
-            }
-
-            StorylineInfo storyline;
-            if (!TryGetStoryline(storylineName, out storyline) || storyline == null || storyline.Chapters == null || storyline.Chapters.Count == 0)
-            {
-                return false;
-            }
-
-            var currentIndex = slot.MainCampaignCurrentChapter;
-            if (currentIndex < 0)
-            {
-                currentIndex = 0;
-            }
-            if (currentIndex >= storyline.Chapters.Count)
-            {
-                currentIndex = storyline.Chapters.Count - 1;
-            }
-
-            var chapter = storyline.Chapters[currentIndex];
-            if (chapter == null)
-            {
-                return false;
-            }
-
-            // Gate: only advance once all required missions are fully completed/claimed.
-            // If we advance at ReadyToReceiveRewards, the finished mission drops out of the active chapter,
-            // quest givers stop showing the (?) marker, and the player never redeems StoryRewards (e.g., nuyen).
-            var states = slot.MainCampaignMissionStates ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            for (var i = 0; i < chapter.RequiredMissions.Count; i++)
-            {
-                var missionName = chapter.RequiredMissions[i];
-                if (IsNullOrWhiteSpace(missionName))
+                var change = itemChanges[i];
+                if (change == null || IsNullOrWhiteSpace(change.ItemDefintionId) || change.Delta == 0)
                 {
                     continue;
                 }
-                string raw;
-                states.TryGetValue(missionName, out raw);
-                var st = ParseStoryMissionStateOrDefault(raw, StoryMissionstate.Available);
-                if (st < StoryMissionstate.Completed)
+
+                itemChangesPayload.Add(new Dictionary<string, object>
                 {
-                    return false;
-                }
+                    { "ItemDefintionId", change.ItemDefintionId },
+                    { "Delta", change.Delta },
+                    { "Quality", change.Quality },
+                    { "Flavour", change.Flavour },
+                });
             }
 
-            var nextIndex = currentIndex + 1;
-            if (nextIndex >= storyline.Chapters.Count)
+            var rewardJson = Json.Serialize(new Dictionary<string, object>
             {
-                return false;
+                { "GrantedUnlocks", missionReward.GrantedUnlocks ?? new string[0] },
+                { "EarnedCurrencies", earnedCurrencies.ToArray() },
+                { "ItemChanges", itemChangesPayload.ToArray() },
+            });
+
+            var rewardPayload = BuildUtf16StringPayload(rewardJson);
+            var rewardCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 35, rewardPayload), msgNo);
+            SendRawFrame(stream, peer, PrefixLength(rewardCore), "sent MetaGameplayCommunicationObject GotMissionReward " + reason);
+        }
+
+        private static void AddUnlockChangeEntries(List<Unlock> target, string[] unlocks)
+        {
+            if (target == null || unlocks == null || unlocks.Length <= 0)
+            {
+                return;
             }
 
-            var next = storyline.Chapters[nextIndex];
-            slot.MainCampaignCurrentChapter = nextIndex;
-            if (slot.MainCampaignInteractedNpcs != null)
+            for (var i = 0; i < unlocks.Length; i++)
             {
-                slot.MainCampaignInteractedNpcs.Clear();
-            }
-
-            // Update hub id to the next chapter's hub (retail server moves you along the campaign hubs).
-            if (next != null && !IsNullOrWhiteSpace(next.Hub))
-            {
-                slot.HubId = next.Hub;
-            }
-
-            if (_userStore != null && !IsNullOrWhiteSpace(identityHash))
-            {
-                try { _userStore.UpsertCareer(identityHash, slot); } catch { }
-            }
-
-            // Broadcast ChapterChange via StoryprogressChanged.
-            try
-            {
-                var chapterChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.ChapterChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"" + storylineName + "\",\"NewChapterIndex\":" + nextIndex.ToString(CultureInfo.InvariantCulture) + "}";
-                var payload = BuildUtf16StringPayload(chapterChangeJson);
-                var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, payload), msgNoBase);
-                SendRawFrame(stream, peer, PrefixLength(core), "sent MetaGameplayCommunicationObject StoryprogressChanged (ChapterChange " + nextIndex.ToString(CultureInfo.InvariantCulture) + ")");
-            }
-            catch
-            {
-            }
-
-            // Refresh hub payload so subsequent RequestCurrentStorylineHub returns the correct hub.
-            try
-            {
-                var hubId = !IsNullOrWhiteSpace(slot.HubId) ? slot.HubId : DefaultHubId;
-                var characterIdentifier = !IsNullOrWhiteSpace(slot.CharacterIdentifier)
-                    ? slot.CharacterIdentifier
-                    : (Guid.NewGuid().ToString() + ":" + slot.Index.ToString(CultureInfo.InvariantCulture));
-                cachedHubStatePayload = BuildHubStatePayloadForSlot(slot, characterIdentifier, true);
-            }
-            catch
-            {
-            }
-
-            // Nudge hub/client if requested and we already have cached payloads.
-            if (nudgeClient && cachedHubStatePayload != null && cachedCreationInfoPayload != null)
-            {
-                try
+                var unlock = unlocks[i];
+                if (IsNullOrWhiteSpace(unlock))
                 {
-                    if (!ShouldSuppressDuplicateHubPush(peer, false, cachedHubStatePayload))
-                    {
-                        var hubStateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 37, cachedHubStatePayload), msgNoBase + 1);
-                        SendRawFrame(stream, peer, PrefixLength(hubStateCore), "sent MetaGameplayCommunicationObject SendHubCommunicationObjectToClient after ChapterChange");
-                    }
+                    continue;
                 }
-                catch
-                {
-                }
-            }
 
-            return true;
+                target.Add(new Unlock
+                {
+                    TechnicalName = unlock,
+                });
+            }
         }
 
         private static bool TryGetUlong(IDictionary dict, string key, out ulong value)
@@ -3576,135 +914,56 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
-        public void Run(ManualResetEvent stopEvent)
-        {
-            var listener = new TcpListener(ResolveBindAddress(_options.Host), _options.APlayPort);
-            listener.Start();
-            _logger.Log(new
-            {
-                ts = RequestLogger.UtcNowIso(),
-                type = "aplay",
-                message = string.Format("tcp stub listening on {0}:{1}", _options.Host, _options.APlayPort),
-            });
-
-            ThreadPool.QueueUserWorkItem(delegate
-            {
-                stopEvent.WaitOne();
-                try { listener.Stop(); }
-                catch { }
-            });
-
-            while (!stopEvent.WaitOne(0))
-            {
-                TcpClient client;
-                try
-                {
-                    client = listener.AcceptTcpClient();
-                }
-                catch (SocketException)
-                {
-                    if (stopEvent.WaitOne(0))
-                    {
-                        break;
-                    }
-                    continue;
-                }
-                catch (ObjectDisposedException)
-                {
-                    break;
-                }
-
-                ThreadPool.QueueUserWorkItem(delegate (object state)
-                {
-                    try
-                    {
-                        HandleClient((TcpClient)state, stopEvent);
-                    }
-                    catch (Exception ex)
-                    {
-                        string workerPeer = "unknown";
-                        try
-                        {
-                            var workerClient = state as TcpClient;
-                            if (workerClient != null && workerClient.Client != null && workerClient.Client.RemoteEndPoint != null)
-                            {
-                                workerPeer = workerClient.Client.RemoteEndPoint.ToString();
-                            }
-                        }
-                        catch
-                        {
-                        }
-
-                        try
-                        {
-                            Console.Error.WriteLine("[{0}] [aplay-client-worker-fault] peer={1} exception={2}", RequestLogger.UtcNowIso(), workerPeer, ex.Message);
-                            Console.Error.WriteLine(ex.ToString());
-                        }
-                        catch
-                        {
-                        }
-
-                        _logger.Log(new
-                        {
-                            ts = RequestLogger.UtcNowIso(),
-                            type = "aplay-client-worker-fault",
-                            peer = workerPeer,
-                            exception = ex.GetType().FullName,
-                            message = ex.Message,
-                            stack = ex.ToString(),
-                        });
-                    }
-                }, client);
-            }
-        }
-
         private void HandleClient(TcpClient client, ManualResetEvent stopEvent)
         {
             using (client)
             {
                 var peer = client.Client.RemoteEndPoint != null ? client.Client.RemoteEndPoint.ToString() : "unknown";
-                using (var stream = client.GetStream())
+                var connectionHash = RequestLogger.CreateConnectionHash("aplay", peer);
+                _logger.RegisterConnectionContext("aplay", peer, connectionHash);
+                try
                 {
-                    const int EndTeamTurnSkillId = 99997;
-
-                    // The client uses `GameClientConnection.APlayEntityId` as its local PlayerID.
-                    // To make coop ownership work, each connection must have a unique entity id.
-                    var gameClientEntityId = AllocateGameClientEntityId();
-                    var gameClientIntroducePayload = BuildCoreIntroduceGameClientPayload(gameClientEntityId, "127.0.0.1", 1UL);
-                    var apInitializedPayload = BuildCoreApInitializedPayload(1U, gameClientEntityId, DefaultIntroduceMsgNo + 1UL);
-
-                    var connectionClosed = new ManualResetEvent(false);
-                    var keepAliveLoopStarted = false;
-                    long keepAliveMsgNo = 500000;
-
-                    var first = ReadChunk(stream);
-                    if (first.Length == 0)
+                    using (var stream = client.GetStream())
                     {
-                        _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "aplay-conn", peer = peer, note = "connected then closed" });
-                        return;
-                    }
+                        // The client uses `GameClientConnection.APlayEntityId` as its local PlayerID.
+                        // To make coop ownership work, each connection must have a unique entity id.
+                        var gameClientEntityId = AllocateGameClientEntityId();
+                        var gameClientIntroducePayload = BuildCoreIntroduceGameClientPayload(gameClientEntityId, "127.0.0.1", 1UL);
+                        var apInitializedPayload = BuildCoreApInitializedPayload(1U, gameClientEntityId, DefaultIntroduceMsgNo + 1UL);
 
-                    _logger.Log(new
-                    {
-                        ts = RequestLogger.UtcNowIso(),
-                        type = "aplay-conn",
-                        peer = peer,
-                        bytes = first.Length,
-                        preview = Encoding.ASCII.GetString(first, 0, Math.Min(first.Length, 180)),
-                    });
+                        var connectionClosed = new ManualResetEvent(false);
+                        var keepAliveLoopStarted = false;
+                        long keepAliveMsgNo = 500000;
 
-                    if (LooksLikeHttp(first))
-                    {
-                        HandleHttpProbe(stream, peer, first);
-                        return;
-                    }
+                        var first = ReadChunk(stream);
+                        if (first.Length == 0)
+                        {
+                            _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "aplay-conn", connectionHash = connectionHash, peer = peer, note = "connected then closed" });
+                            return;
+                        }
 
-                    if (StartsWith(first, new byte[] { (byte)'X', (byte)'M', (byte)'L', 0x00 }))
-                    {
-                        _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "aplay-proto", peer = peer, action = "received", payload = "XML\\u0000" });
-                    }
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "aplay-conn",
+                            connectionHash = connectionHash,
+                            peer = peer,
+                            bytes = first.Length,
+                            preview = Encoding.ASCII.GetString(first, 0, Math.Min(first.Length, 180)),
+                        });
 
-                    var buffer = new List<byte>(first);
+                        if (LooksLikeHttp(first))
+                        {
+                            HandleHttpProbe(stream, peer, first);
+                            return;
+                        }
+
+                        if (StartsWith(first, new byte[] { (byte)'X', (byte)'M', (byte)'L', 0x00 }))
+                        {
+                            _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "aplay-proto", connectionHash = connectionHash, peer = peer, action = "received", payload = "XML\\u0000" });
+                        }
+
+                        var buffer = new List<byte>(first);
                     var sentIntro = false;
                     var sentInit = false;
                     var sentAccountIntro = false;
@@ -3722,6 +981,15 @@ namespace Shadowrun.LocalService.Core.Protocols
                     long metaStartSingleplayerMissionSeen = 0;
                     long metaRequestHubSeen = 0;
                     long postCreateArmGeneration = 0;
+                    long creationInfoSignalGeneration = 0;
+                    long creationInfoSatisfiedGeneration = 0;
+                    long pendingPostCreateStoryprogressGeneration = 0;
+                    ulong pendingPostCreateStoryprogressAfterMsgNo = 0;
+                    long pendingPostCreateBaselineSend = 0;
+                    long pendingPostCreateBaselineSetState = 0;
+                    long pendingPostCreateBaselineStart = 0;
+                    Timer postCreateWatchdogTimer = null;
+                    var postCreateWatchdogSync = new object();
 
                     // Per-connection identity resolved from RequestToLogin(sessionHash, deviceModel, loginMethod).
                     // Enforced: no fallback to a global/default identity.
@@ -3730,120 +998,215 @@ namespace Shadowrun.LocalService.Core.Protocols
                     var activeCareerIndex = 0;
                     var activeCharacterName = "OfflineRunner";
                     string currentHubInstanceId = null;
-                    const int HubReadyFallbackDelayMs = 2500;
-                    var hubReadyFallbackLock = new object();
-                    var hubReadyFallbackGeneration = 0;
-                    string hubReadyFallbackHubId = null;
-                    string hubReadyFallbackCharacterId = null;
+                    PortedHubInstance currentHubInstance = null;
+                    var hubReadyFallbackState = CreateHubReadyFallbackState();
 
                     Action<string> cancelHubReadyFallback = null;
                     Action<string, string, string> armHubReadyFallback = null;
+                    Action<string> armCreationInfoTracking = null;
+                    Action<string> markCreationInfoSatisfied = null;
+                    Action disposePostCreateWatchdog = null;
+                    Action<string> cancelPostCreateWatchdog = null;
+                    Action<long, long, long, long> armPostCreateWatchdog = null;
+                    Action<ulong, string> flushPendingPostCreateStoryprogress = null;
 
                     cancelHubReadyFallback = delegate (string reason)
                     {
-                        lock (hubReadyFallbackLock)
-                        {
-                            hubReadyFallbackGeneration++;
-                            hubReadyFallbackHubId = null;
-                            hubReadyFallbackCharacterId = null;
-                        }
-
-                        _logger.Log(new
-                        {
-                            ts = RequestLogger.UtcNowIso(),
-                            type = "hub-ready-fallback",
-                            peer = peer,
-                            status = "cancel",
-                            reason = reason ?? string.Empty,
-                        });
+                        CancelHubReadyFallback(hubReadyFallbackState, peer, reason);
                     };
 
                     armHubReadyFallback = delegate (string hubId, string characterId, string reason)
                     {
-                        if (IsNullOrWhiteSpace(hubId) || IsNullOrWhiteSpace(characterId))
+                        ArmHubReadyFallback(hubReadyFallbackState, stopEvent, connectionClosed, peer, hubId, characterId, reason);
+                    };
+
+                    armCreationInfoTracking = delegate (string reason)
+                    {
+                        var generation = Interlocked.Increment(ref creationInfoSignalGeneration);
+                        Interlocked.Exchange(ref creationInfoSatisfiedGeneration, 0);
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "creation-info-tracking",
+                            connectionHash = connectionHash,
+                            peer = peer,
+                            status = "armed",
+                            reason = reason ?? string.Empty,
+                            generation = generation,
+                        });
+                    };
+
+                    markCreationInfoSatisfied = delegate (string reason)
+                    {
+                        var generation = Interlocked.Read(ref creationInfoSignalGeneration);
+                        if (generation == 0)
                         {
                             return;
                         }
 
-                        if (IsHubPeerReady(peer, hubId))
+                        if (Interlocked.Exchange(ref creationInfoSatisfiedGeneration, generation) == generation)
                         {
                             return;
-                        }
-
-                        int generation;
-                        lock (hubReadyFallbackLock)
-                        {
-                            hubReadyFallbackGeneration++;
-                            generation = hubReadyFallbackGeneration;
-                            hubReadyFallbackHubId = hubId;
-                            hubReadyFallbackCharacterId = characterId;
                         }
 
                         _logger.Log(new
                         {
                             ts = RequestLogger.UtcNowIso(),
-                            type = "hub-ready-fallback",
+                            type = "creation-info-tracking",
                             peer = peer,
-                            status = "arm",
+                            status = "satisfied",
                             reason = reason ?? string.Empty,
-                            hubId = hubId,
-                            characterId = characterId,
-                            delayMs = HubReadyFallbackDelayMs,
+                            generation = generation,
                         });
+                    };
 
-                        ThreadPool.QueueUserWorkItem(delegate
+                    disposePostCreateWatchdog = delegate
+                    {
+                        Timer timerToDispose = null;
+                        lock (postCreateWatchdogSync)
                         {
-                            SleepWithStop(stopEvent, HubReadyFallbackDelayMs);
-                            if (stopEvent.WaitOne(0) || connectionClosed.WaitOne(0))
-                            {
-                                return;
-                            }
+                            timerToDispose = postCreateWatchdogTimer;
+                            postCreateWatchdogTimer = null;
+                        }
 
-                            string pendingHubId;
-                            string pendingCharacterId;
-                            lock (hubReadyFallbackLock)
+                        if (timerToDispose != null)
+                        {
+                            try
                             {
-                                if (generation != hubReadyFallbackGeneration)
+                                timerToDispose.Dispose();
+                            }
+                            catch
+                            {
+                            }
+                        }
+                    };
+
+                    cancelPostCreateWatchdog = delegate (string reason)
+                    {
+                        Interlocked.Increment(ref postCreateArmGeneration);
+                        disposePostCreateWatchdog();
+                    };
+
+                    armPostCreateWatchdog = delegate (long arm, long baselineSend, long baselineSetState, long baselineStart)
+                    {
+                        disposePostCreateWatchdog();
+
+                        Timer timer = null;
+                        timer = new Timer(delegate(object _)
+                        {
+                            try
+                            {
+                                if (stopEvent.WaitOne(0) || connectionClosed.WaitOne(0))
                                 {
                                     return;
                                 }
 
-                                pendingHubId = hubReadyFallbackHubId;
-                                pendingCharacterId = hubReadyFallbackCharacterId;
-                            }
-
-                            if (IsNullOrWhiteSpace(pendingHubId) || IsNullOrWhiteSpace(pendingCharacterId))
-                            {
-                                return;
-                            }
-
-                            var activated = TryActivateHubReadiness(peer, pendingHubId, "fallback-delay");
-                            var total = activated
-                                ? Interlocked.Increment(ref _hubReadyFallbackTriggeredTotal)
-                                : Interlocked.Increment(ref _hubReadyFallbackSkippedTotal);
-
-                            lock (hubReadyFallbackLock)
-                            {
-                                if (generation == hubReadyFallbackGeneration)
+                                if (Interlocked.Read(ref postCreateArmGeneration) != arm)
                                 {
-                                    hubReadyFallbackGeneration++;
-                                    hubReadyFallbackHubId = null;
-                                    hubReadyFallbackCharacterId = null;
+                                    return;
+                                }
+
+                                var sendNow = Interlocked.Read(ref metaSendMessageSeen);
+                                var setNow = Interlocked.Read(ref metaSetStoryMissionStateSeen);
+                                var startNow = Interlocked.Read(ref metaStartSingleplayerMissionSeen);
+                                if (sendNow <= baselineSend && setNow <= baselineSetState && startNow <= baselineStart)
+                                {
+                                    _logger.Log(new
+                                    {
+                                        ts = RequestLogger.UtcNowIso(),
+                                        type = "post-create-watchdog",
+                                        peer = peer,
+                                        note = "No MetaGameplay SendMessage observed after career creation commit; intro/mandatory-mission flow likely not triggered.",
+                                        sendMessages = sendNow,
+                                        setStoryMissionState = setNow,
+                                        startSingleplayerMission = startNow,
+                                    });
                                 }
                             }
-
-                            _logger.Log(new
+                            finally
                             {
-                                ts = RequestLogger.UtcNowIso(),
-                                type = "hub-ready-fallback",
-                                peer = peer,
-                                status = activated ? "triggered" : "skipped",
-                                reason = "fallback-delay",
-                                hubId = pendingHubId,
-                                characterId = pendingCharacterId,
-                                total = total,
-                            });
+                                lock (postCreateWatchdogSync)
+                                {
+                                    if (object.ReferenceEquals(postCreateWatchdogTimer, timer))
+                                    {
+                                        postCreateWatchdogTimer = null;
+                                    }
+                                }
+
+                                if (timer != null)
+                                {
+                                    try
+                                    {
+                                        timer.Dispose();
+                                    }
+                                    catch
+                                    {
+                                    }
+                                }
+                            }
+                        }, null, 10000, Timeout.Infinite);
+
+                        lock (postCreateWatchdogSync)
+                        {
+                            postCreateWatchdogTimer = timer;
+                        }
+                    };
+
+                    flushPendingPostCreateStoryprogress = delegate (ulong triggerMsgNo, string reason)
+                    {
+                        var generation = pendingPostCreateStoryprogressGeneration;
+                        if (generation == 0)
+                        {
+                            return;
+                        }
+
+                        if (triggerMsgNo <= pendingPostCreateStoryprogressAfterMsgNo)
+                        {
+                            return;
+                        }
+
+                        pendingPostCreateStoryprogressGeneration = 0;
+
+                        try
+                        {
+                            var postCreateMsgNoBase = triggerMsgNo + 40UL;
+
+                            var chapterChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.ChapterChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"NewChapterIndex\":0}";
+                            var chapterPayload = BuildUtf16StringPayload(chapterChangeJson);
+                            var chapterCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, chapterPayload), postCreateMsgNoBase + 1);
+                            SendRawFrame(stream, peer, PrefixLength(chapterCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (ChapterChange 0) after career creation metagameplay activation");
+                        }
+                        catch
+                        {
+                        }
+
+                        try
+                        {
+                            var missionChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.MissionStateChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"Mission\":\"1_010_Prologue\",\"NewState\":\"Available\"}";
+                            var missionPayload = BuildUtf16StringPayload(missionChangeJson);
+                            var missionCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, missionPayload), (uint)(triggerMsgNo + 42));
+                            SendRawFrame(stream, peer, PrefixLength(missionCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (MissionStateChange Available) after career creation metagameplay activation");
+                        }
+                        catch
+                        {
+                        }
+
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "post-create-storyprogress",
+                            peer = peer,
+                            status = "flushed",
+                            reason = reason ?? string.Empty,
+                            triggerMsgNo = triggerMsgNo,
+                            generation = generation,
                         });
+
+                        armPostCreateWatchdog(
+                            generation,
+                            pendingPostCreateBaselineSend,
+                            pendingPostCreateBaselineSetState,
+                            pendingPostCreateBaselineStart);
                     };
 
                     // Track simple story progression locally so DirectStart missions don't loop forever.
@@ -3905,6 +1268,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                             var decodedLog = new Dictionary<string, object>();
                             decodedLog["ts"] = RequestLogger.UtcNowIso();
                             decodedLog["type"] = "aplay-frame-decoded";
+                            decodedLog["connectionHash"] = connectionHash;
                             decodedLog["peer"] = peer;
                             decodedLog["bytes"] = decoded.Length;
                             decodedLog["decodedHex"] = ToHexString(decoded, 0, decoded.Length).ToLowerInvariant();
@@ -4091,14 +1455,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             {
                                                 _hubPresenceRegistry.UpdatePosition(peer, movedX, movedY);
 
-                                                string movementHubId;
-                                                if (!_hubPresenceRegistry.TryGetHubIdForPeer(peer, out movementHubId))
-                                                {
-                                                    movementHubId = currentHubInstanceId;
-                                                }
-
                                                 HubPresenceRegistry.Participant movementParticipant;
                                                 _hubPresenceRegistry.TryGetParticipantForPeer(peer, out movementParticipant);
+                                                var movementHubId = ResolveParticipantHubId(movementParticipant, currentHubInstanceId);
 
                                                 if (!IsHubMoveOwnershipValid(peer, activeIdentityGuid, movedCharacterId, movementParticipant))
                                                 {
@@ -4109,9 +1468,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                     && !IsNullOrWhiteSpace(movedCharacterId)
                                                     && !string.Equals(movementParticipant.CharacterId, movedCharacterId, StringComparison.OrdinalIgnoreCase))
                                                 {
-                                                    var updatedHubId = !IsNullOrWhiteSpace(movementParticipant.HubId)
-                                                        ? movementParticipant.HubId
-                                                        : movementHubId;
+                                                    var previousCharacterId = movementParticipant.CharacterId;
+                                                    var updatedHubId = ResolveParticipantHubId(movementParticipant, movementHubId);
+
+                                                    RetireDuplicateHubSessionForCharacter(peer, movedCharacterId, "hub-move-character-shift-pre-register");
 
                                                     RegisterOrUpdateHubPresenceWithDuplicateRetire(
                                                         peer,
@@ -4132,10 +1492,11 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                                     HubPresenceRegistry.Participant shiftedParticipant;
                                                     _hubPresenceRegistry.TryGetParticipantForPeer(peer, out shiftedParticipant);
-                                                    if (shiftedParticipant != null && !IsNullOrWhiteSpace(shiftedParticipant.HubId))
+                                                    var shiftedHubId = ResolveParticipantHubId(shiftedParticipant, updatedHubId);
+                                                    if (shiftedParticipant != null && !IsNullOrWhiteSpace(shiftedHubId))
                                                     {
-                                                        ClearHubAnnouncementForAllPeers(shiftedParticipant.HubId, shiftedParticipant.CharacterId);
-                                                        BroadcastHubStateAddToReadyPeers(shiftedParticipant.HubId, peer, shiftedParticipant, "character-shift");
+                                                        ClearHubAnnouncementForAllPeers(shiftedHubId, shiftedParticipant.CharacterId);
+                                                        BroadcastHubStateAddToReadyPeers(shiftedHubId, peer, shiftedParticipant, "character-shift");
                                                     }
 
                                                     _logger.Log(new
@@ -4150,6 +1511,33 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                                     movementHubId = updatedHubId;
                                                     movementParticipant = shiftedParticipant;
+
+                                                    if (currentHubInstance != null && !IsNullOrWhiteSpace(movementParticipant != null ? movementParticipant.CharacterId : null))
+                                                    {
+                                                        CareerSlot shiftedSlot = null;
+                                                        if (_userStore != null && !IsNullOrWhiteSpace(activeIdentityHash))
+                                                        {
+                                                            try
+                                                            {
+                                                                shiftedSlot = _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false);
+                                                            }
+                                                            catch
+                                                            {
+                                                                shiftedSlot = null;
+                                                            }
+                                                        }
+
+                                                        var shiftedSnapshot = BuildMappedPlayerCharacterSnapshotForHub(
+                                                            activeIdentityGuid,
+                                                            movedCharacterId,
+                                                            movementParticipant != null ? movementParticipant.CharacterName : activeCharacterName,
+                                                            shiftedSlot);
+                                                        _portedHubInstanceManager.RemoveCharacterFromHub(currentHubInstance, previousCharacterId);
+                                                        if (shiftedSnapshot != null)
+                                                        {
+                                                            currentHubInstance.AddCharacter(shiftedSnapshot);
+                                                        }
+                                                    }
                                                 }
 
                                                 var movementCharacterId = movedCharacterId;
@@ -4159,6 +1547,17 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                     {
                                                         movementCharacterId = movementParticipant.CharacterId;
                                                     }
+                                                }
+
+                                                if (currentHubInstance == null && !IsNullOrWhiteSpace(movementHubId) && _portedHubInstanceManager != null)
+                                                {
+                                                    currentHubInstance = _portedHubInstanceManager.RequestHubInstanceByHubId(movementHubId);
+                                                }
+
+                                                if (currentHubInstance != null && !IsNullOrWhiteSpace(movementCharacterId))
+                                                {
+                                                    currentHubInstance.QueueMoveRequest(movementCharacterId, new Vector2D(movedX, movedY));
+                                                    currentHubInstanceId = currentHubInstance.HubId;
                                                 }
 
                                                 var firstMoveReadyActivated = TryActivateHubReadiness(peer, movementHubId, "first-move");
@@ -4177,7 +1576,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 var hubIdForPresence = currentHubInstanceId;
                                                 if (IsNullOrWhiteSpace(hubIdForPresence))
                                                 {
-                                                    _hubPresenceRegistry.TryGetHubIdForPeer(peer, out hubIdForPresence);
+                                                    hubIdForPresence = ResolveParticipantHubId(previousParticipant, null);
                                                 }
                                                 if (IsNullOrWhiteSpace(hubIdForPresence) && _userStore != null && !IsNullOrWhiteSpace(activeIdentityHash))
                                                 {
@@ -4213,28 +1612,34 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 if (!IsNullOrWhiteSpace(hubIdForPresence))
                                                 {
                                                     currentHubInstanceId = hubIdForPresence;
+                                                    if (_portedHubInstanceManager != null)
+                                                    {
+                                                        currentHubInstance = _portedHubInstanceManager.RequestHubInstanceByHubId(currentHubInstanceId);
+                                                    }
                                                 }
 
                                                 HubPresenceRegistry.Participant currentParticipant;
                                                 _hubPresenceRegistry.TryGetParticipantForPeer(peer, out currentParticipant);
+                                                var previousHubId = ResolveParticipantHubId(previousParticipant, null);
+                                                var currentParticipantHubId = ResolveParticipantHubId(currentParticipant, hubIdForPresence);
 
                                                 if (previousParticipant != null
-                                                    && !IsNullOrWhiteSpace(previousParticipant.HubId)
+                                                    && !IsNullOrWhiteSpace(previousHubId)
                                                     && !IsNullOrWhiteSpace(previousParticipant.CharacterId)
-                                                    && !string.Equals(previousParticipant.HubId, hubIdForPresence, StringComparison.OrdinalIgnoreCase))
+                                                    && !string.Equals(previousHubId, hubIdForPresence, StringComparison.OrdinalIgnoreCase))
                                                 {
-                                                    BroadcastHubStateRemove(previousParticipant.HubId, peer, previousParticipant.CharacterId);
+                                                    BroadcastHubStateRemove(previousHubId, peer, previousParticipant.CharacterId);
                                                 }
 
-                                                if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipant.HubId))
+                                                if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipantHubId))
                                                 {
                                                     var shouldBroadcastAdd = previousParticipant == null
-                                                        || !string.Equals(previousParticipant.HubId, currentParticipant.HubId, StringComparison.OrdinalIgnoreCase)
+                                                        || !string.Equals(previousHubId, currentParticipantHubId, StringComparison.OrdinalIgnoreCase)
                                                         || !string.Equals(previousParticipant.CharacterId, currentParticipant.CharacterId, StringComparison.OrdinalIgnoreCase);
 
                                                     if (shouldBroadcastAdd)
                                                     {
-                                                        ClearHubAnnouncementsForPeerHub(peer, currentParticipant.HubId);
+                                                        ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
                                                     }
 
                                                     _logger.Log(new
@@ -4242,16 +1647,21 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                         ts = RequestLogger.UtcNowIso(),
                                                         type = "hub-enter",
                                                         peer = peer,
-                                                        hubId = currentParticipant.HubId,
+                                                        hubId = currentParticipantHubId,
                                                         characterId = currentParticipant.CharacterId ?? string.Empty,
                                                         x = movedX,
                                                         y = movedY,
-                                                        previousHubId = previousParticipant != null ? (previousParticipant.HubId ?? string.Empty) : string.Empty,
+                                                        previousHubId = previousHubId ?? string.Empty,
                                                         previousCharacterId = previousParticipant != null ? (previousParticipant.CharacterId ?? string.Empty) : string.Empty,
-                                                        hubChanged = previousParticipant == null || !string.Equals(previousParticipant.HubId, currentParticipant.HubId, StringComparison.OrdinalIgnoreCase),
+                                                        hubChanged = previousParticipant == null || !string.Equals(previousHubId, currentParticipantHubId, StringComparison.OrdinalIgnoreCase),
                                                     });
 
-                                                    armHubReadyFallback(currentParticipant.HubId, currentParticipant.CharacterId, "hub-enter-field-2");
+                                                    armHubReadyFallback(currentParticipantHubId, currentParticipant.CharacterId, "hub-enter-field-2");
+
+                                                    if (TryActivateHubReadiness(peer, currentParticipantHubId, "hub-enter-field-2"))
+                                                    {
+                                                        cancelHubReadyFallback("hub-enter-field-2");
+                                                    }
                                                 }
                                             }
                                         }
@@ -4260,6 +1670,13 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 else if (shared.Value.FieldId == 3)
                                 {
                                     cancelHubReadyFallback("hub-leave-field-3");
+                                    HubPresenceRegistry.Participant leavingParticipant;
+                                    _hubPresenceRegistry.TryGetParticipantForPeer(peer, out leavingParticipant);
+                                    if (currentHubInstance != null && leavingParticipant != null && !IsNullOrWhiteSpace(leavingParticipant.CharacterId))
+                                    {
+                                        _portedHubInstanceManager.RemoveCharacterFromHub(currentHubInstance, leavingParticipant.CharacterId);
+                                        currentHubInstance = null;
+                                    }
                                     RemoveHubPresenceWithBroadcast(peer);
                                 }
                             }
@@ -4270,136 +1687,23 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                             if (isRegularConnect && !sentRegularConnectReply)
                             {
-                                var serverMsgNoBase = direct.Value.MsgNo;
-
-                                // In theory, the client should call RequestToLogin on the entity id we introduced.
-                                // In practice, if our introduce payload doesn't get applied as expected, it may keep
-                                // using a different (often small) entity id. Adopt the id the client is actually using
-                                // so subsequent Welcome/KeepAlive traffic targets the correct shared entity.
-                                if (shared.Value.EntityId != 0UL && shared.Value.EntityId != gameClientEntityId)
+                                if (HandleRegularConnect(
+                                    stream,
+                                    peer,
+                                    direct.Value,
+                                    shared.Value,
+                                    payloadStrings,
+                                    stopEvent,
+                                    connectionClosed,
+                                    ref sentRegularConnectReply,
+                                    ref sentAccountIntro,
+                                    ref keepAliveLoopStarted,
+                                    keepAliveMsgNo,
+                                    ref gameClientEntityId,
+                                    ref activeIdentityHash,
+                                    ref activeIdentityGuid))
                                 {
-                                    _logger.Log(new
-                                    {
-                                        ts = RequestLogger.UtcNowIso(),
-                                        type = "aplay-gameclient-entityid-adopted",
-                                        peer = peer,
-                                        previousEntityId = gameClientEntityId,
-                                        adoptedEntityId = shared.Value.EntityId,
-                                    });
-
-                                    gameClientEntityId = shared.Value.EntityId;
-                                }
-
-                                // RequestToLogin(sessionHash, deviceModel, loginMethod). The loginMethod is typically "RegularConnect".
-                                // Enforced: the session hash must map to a known identity (minted via Steam/Authenticate).
-                                var requestedSessionHash = payloadStrings.Count > 0 ? payloadStrings[0] : null;
-                                string mappedIdentityHash = null;
-                                Guid mappedIdentityGuid = Guid.Empty;
-                                string rejectReason = null;
-
-                                if (IsNullOrWhiteSpace(requestedSessionHash))
-                                {
-                                    rejectReason = "Missing session hash.";
-                                }
-                                else
-                                {
-                                    try
-                                    {
-                                        // Validate the session hash is a GUID (matches AccountSystem SessionHash).
-                                        var _ = new Guid(requestedSessionHash);
-
-                                        // Resolve identity from shared session map (preferred) or persisted user store sessions.
-                                        if (_sessionIdentityMap != null && _sessionIdentityMap.TryGetIdentityForSession(requestedSessionHash, out mappedIdentityHash) && !IsNullOrWhiteSpace(mappedIdentityHash))
-                                        {
-                                            // ok
-                                        }
-                                        else if (_userStore != null && _userStore.TryGetIdentityForSession(requestedSessionHash, out mappedIdentityHash) && !IsNullOrWhiteSpace(mappedIdentityHash))
-                                        {
-                                            // ok
-                                        }
-                                        else
-                                        {
-                                            rejectReason = "Unknown session hash (no mapped identity).";
-                                        }
-
-                                        if (rejectReason == null)
-                                        {
-                                            try { mappedIdentityGuid = new Guid(mappedIdentityHash); }
-                                            catch { rejectReason = "Mapped identity hash is invalid."; }
-                                        }
-                                    }
-                                    catch
-                                    {
-                                        rejectReason = "Invalid session hash.";
-                                    }
-                                }
-
-                                SleepWithStop(stopEvent, 250);
-
-                                if (!sentAccountIntro)
-                                {
-                                    var accountIntroRaw = Concat(new byte[] { 3 }, BitConverter.GetBytes(AccountEntityId), BitConverter.GetBytes((ushort)3), BitConverter.GetBytes(0));
-                                    var accountIntroCore = BuildCoreDirectSystem(1, accountIntroRaw, serverMsgNoBase + 1);
-                                    SendRawFrame(stream, peer, PrefixLength(accountIntroCore), "sent AP introduce shared entity (type=3 account communication object, id=" + AccountEntityId + ")");
-                                    sentAccountIntro = true;
-                                }
-
-                                var gameClientOwnerCore = BuildCoreDirectSystem(1, BuildApSharedEntitySetOwner(gameClientEntityId, GameClientConnectionTypeId), serverMsgNoBase + 2);
-                                SendRawFrame(stream, peer, PrefixLength(gameClientOwnerCore), "sent AP shared-entity set-owner (entity=" + gameClientEntityId + ")");
-
-                                var accountOwnerCore = BuildCoreDirectSystem(1, BuildApSharedEntitySetOwner(AccountEntityId, 3), serverMsgNoBase + 3);
-                                SendRawFrame(stream, peer, PrefixLength(accountOwnerCore), "sent AP shared-entity set-owner (entity=" + AccountEntityId + ")");
-
-                                if (rejectReason != null)
-                                {
-                                    var rejectPayload = BuildUtf16StringPayload(rejectReason);
-                                    var rejectCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameClientEntityId, 5, rejectPayload), serverMsgNoBase + 4);
-                                    SendRawFrame(stream, peer, PrefixLength(rejectCore), "sent GameClientConnection RejectLogin in response to RegularConnect");
-                                    connectionClosed.Set();
                                     return;
-                                }
-
-                                activeIdentityHash = mappedIdentityHash;
-                                activeIdentityGuid = mappedIdentityGuid;
-                                RegisterGameClientEntityIdForIdentity(activeIdentityGuid, gameClientEntityId, peer);
-
-                                var careerSummary = BuildCareerSummaryJson(_userStore != null ? _userStore.GetCareers(activeIdentityHash) : null);
-                                var welcomePayload = BuildGameClientWelcomePayload(AccountEntityId, careerSummary);
-                                var welcomeCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameClientEntityId, 4, welcomePayload), serverMsgNoBase + 4);
-                                SendRawFrame(stream, peer, PrefixLength(welcomeCore), "sent GameClientConnection Welcome in response to RegularConnect");
-                                sentRegularConnectReply = true;
-
-                                var keepAliveCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameClientEntityId, 6, new byte[0]), serverMsgNoBase + 5);
-                                SendRawFrame(stream, peer, PrefixLength(keepAliveCore), "sent GameClientConnection KeepAlive after Welcome");
-
-                                // The client expects periodic keep-alives; otherwise it may drop the socket shortly after
-                                // entering an idle state in the hub ("you have been disconnected").
-                                if (!keepAliveLoopStarted)
-                                {
-                                    keepAliveLoopStarted = true;
-                                    ThreadPool.QueueUserWorkItem(delegate
-                                    {
-                                        while (!stopEvent.WaitOne(0) && !connectionClosed.WaitOne(0))
-                                        {
-                                            SleepWithStop(stopEvent, 2000);
-                                            if (stopEvent.WaitOne(0) || connectionClosed.WaitOne(0))
-                                            {
-                                                break;
-                                            }
-
-                                            try
-                                            {
-                                                var msgNo = unchecked((ulong)Interlocked.Increment(ref keepAliveMsgNo));
-                                                var periodicKeepAliveCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameClientEntityId, 6, new byte[0]), msgNo);
-                                                SendRawFrame(stream, peer, PrefixLength(periodicKeepAliveCore), "sent GameClientConnection KeepAlive (periodic)");
-                                            }
-                                            catch
-                                            {
-                                                connectionClosed.Set();
-                                                break;
-                                            }
-                                        }
-                                    });
                                 }
                             }
 
@@ -4415,272 +1719,43 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 && shared.Value.EntityId == 2
                                 && shared.Value.FieldId == 13;
 
-                            var isCreateCareer = shared.Value.FieldId == 10;
-
                             if (isCareerBootstrapRequest && !sentEnterCareerUpdate)
                             {
-                                int? requestedIndex = ParseInt32Payload(shared.Value.Data);
-                                var careerIndex = requestedIndex.HasValue ? requestedIndex.Value : 0;
-                                if (careerIndex < 0)
+                                if (HandleCareerBootstrapRequest(
+                                    stream,
+                                    peer,
+                                    direct.Value,
+                                    shared.Value,
+                                    gameClientEntityId,
+                                    activeIdentityHash,
+                                    activeIdentityGuid,
+                                    ref activeCareerIndex,
+                                    ref activeCharacterName,
+                                    ref currentHubInstanceId,
+                                    ref currentHubInstance,
+                                    ref cachedHubStatePayload,
+                                    ref cachedCreationInfoPayload,
+                                    completedStoryMissions,
+                                    stopEvent,
+                                    connectionClosed,
+                                    armCreationInfoTracking,
+                                    armHubReadyFallback,
+                                    ref sentMetaGameplayIntro,
+                                    ref sentHubIntro,
+                                    ref sentEnterCareerUpdate))
                                 {
-                                    careerIndex = 0;
-                                }
-
-                                var serverMsgNoBase = direct.Value.MsgNo + 9;
-
-                                if (!sentMetaGameplayIntro)
-                                {
-                                    var metaGameplayIntroRaw = Concat(new byte[] { 3 }, BitConverter.GetBytes((ulong)3), BitConverter.GetBytes((ushort)8), BitConverter.GetBytes(0));
-                                    var metaGameplayIntroCore = BuildCoreDirectSystem(1, metaGameplayIntroRaw, serverMsgNoBase);
-                                    SendRawFrame(stream, peer, PrefixLength(metaGameplayIntroCore), "sent AP introduce shared entity (type=8 meta gameplay communication object, id=3)");
-
-                                    var metaGameplayOwnerCore = BuildCoreDirectSystem(1, BuildApSharedEntitySetOwner(3, 8), serverMsgNoBase + 1);
-                                    SendRawFrame(stream, peer, PrefixLength(metaGameplayOwnerCore), "sent AP shared-entity set-owner (entity=3)");
-
-                                    sentMetaGameplayIntro = true;
-                                }
-
-                                if (!sentHubIntro)
-                                {
-                                    var hubIntroRaw = Concat(new byte[] { 3 }, BitConverter.GetBytes((ulong)4), BitConverter.GetBytes((ushort)11), BitConverter.GetBytes(0));
-                                    var hubIntroCore = BuildCoreDirectSystem(1, hubIntroRaw, serverMsgNoBase + 2);
-                                    SendRawFrame(stream, peer, PrefixLength(hubIntroCore), "sent AP introduce shared entity (type=11 hub communication object, id=4)");
-
-                                    var hubOwnerCore = BuildCoreDirectSystem(1, BuildApSharedEntitySetOwner(4, 11), serverMsgNoBase + 3);
-                                    SendRawFrame(stream, peer, PrefixLength(hubOwnerCore), "sent AP shared-entity set-owner (entity=4)");
-
-                                    sentHubIntro = true;
-                                }
-
-                                // Enforced: identity must have been established during RegularConnect (RequestToLogin).
-                                if (IsNullOrWhiteSpace(activeIdentityHash) || activeIdentityGuid == Guid.Empty)
-                                {
-                                    var rejectPayload = BuildUtf16StringPayload("Not logged in.");
-                                    var rejectCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameClientEntityId, 5, rejectPayload), serverMsgNoBase + 4);
-                                    SendRawFrame(stream, peer, PrefixLength(rejectCore), "sent GameClientConnection RejectLogin (EnterCareer before login)");
-                                    connectionClosed.Set();
                                     return;
                                 }
-
-                                var identityHash = activeIdentityHash;
-                                var identityGuid = activeIdentityGuid;
-
-                                CareerSlot slot = null;
-                                if (_userStore != null)
-                                {
-                                    slot = _userStore.GetOrCreateCareer(identityHash, careerIndex, isCreateCareer);
-
-                                    // EnterCareer on an empty slot should still materialize a usable career.
-                                    if (!slot.IsOccupied && !isCreateCareer)
-                                    {
-                                        slot.IsOccupied = true;
-                                        if (IsNullOrWhiteSpace(slot.CharacterName))
-                                        {
-                                            slot.CharacterName = "OfflineRunner";
-                                        }
-                                    }
-
-                                    // After selecting/entering a career, treat it as committed (not pending creation).
-                                    if (!isCreateCareer && slot.PendingPersistenceCreation)
-                                    {
-                                        slot.PendingPersistenceCreation = false;
-                                    }
-
-                                    _userStore.UpsertCareer(identityHash, slot);
-
-                                    // Track last selected slot so HTTP PlayerActivity updates can attribute character name.
-                                    _userStore.SetLastCareerIndex(identityHash, careerIndex);
-                                }
-
-                                var characterName = slot != null && !IsNullOrWhiteSpace(slot.CharacterName)
-                                    ? slot.CharacterName
-                                    : (isCreateCareer ? "NewRunner" : "OfflineRunner");
-
-                                activeCareerIndex = careerIndex;
-                                activeCharacterName = characterName;
-
-                                // Seed per-connection story tracking from persisted career state so mandatory missions
-                                // (especially the prologue) don't restart after a LocalService/game relaunch.
-                                completedStoryMissions.Clear();
-                                if (slot != null && slot.MainCampaignMissionStates != null)
-                                {
-                                    foreach (var kvp in slot.MainCampaignMissionStates)
-                                    {
-                                        if (IsNullOrWhiteSpace(kvp.Key) || IsNullOrWhiteSpace(kvp.Value))
-                                        {
-                                            continue;
-                                        }
-                                        if (string.Equals(kvp.Value, "Completed", StringComparison.OrdinalIgnoreCase))
-                                        {
-                                            completedStoryMissions.Add(kvp.Key);
-                                        }
-                                    }
-                                }
-
-                                var pendingCreation = slot != null ? slot.PendingPersistenceCreation : isCreateCareer;
-                                var zippedCareerInfo = slot != null
-                                    ? _careerInfoGenerator.GetZippedCareerInfo(identityGuid, careerIndex, slot)
-                                    : _careerInfoGenerator.GetZippedCareerInfo(identityGuid, careerIndex, characterName, pendingCreation);
-
-                                var accountWelcomePayload = BuildAccountWelcomePayload(careerIndex, zippedCareerInfo, 3);
-                                var accountWelcomeCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 14, accountWelcomePayload), serverMsgNoBase + 4);
-                                SendRawFrame(stream, peer, PrefixLength(accountWelcomeCore), "sent AccountCommunicationObject Welcome after EnterCareer");
-
-                                var updatePayload = BuildUtf16StringPayload(BuildCareerSummaryJson(_userStore != null ? _userStore.GetCareers(identityHash) : null));
-                                var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 16, updatePayload), serverMsgNoBase + 5);
-                                SendRawFrame(stream, peer, PrefixLength(updateCore), "sent AccountCommunicationObject UpdateCareerSummaries after EnterCareer");
-
-                                var metaSnapshotPayload = BuildUtf16StringPayload(zippedCareerInfo);
-                                var metaSnapshotCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 26, metaSnapshotPayload), serverMsgNoBase + 6);
-                                SendRawFrame(stream, peer, PrefixLength(metaSnapshotCore), "sent MetaGameplayCommunicationObject SendMetagameplayDataSnapshotToClient");
-
-                                var henchmanCollectionPayload = BuildUtf16StringPayload(SerializeDefaultHenchmanCollection());
-                                var henchmanCollectionCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 27, henchmanCollectionPayload), serverMsgNoBase + 7);
-                                SendRawFrame(stream, peer, PrefixLength(henchmanCollectionCore), "sent MetaGameplayCommunicationObject SendHenchmanCollectionToClient");
-
-                                var characterIdentifier = slot != null && !IsNullOrWhiteSpace(slot.CharacterIdentifier)
-                                    ? slot.CharacterIdentifier
-                                    : (identityGuid.ToString() + ":" + careerIndex.ToString());
-                                var hubId = slot != null && !IsNullOrWhiteSpace(slot.HubId) ? slot.HubId : DefaultHubId;
-
-                                var hubStatePayload = BuildMetaHubPushPayload(4, SerializeHubStateOrFallback(hubId, characterIdentifier, characterName, slot));
-                                currentHubInstanceId = hubId;
-                                cachedHubStatePayload = hubStatePayload;
-                                RegisterOrUpdateHubPresenceWithDuplicateRetire(
-                                    peer,
-                                    activeIdentityGuid,
-                                    activeIdentityHash,
-                                    activeCareerIndex,
-                                    characterIdentifier,
-                                    activeCharacterName,
-                                    currentHubInstanceId,
-                                    0f,
-                                    0f,
-                                    "career-enter-bootstrap");
-                                armHubReadyFallback(currentHubInstanceId, characterIdentifier, "career-enter-bootstrap");
-                                // IMPORTANT: Don't push the hub instance unsolicited here.
-                                // The client can receive it before the metagameplay UI exists and/or before a hub request
-                                // is queued; in that case LocalHubInstanceController will ignore it. Instead we respond to
-                                // explicit hub requests (MetaGameplay entity=3 field 1/2).
-
-                                var creationInfoJson = "{\"PendingPersistenceCreation\":" + (pendingCreation ? "true" : "false") + ",\"DataVersionChanged\":false}";
-                                var creationInfoPayload = BuildUtf16StringPayload(creationInfoJson);
-                                cachedCreationInfoPayload = creationInfoPayload;
-                                var creationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 38, creationInfoPayload), serverMsgNoBase + 9);
-                                if (!ShouldSuppressDuplicateHubPush(peer, true, creationInfoPayload))
-                                {
-                                    SendRawFrame(stream, peer, PrefixLength(creationInfoCore), "sent MetaGameplayCommunicationObject CreationInfoChanged");
-                                }
-
-                                // Fire-and-forget: don’t block the main socket read loop with sleeps.
-                                // Blocking here can delay processing of the client’s immediate next APlay calls
-                                // (notably MetaGameplay field 6 ChangeCharacter).
-                                ThreadPool.QueueUserWorkItem(delegate
-                                {
-                                    for (var resendAttempt = 1; resendAttempt <= 3; resendAttempt++)
-                                    {
-                                        if (stopEvent.WaitOne(0) || connectionClosed.WaitOne(0))
-                                        {
-                                            break;
-                                        }
-
-                                        SleepWithStop(stopEvent, 2000);
-                                        if (stopEvent.WaitOne(0) || connectionClosed.WaitOne(0))
-                                        {
-                                            break;
-                                        }
-
-                                        // Once the client is actively requesting hub state, creation-info resends become noise and can race UI reload.
-                                        if (Interlocked.Read(ref metaRequestHubSeen) > 0)
-                                        {
-                                            break;
-                                        }
-
-                                        try
-                                        {
-                                            var delayedMsgNo = serverMsgNoBase + 9UL + (ulong)(resendAttempt * 2);
-                                            var delayedCreationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 38, creationInfoPayload), delayedMsgNo);
-                                            if (!ShouldSuppressDuplicateHubPush(peer, true, creationInfoPayload))
-                                            {
-                                                SendRawFrame(stream, peer, PrefixLength(delayedCreationInfoCore), "resent MetaGameplayCommunicationObject CreationInfoChanged (delayed attempt " + resendAttempt + ")");
-                                            }
-                                        }
-                                        catch
-                                        {
-                                            break;
-                                        }
-                                    }
-                                });
-
-                                sentEnterCareerUpdate = true;
                             }
 
                             if (isLeaveCurrentCareer)
                             {
-                                cancelHubReadyFallback("leave-current-career");
-                                RemoveHubPresenceWithBroadcast(peer);
-                                currentHubInstanceId = null;
-
-                                // Minimal behavior: acknowledge by re-sending current career summaries.
-                                // This keeps the client UI in sync without needing a full career-state machine.
-                                var msgNoBase = direct.Value.MsgNo + 20;
-                                var updatePayload = BuildUtf16StringPayload(BuildCareerSummaryJson(_userStore != null && !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetCareers(activeIdentityHash) : null));
-                                var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 16, updatePayload), msgNoBase + 1);
-                                SendRawFrame(stream, peer, PrefixLength(updateCore), "sent AccountCommunicationObject UpdateCareerSummaries after LeaveCurrentCareer");
-
-                                // The client can leave one career and then enter another without reconnecting.
-                                // If we keep sentEnterCareerUpdate=true, we will ignore the next career bootstrap
-                                // request (field 10/11) and the UI will hang on the loading screen.
-                                sentEnterCareerUpdate = false;
+                                HandleLeaveCurrentCareerRequest(stream, peer, direct.Value, activeIdentityHash, cancelHubReadyFallback, ref currentHubInstanceId, ref sentEnterCareerUpdate);
                             }
 
                             if (isDeactivateCareer)
                             {
-                                // Client requests deleting/deactivating a career slot.
-                                // shared.Value.Data is expected to be int32 index.
-                                var idx = ParseInt32Payload(shared.Value.Data);
-                                var slotIndex = idx.HasValue ? idx.Value : 0;
-                                if (slotIndex < 0)
-                                {
-                                    slotIndex = 0;
-                                }
-
-                                if (_userStore != null)
-                                {
-                                    if (!IsNullOrWhiteSpace(activeIdentityHash))
-                                    {
-                                        _userStore.DeactivateCareerSlot(activeIdentityHash, slotIndex, DefaultHubId);
-                                    }
-                                }
-
-                                if (activeCareerIndex == slotIndex)
-                                {
-                                    activeCareerIndex = 0;
-                                    activeCharacterName = "OfflineRunner";
-                                }
-
-                                var msgNoBase = direct.Value.MsgNo + 30;
-                                var careers = _userStore != null && !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetCareers(activeIdentityHash) : null;
-                                var summaryJson = BuildCareerSummaryJson(careers);
-
-                                // IMPORTANT: CareerSelectionViewModel cancels the wait dialog only on CareerDeactivated.
-                                // That is AccountCommunicationObject field 15, not UpdateCareerSummaries.
-                                var careerDeactivatedPayload = BuildUtf16StringPayload(summaryJson);
-                                var careerDeactivatedCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 15, careerDeactivatedPayload), msgNoBase + 1);
-                                SendRawFrame(stream, peer, PrefixLength(careerDeactivatedCore), "sent AccountCommunicationObject CareerDeactivated after DeactivateCareer");
-
-                                var updatePayload = BuildUtf16StringPayload(summaryJson);
-                                var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 16, updatePayload), msgNoBase + 2);
-                                SendRawFrame(stream, peer, PrefixLength(updateCore), "sent AccountCommunicationObject UpdateCareerSummaries after DeactivateCareer");
-
-                                // Also nudge metagame creation-info to non-pending if we have an active payload cached.
-                                if (cachedCreationInfoPayload != null)
-                                {
-                                    var creationInfoJson = "{\"PendingPersistenceCreation\":false,\"DataVersionChanged\":false}";
-                                    cachedCreationInfoPayload = BuildUtf16StringPayload(creationInfoJson);
-                                    var creationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 38, cachedCreationInfoPayload), msgNoBase + 2);
-                                    SendRawFrame(stream, peer, PrefixLength(creationInfoCore), "sent MetaGameplayCommunicationObject CreationInfoChanged after DeactivateCareer");
-                                }
+                                HandleDeactivateCareerRequest(stream, peer, direct.Value, shared.Value.Data, activeIdentityHash, ref activeCareerIndex, ref activeCharacterName, ref cachedCreationInfoPayload);
                             }
 
                             // MetaGameplayCommunicationObject callFields with no payload.
@@ -4726,7 +1801,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 var requestMsgNoBase = direct.Value.MsgNo + 100;
                                 try
                                 {
-                                    var henchmanCollectionPayload = BuildUtf16StringPayload(SerializeDefaultHenchmanCollection());
+                                    var henchmanCollectionPayload = BuildUtf16StringPayload(SerializeDefaultHenchmanCollection(activeIdentityHash, activeCareerIndex));
                                     var henchmanCollectionCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 27, henchmanCollectionPayload), requestMsgNoBase + 1);
                                     SendRawFrame(stream, peer, PrefixLength(henchmanCollectionCore), "sent MetaGameplayCommunicationObject SendHenchmanCollectionToClient in response to GetHenchmanCollection");
                                 }
@@ -4781,44 +1856,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                             if (isCoopMissionStart)
                             {
                                 var coopGroupName = coopIdentifier;
-
-                                List<ParsedHenchmanSelection> coopParsedSelections = null;
-                                var selectedHenchmanParseSource = "none";
-                                if (hasPrepareMatchPayload && !IsNullOrWhiteSpace(prepareMatchSelectedHenchmen))
-                                {
-                                    coopParsedSelections = TryExtractCoopPayloadHenchmanSelections(prepareMatchSelectedHenchmen);
-                                    if (coopParsedSelections != null && coopParsedSelections.Count > 0)
-                                    {
-                                        selectedHenchmanParseSource = "preparematch-selected";
-                                    }
-                                }
-
-                                string mapName = null;
-                                if (hasPrepareMatchPayload && !IsNullOrWhiteSpace(prepareMatchMapName))
-                                {
-                                    mapName = prepareMatchMapName;
-                                }
-                                else if (payloadStrings.Count >= 3 && !IsNullOrWhiteSpace(payloadStrings[2]))
-                                {
-                                    mapName = payloadStrings[2];
-                                }
-                                else
-                                {
-                                    var onIdx = coopGroupName.IndexOf("_On_", StringComparison.OrdinalIgnoreCase);
-                                    if (onIdx >= 0)
-                                    {
-                                        mapName = coopGroupName.Substring(onIdx + 4);
-                                        if (!IsNullOrWhiteSpace(mapName) && mapName.EndsWith("S", StringComparison.Ordinal))
-                                        {
-                                            mapName = mapName.Substring(0, mapName.Length - 1);
-                                        }
-                                    }
-                                }
-
-                                if (IsNullOrWhiteSpace(mapName))
-                                {
-                                    mapName = "1_010_Prologue";
-                                }
+                                string selectedHenchmanParseSource;
+                                var coopParsedSelections = ParseCoopMissionSelections(hasPrepareMatchPayload, prepareMatchSelectedHenchmen, out selectedHenchmanParseSource);
+                                var mapName = ResolveCoopMissionMapName(hasPrepareMatchPayload, prepareMatchMapName, payloadStrings, coopGroupName);
 
                                 currentMissionMapName = mapName;
 
@@ -4826,6 +1866,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 {
                                     ts = RequestLogger.UtcNowIso(),
                                     type = "coop-mission-start",
+                                    connectionHash = connectionHash,
+                                    accountId = activeIdentityGuid != Guid.Empty ? activeIdentityGuid.ToString("D") : null,
+                                    hostAccountId = ResolveCoopHostAccountIdText(coopGroupName, activeIdentityGuid),
                                     peer = peer,
                                     apMsgId = shared.Value.ApMsgId,
                                     entityId = shared.Value.EntityId,
@@ -4843,406 +1886,97 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 });
 
                                 currentCoopGroupName = coopGroupName;
-                                RegisterCoopMissionParticipant(coopGroupName, peer, stream);
+                                ApplyCoopHostContext("aplay", peer, connectionHash, currentCoopGroupName, activeIdentityGuid);
+                                RegisterCoopMissionParticipant(coopGroupName, peer, stream, activeIdentityHash, activeIdentityGuid, activeCareerIndex);
+                                UpdateCoopMissionHenchSelections(coopGroupName, activeIdentityGuid, coopParsedSelections);
 
-                                lock (_coopMissionLock)
+                                CoopMissionSessionState coopSession;
+                                string coopMissionRejectionReason;
+                                if (!TryGetOrCreateCoopMissionSession(coopGroupName, activeIdentityHash, activeIdentityGuid, activeCareerIndex, mapName, completedStoryMissions, out coopSession, out coopMissionRejectionReason))
                                 {
-                                    Dictionary<Guid, List<ParsedHenchmanSelection>> byIdentity;
-                                    if (!_coopMissionHenchSelections.TryGetValue(coopGroupName, out byIdentity) || byIdentity == null)
-                                    {
-                                        byIdentity = new Dictionary<Guid, List<ParsedHenchmanSelection>>();
-                                        _coopMissionHenchSelections[coopGroupName] = byIdentity;
-                                    }
-
-                                    if (coopParsedSelections != null && coopParsedSelections.Count > 0)
-                                    {
-                                        byIdentity[activeIdentityGuid] = new List<ParsedHenchmanSelection>(coopParsedSelections);
-                                    }
-                                    else
-                                    {
-                                        byIdentity.Remove(activeIdentityGuid);
-                                    }
+                                    var requestMsgNoBaseCancelled = direct.Value.MsgNo + 250;
+                                    EnsureMissionEntitiesIntroduced(
+                                        stream,
+                                        peer,
+                                        requestMsgNoBaseCancelled,
+                                        gameworldEntityId,
+                                        missionInstanceEntityId,
+                                        missionCommandEntityId,
+                                        gameworldCommunicationObjectTypeId,
+                                        missionInstanceCommunicationObjectTypeId,
+                                        missionCommandCommunicationObjectTypeId,
+                                        ref sentMissionEntityIntros);
+                                    SendMissionStartCancelled(stream, peer, requestMsgNoBaseCancelled, "sent MetaGameplayCommunicationObject StartMissionCancelled (coop mission already completed; decision=" + coopMissionRejectionReason + ")");
+                                    continue;
                                 }
 
                                 var requestMsgNoBase = direct.Value.MsgNo + 250;
 
-                                if (!sentMissionEntityIntros)
-                                {
-                                    var gameworldIntroRaw = Concat(new byte[] { 3 }, BitConverter.GetBytes((ulong)gameworldEntityId), BitConverter.GetBytes(gameworldCommunicationObjectTypeId), BitConverter.GetBytes(0));
-                                    var gameworldIntroCore = BuildCoreDirectSystem(1, gameworldIntroRaw, requestMsgNoBase + 1);
-                                    SendRawFrame(stream, peer, PrefixLength(gameworldIntroCore), "sent AP introduce shared entity (type=7 gameworld communication object, id=5)");
-
-                                    var missionInstanceIntroRaw = Concat(new byte[] { 3 }, BitConverter.GetBytes((ulong)missionInstanceEntityId), BitConverter.GetBytes(missionInstanceCommunicationObjectTypeId), BitConverter.GetBytes(0));
-                                    var missionInstanceIntroCore = BuildCoreDirectSystem(1, missionInstanceIntroRaw, requestMsgNoBase + 2);
-                                    SendRawFrame(stream, peer, PrefixLength(missionInstanceIntroCore), "sent AP introduce shared entity (type=9 mission instance communication object, id=6)");
-
-                                    var missionCommandIntroRaw = Concat(new byte[] { 3 }, BitConverter.GetBytes((ulong)missionCommandEntityId), BitConverter.GetBytes(missionCommandCommunicationObjectTypeId), BitConverter.GetBytes(0));
-                                    var missionCommandIntroCore = BuildCoreDirectSystem(1, missionCommandIntroRaw, requestMsgNoBase + 3);
-                                    SendRawFrame(stream, peer, PrefixLength(missionCommandIntroCore), "sent AP introduce shared entity (type=10 mission command communication object, id=7)");
-
-                                    var gameworldOwnerCore = BuildCoreDirectSystem(1, BuildApSharedEntitySetOwner(gameworldEntityId, gameworldCommunicationObjectTypeId), requestMsgNoBase + 4);
-                                    SendRawFrame(stream, peer, PrefixLength(gameworldOwnerCore), "sent AP shared-entity set-owner (entity=5)");
-
-                                    var missionInstanceOwnerCore = BuildCoreDirectSystem(1, BuildApSharedEntitySetOwner(missionInstanceEntityId, missionInstanceCommunicationObjectTypeId), requestMsgNoBase + 5);
-                                    SendRawFrame(stream, peer, PrefixLength(missionInstanceOwnerCore), "sent AP shared-entity set-owner (entity=6)");
-
-                                    var missionCommandOwnerCore = BuildCoreDirectSystem(1, BuildApSharedEntitySetOwner(missionCommandEntityId, missionCommandCommunicationObjectTypeId), requestMsgNoBase + 6);
-                                    SendRawFrame(stream, peer, PrefixLength(missionCommandOwnerCore), "sent AP shared-entity set-owner (entity=7)");
-
-                                    sentMissionEntityIntros = true;
-                                }
+                                EnsureMissionEntitiesIntroduced(
+                                    stream,
+                                    peer,
+                                    requestMsgNoBase,
+                                    gameworldEntityId,
+                                    missionInstanceEntityId,
+                                    missionCommandEntityId,
+                                    gameworldCommunicationObjectTypeId,
+                                    missionInstanceCommunicationObjectTypeId,
+                                    missionCommandCommunicationObjectTypeId,
+                                    ref sentMissionEntityIntros);
 
                                 var seed0 = 0x11111111u;
                                 var seed1 = 0x22222222u;
                                 var seed2 = 0x33333333u;
                                 var seed3 = 0x44444444u;
 
-                                var compressedMatchConfiguration = _matchConfigurationGenerator.GetCompressedMatchConfiguration(mapName, activeIdentityGuid, activeCareerIndex, activeCharacterName, gameClientEntityId);
+                                var memberListRaw = hasPrepareMatchPayload
+                                    ? prepareMatchPlayers
+                                    : (payloadStrings.Count > 1 ? payloadStrings[1] : null);
+                                UpdateCoopMissionExpectedParticipantCount(coopSession, CountExpectedCoopParticipants(memberListRaw, activeIdentityGuid));
 
-                                // Best-effort: build a two-human coop roster based on the member list the client sends.
-                                // If parsing fails, fall back to a single-player roster (better than blocking mission start).
-                                if (_userStore != null)
-                                {
-                                    try
-                                    {
-                                        var memberListRaw = payloadStrings.Count > 1 ? payloadStrings[1] : null;
-                                        var memberGuids = ParseGuidsFromLooseText(memberListRaw, 8);
-                                        if (memberGuids == null || memberGuids.Length == 0)
-                                        {
-                                            memberGuids = new Guid[] { activeIdentityGuid };
-                                        }
-                                        if (!ContainsGuid(memberGuids, activeIdentityGuid))
-                                        {
-                                            var extended = new Guid[memberGuids.Length + 1];
-                                            Array.Copy(memberGuids, 0, extended, 0, memberGuids.Length);
-                                            extended[extended.Length - 1] = activeIdentityGuid;
-                                            memberGuids = extended;
-                                        }
-
-                                        // Client parties are practically capped (observed up to 4). Don't hard-fail if more are listed.
-                                        var maxHumans = 4;
-                                        if (memberGuids.Length > maxHumans)
-                                        {
-                                            var truncated = new Guid[maxHumans];
-                                            Array.Copy(memberGuids, 0, truncated, 0, maxHumans);
-                                            memberGuids = truncated;
-                                        }
-
-                                        if (memberGuids.Length >= 2)
-                                        {
-                                            // Stable ordering so both clients generate the same blob.
-                                            Array.Sort(memberGuids, GuidStringOrdinalComparer.Instance);
-
-                                            Guid leaderAccountId;
-                                            if (CoopGroupHostRegistry.TryGetLeader(coopGroupName, out leaderAccountId))
-                                            {
-                                                memberGuids = OrderGuidsWithLeaderFirst(memberGuids, leaderAccountId);
-                                            }
-
-                                            var identityGuids = memberGuids;
-                                            var careerIndices = new int[identityGuids.Length];
-                                            var slots = new CareerSlot[identityGuids.Length];
-                                            var playerIds = new ulong[identityGuids.Length];
-                                            var selectedHenchmenPerPlayer = new PlayerCharacterSnapshot[identityGuids.Length][];
-
-                                            Dictionary<Guid, List<ParsedHenchmanSelection>> coopSelectionsByIdentity = null;
-                                            lock (_coopMissionLock)
-                                            {
-                                                Dictionary<Guid, List<ParsedHenchmanSelection>> tmp;
-                                                if (_coopMissionHenchSelections.TryGetValue(coopGroupName, out tmp) && tmp != null)
-                                                {
-                                                    coopSelectionsByIdentity = new Dictionary<Guid, List<ParsedHenchmanSelection>>();
-                                                    foreach (var kv in tmp)
-                                                    {
-                                                        coopSelectionsByIdentity[kv.Key] = kv.Value != null
-                                                            ? new List<ParsedHenchmanSelection>(kv.Value)
-                                                            : null;
-                                                    }
-                                                }
-                                            }
-
-                                            // Allow a brief rendezvous window so both clients' StartCoop payloads can land,
-                                            // carrying one selection each. This avoids creating the shared sim from only
-                                            // the first-arriving participant's data.
-                                            var waitUntilUtc = DateTime.UtcNow.AddMilliseconds(1200);
-                                            while (DateTime.UtcNow < waitUntilUtc)
-                                            {
-                                                var allHaveSelection = true;
-                                                for (var i = 0; i < identityGuids.Length; i++)
-                                                {
-                                                    if (coopSelectionsByIdentity == null)
-                                                    {
-                                                        allHaveSelection = false;
-                                                        break;
-                                                    }
-
-                                                    List<ParsedHenchmanSelection> parsed;
-                                                    if (!coopSelectionsByIdentity.TryGetValue(identityGuids[i], out parsed) || parsed == null || parsed.Count == 0)
-                                                    {
-                                                        allHaveSelection = false;
-                                                        break;
-                                                    }
-                                                }
-
-                                                if (allHaveSelection)
-                                                {
-                                                    break;
-                                                }
-
-                                                SleepWithStop(stopEvent, 50);
-
-                                                lock (_coopMissionLock)
-                                                {
-                                                    Dictionary<Guid, List<ParsedHenchmanSelection>> tmp;
-                                                    if (_coopMissionHenchSelections.TryGetValue(coopGroupName, out tmp) && tmp != null)
-                                                    {
-                                                        coopSelectionsByIdentity = new Dictionary<Guid, List<ParsedHenchmanSelection>>();
-                                                        foreach (var kv in tmp)
-                                                        {
-                                                            coopSelectionsByIdentity[kv.Key] = kv.Value != null
-                                                                ? new List<ParsedHenchmanSelection>(kv.Value)
-                                                                : null;
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            for (var i = 0; i < identityGuids.Length; i++)
-                                            {
-                                                var guid = identityGuids[i];
-                                                var hash = guid.ToString();
-                                                var idx = guid == activeIdentityGuid ? activeCareerIndex : _userStore.GetLastCareerIndex(hash);
-                                                if (idx < 0) idx = 0;
-                                                careerIndices[i] = idx;
-                                                slots[i] = _userStore.GetOrCreateCareer(hash, idx, false);
-
-                                                ulong mappedEntityId;
-                                                if (!TryGetGameClientEntityIdForIdentity(guid, out mappedEntityId) || mappedEntityId == 0UL)
-                                                {
-                                                    // If another client hasn't logged in yet, fall back to a deterministic non-zero id.
-                                                    mappedEntityId = ComputeFnv1a64(guid.ToByteArray());
-                                                    if (mappedEntityId == 0UL)
-                                                    {
-                                                        mappedEntityId = (ulong)(i + 1);
-                                                    }
-                                                }
-                                                playerIds[i] = mappedEntityId;
-
-                                                List<ParsedHenchmanSelection> parsedSelections;
-                                                if (coopSelectionsByIdentity != null
-                                                    && coopSelectionsByIdentity.TryGetValue(guid, out parsedSelections)
-                                                    && parsedSelections != null
-                                                    && parsedSelections.Count > 0)
-                                                {
-                                                    SerializeDefaultHenchmanCollection();
-                                                    var snapshots = CachedHenchmanCollectionSnapshots;
-                                                    if (snapshots != null && snapshots.Count > 0)
-                                                    {
-                                                        var ownerKarma = slots[i] != null ? slots[i].Karma : 0;
-                                                        var ownerSpentKarma = slots[i] != null ? slots[i].SpentKarma : 0;
-                                                        var ownerNuyen = slots[i] != null ? slots[i].Nuyen : 0;
-
-                                                        var resolved = new List<PlayerCharacterSnapshot>();
-                                                        for (var si = 0; si < parsedSelections.Count; si++)
-                                                        {
-                                                            var selection = parsedSelections[si];
-                                                            if (selection.HenchmanId < 0 || selection.HenchmanId >= snapshots.Count)
-                                                            {
-                                                                continue;
-                                                            }
-
-                                                            var src = snapshots[selection.HenchmanId];
-                                                            var clone = CloneHenchSnapshotForMission(src, guid, si, ownerKarma, ownerSpentKarma, ownerNuyen);
-                                                            if (clone != null)
-                                                            {
-                                                                resolved.Add(clone);
-                                                            }
-                                                        }
-
-                                                        if (resolved.Count > 0)
-                                                        {
-                                                            selectedHenchmenPerPlayer[i] = resolved.ToArray();
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            compressedMatchConfiguration = _matchConfigurationGenerator.GetCompressedCoopMatchConfiguration(mapName, identityGuids, careerIndices, slots, playerIds, selectedHenchmenPerPlayer);
-                                        }
-                                        else
-                                        {
-                                            var activeSlot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false) : null;
-                                            if (activeSlot != null)
-                                            {
-                                                compressedMatchConfiguration = _matchConfigurationGenerator.GetCompressedMatchConfiguration(mapName, activeIdentityGuid, activeCareerIndex, activeSlot, null, gameClientEntityId);
-                                            }
-                                        }
-                                    }
-                                    catch
-                                    {
-                                        // Ignore; mission start will proceed with the default single-player config.
-                                    }
-                                }
+                                var compressedMatchConfiguration = BuildCoopCompressedMatchConfiguration(
+                                    coopSession,
+                                    mapName,
+                                    coopGroupName,
+                                    memberListRaw,
+                                    activeIdentityGuid,
+                                    activeIdentityHash,
+                                    activeCareerIndex,
+                                    activeCharacterName,
+                                    gameClientEntityId,
+                                    stopEvent);
 
                                 // Coop missions must share one authoritative simulation across all peers.
                                 // If each TCP connection has its own sim, neither side will ever observe the other
                                 // player exhausting actions, so the team never ends and AI turns never start.
-                                CoopMissionSessionState coopSession;
-                                var cancelCompletedCoopStart = false;
-                                lock (_coopMissionLock)
-                                {
-                                    if (!_coopMissionSessions.TryGetValue(coopGroupName, out coopSession) || coopSession == null)
-                                    {
-                                        // Only cancel for completed maps when we'd have to create a brand-new coop session.
-                                        // If a session already exists, late/jittered duplicate starts should reuse it instead
-                                        // of kicking one player back to hub.
-                                        if (IsMissionCompletedForCareer(activeIdentityHash, activeCareerIndex, mapName, completedStoryMissions))
-                                        {
-                                            cancelCompletedCoopStart = true;
-                                        }
-                                        else
-                                        {
-                                            coopSession = new CoopMissionSessionState(coopGroupName);
-                                            _coopMissionSessions[coopGroupName] = coopSession;
-                                        }
-                                    }
-                                }
-
-                                if (cancelCompletedCoopStart)
-                                {
-                                    var cancelledCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 24, new byte[0]), requestMsgNoBase);
-                                    SendRawFrame(stream, peer, PrefixLength(cancelledCore), "sent MetaGameplayCommunicationObject StartMissionCancelled (coop mission already completed)");
-                                    continue;
-                                }
 
                                 simulationSessionSync = coopSession.SyncRoot;
+                                simulationSession = AcquireCoopMissionSimulation(
+                                    coopSession,
+                                    peer,
+                                    coopGroupName,
+                                    mapName,
+                                    activeIdentityHash,
+                                    activeCareerIndex,
+                                    ref seed0,
+                                    ref seed1,
+                                    ref seed2,
+                                    ref seed3,
+                                    ref compressedMatchConfiguration);
 
-                                lock (coopSession.SyncRoot)
-                                {
-                                    if (coopSession.Simulation != null
-                                        && !IsNullOrWhiteSpace(coopSession.CompressedMatchConfiguration)
-                                        && string.Equals(coopSession.MapName, mapName, StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        // Reuse existing mission session.
-                                        simulationSession = coopSession.Simulation;
-                                        seed0 = coopSession.Seed0;
-                                        seed1 = coopSession.Seed1;
-                                        seed2 = coopSession.Seed2;
-                                        seed3 = coopSession.Seed3;
-                                        compressedMatchConfiguration = coopSession.CompressedMatchConfiguration;
-
-                                        _logger.Log(new
-                                        {
-                                            ts = RequestLogger.UtcNowIso(),
-                                            type = "sim",
-                                            peer = peer,
-                                            status = "coop-reuse",
-                                            mapName = mapName,
-                                            coopGroupName = coopGroupName,
-                                        });
-                                    }
-                                    else
-                                    {
-                                        try
-                                        {
-                                            var storyLineForLoot = "Main Campaign";
-                                            var chapterForLoot = 0;
-                                            if (_userStore != null)
-                                            {
-                                                try
-                                                {
-                                                    var slotForLoot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false) : null;
-                                                    if (slotForLoot != null)
-                                                    {
-                                                        chapterForLoot = slotForLoot.MainCampaignCurrentChapter;
-                                                    }
-                                                }
-                                                catch
-                                                {
-                                                }
-                                            }
-
-                                            coopSession.MapName = mapName;
-                                            coopSession.Seed0 = seed0;
-                                            coopSession.Seed1 = seed1;
-                                            coopSession.Seed2 = seed2;
-                                            coopSession.Seed3 = seed3;
-                                            coopSession.CompressedMatchConfiguration = compressedMatchConfiguration;
-
-                                            // New run -> reset coop loot snapshot/tracking.
-                                            coopSession.LootSnapshot = null;
-                                            if (coopSession.LootAppliedToParticipants == null)
-                                            {
-                                                coopSession.LootAppliedToParticipants = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-                                            }
-                                            else
-                                            {
-                                                coopSession.LootAppliedToParticipants.Clear();
-                                            }
-
-                                            coopSession.Simulation = ServerSimulationSession.Create(
-                                                _logger,
-                                                peer,
-                                                _options.StaticDataDir,
-                                                _options.StreamingAssetsDir,
-                                                mapName,
-                                                compressedMatchConfiguration,
-                                                seed0,
-                                                seed1,
-                                                seed2,
-                                                seed3,
-                                                storyLineForLoot,
-                                                chapterForLoot,
-                                                _options != null && _options.EnableAiLogic);
-                                            simulationSession = coopSession.Simulation;
-
-                                            _logger.Log(new
-                                            {
-                                                ts = RequestLogger.UtcNowIso(),
-                                                type = "sim",
-                                                peer = peer,
-                                                status = "coop-created",
-                                                mapName = mapName,
-                                                coopGroupName = coopGroupName,
-                                            });
-
-                                            MissionRuntimeRegistry.MarkCoopMissionStarted(coopGroupName);
-                                        }
-                                        catch (Exception ex)
-                                        {
-                                            coopSession.Simulation = null;
-                                            simulationSession = null;
-                                            _logger.Log(new
-                                            {
-                                                ts = RequestLogger.UtcNowIso(),
-                                                type = "sim",
-                                                peer = peer,
-                                                status = "failed",
-                                                mapName = mapName,
-                                                coopGroupName = coopGroupName,
-                                                message = ex.Message,
-                                            });
-                                        }
-                                    }
-                                }
-
-                                var startMissionAcceptedPayload = Concat(
-                                    BitConverter.GetBytes(1L),
-                                    BitConverter.GetBytes(seed0),
-                                    BitConverter.GetBytes(seed1),
-                                    BitConverter.GetBytes(seed2),
-                                    BitConverter.GetBytes(seed3),
-                                    BuildUtf16StringPayload(compressedMatchConfiguration),
-                                    BitConverter.GetBytes((ulong)gameworldEntityId),
-                                    BitConverter.GetBytes((ulong)missionInstanceEntityId),
-                                    BitConverter.GetBytes((ulong)missionCommandEntityId));
-
-                                var startMissionAcceptedCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 23, startMissionAcceptedPayload), requestMsgNoBase + 7);
-                                SendRawFrame(stream, peer, PrefixLength(startMissionAcceptedCore), "sent MetaGameplayCommunicationObject StartMissionAccepted (coop map=" + mapName + ")");
-
-                                SleepWithStop(stopEvent, 6000);
-                                var startMissionForClientsCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, missionInstanceEntityId, 0, new byte[0]), requestMsgNoBase + 8);
-                                SendRawFrame(stream, peer, PrefixLength(startMissionForClientsCore), "sent MissionInstanceCommunicationObject StartMissionForClients (coop)");
+                                SendMissionStartAccepted(
+                                    stream,
+                                    peer,
+                                    requestMsgNoBase,
+                                    seed0,
+                                    seed1,
+                                    seed2,
+                                    seed3,
+                                    compressedMatchConfiguration,
+                                    gameworldEntityId,
+                                    missionInstanceEntityId,
+                                    missionCommandEntityId,
+                                    "sent MetaGameplayCommunicationObject StartMissionAccepted (coop map=" + mapName + ")");
 
                                 continue;
                             }
@@ -5255,72 +1989,20 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         || rawMessage.IndexOf("SkillTreeTechnichalName", StringComparison.Ordinal) >= 0
                                         || rawMessage.IndexOf("SkillTechnichalName", StringComparison.Ordinal) >= 0))
                                 {
-                                    var parsed = TryDeserializeJsonDict(rawMessage);
-
-                                    // The client sends SkillLevel=0 in purchases; it expects the server to respond with a valid level.
-                                    // If we echo SkillLevel=0 back, some client builds throw IndexOutOfRangeException in onSkillTreeChanged.
-                                    var skillTreeChangedJson = rawMessage;
-                                    var inferredSkillLevels = 0;
+                                    SkillTreeChanges requestedChanges = null;
                                     try
                                     {
-                                        var typed = JsonFxSerializerProvider.Current.Deserialize<SkillTreeChanges>(rawMessage);
-                                        if (typed != null && typed.Purchases != null && typed.Purchases.Length > 0)
-                                        {
-                                            for (var i = 0; i < typed.Purchases.Length; i++)
-                                            {
-                                                var p = typed.Purchases[i];
-                                                if (p == null)
-                                                {
-                                                    continue;
-                                                }
-
-                                                if (p.SkillLevel > 0)
-                                                {
-                                                    continue;
-                                                }
-
-                                                int inferred;
-                                                if (TryInferSkillLevelFromTechnicalName(p.SkillTechnichalName, out inferred) && inferred > 0)
-                                                {
-                                                    p.SkillLevel = inferred;
-                                                    inferredSkillLevels++;
-                                                }
-                                            }
-
-                                            if (inferredSkillLevels > 0)
-                                            {
-                                                skillTreeChangedJson = JsonFxSerializerProvider.Current.Serialize<SkillTreeChanges>(typed);
-                                            }
-                                        }
+                                        requestedChanges = JsonFxSerializerProvider.Current.Deserialize<SkillTreeChanges>(rawMessage);
                                     }
                                     catch
                                     {
-                                        // If inference fails for any reason, fall back to the raw payload.
-                                        skillTreeChangedJson = rawMessage;
-                                        inferredSkillLevels = 0;
+                                        requestedChanges = null;
                                     }
 
-                                    var applyReset = false;
-                                    try
+                                    if (requestedChanges == null)
                                     {
-                                        if (parsed != null && parsed.Contains("ApplyReset") && parsed["ApplyReset"] != null)
-                                        {
-                                            if (parsed["ApplyReset"] is bool)
-                                            {
-                                                applyReset = (bool)parsed["ApplyReset"];
-                                            }
-                                            else
-                                            {
-                                                applyReset = Convert.ToBoolean(parsed["ApplyReset"], CultureInfo.InvariantCulture);
-                                            }
-                                        }
+                                        continue;
                                     }
-                                    catch
-                                    {
-                                        applyReset = false;
-                                    }
-
-                                    var purchases = parsed != null ? GetArrayValue(parsed, "Purchases") : null;
 
                                     var slotIndex = activeCareerIndex;
                                     if (slotIndex < 0)
@@ -5331,126 +2013,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     var slot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, slotIndex, false) : null;
                                     if (slot != null)
                                     {
-                                        if (slot.SkillTreeDefinitions == null)
+                                        var appliedSkillChanges = _skillPurchaseService.Apply(slot, requestedChanges);
+
+                                        if (appliedSkillChanges.Persisted)
                                         {
-                                            slot.SkillTreeDefinitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
-                                        }
-
-                                        var changed = false;
-                                        var appliedCount = 0;
-                                        var karmaBefore = slot.Karma;
-                                        var karmaCostApplied = 0;
-                                        var karmaCostMissing = 0;
-
-                                        if (applyReset)
-                                        {
-                                            if (slot.SkillTreeDefinitions.Count > 0)
-                                            {
-                                                slot.SkillTreeDefinitions.Clear();
-                                                changed = true;
-                                            }
-                                        }
-
-                                        if (purchases != null && purchases.Length > 0)
-                                        {
-                                            for (var i = 0; i < purchases.Length; i++)
-                                            {
-                                                var entry = purchases[i] as IDictionary;
-                                                if (entry == null)
-                                                {
-                                                    continue;
-                                                }
-
-                                                var tree = GetStringValue(entry, "SkillTreeTechnichalName");
-                                                var skill = GetStringValue(entry, "SkillTechnichalName");
-                                                if (IsNullOrWhiteSpace(tree) || IsNullOrWhiteSpace(skill))
-                                                {
-                                                    continue;
-                                                }
-
-                                                string[] existing;
-                                                if (!slot.SkillTreeDefinitions.TryGetValue(tree, out existing) || existing == null)
-                                                {
-                                                    slot.SkillTreeDefinitions[tree] = new string[] { skill };
-                                                    changed = true;
-                                                    appliedCount++;
-
-                                                    int cost;
-                                                    if (TryResolveSkillKarmaCost(skill, out cost) && cost > 0)
-                                                    {
-                                                        karmaCostApplied += cost;
-                                                    }
-                                                    else
-                                                    {
-                                                        karmaCostMissing++;
-                                                    }
-                                                    continue;
-                                                }
-
-                                                var already = false;
-                                                for (var j = 0; j < existing.Length; j++)
-                                                {
-                                                    if (string.Equals(existing[j], skill, StringComparison.Ordinal))
-                                                    {
-                                                        already = true;
-                                                        break;
-                                                    }
-                                                }
-                                                if (already)
-                                                {
-                                                    continue;
-                                                }
-
-                                                var updated = new string[existing.Length + 1];
-                                                for (var j = 0; j < existing.Length; j++)
-                                                {
-                                                    updated[j] = existing[j];
-                                                }
-                                                updated[existing.Length] = skill;
-                                                slot.SkillTreeDefinitions[tree] = updated;
-                                                changed = true;
-                                                appliedCount++;
-
-                                                int cost2;
-                                                if (TryResolveSkillKarmaCost(skill, out cost2) && cost2 > 0)
-                                                {
-                                                    karmaCostApplied += cost2;
-                                                }
-                                                else
-                                                {
-                                                    karmaCostMissing++;
-                                                }
-                                            }
-                                        }
-
-                                        if (changed)
-                                        {
-                                            // Deduct karma for new purchases (best-effort). Never go negative.
-                                            if (!applyReset && karmaCostApplied > 0)
-                                            {
-                                                var spendApplied = karmaCostApplied;
-                                                if (spendApplied > slot.Karma)
-                                                {
-                                                    spendApplied = slot.Karma;
-                                                }
-                                                if (spendApplied < 0)
-                                                {
-                                                    spendApplied = 0;
-                                                }
-                                                slot.Karma = slot.Karma - spendApplied;
-                                                try
-                                                {
-                                                    checked
-                                                    {
-                                                        slot.SpentKarma = slot.SpentKarma + spendApplied;
-                                                    }
-                                                }
-                                                catch
-                                                {
-                                                    slot.SpentKarma = int.MaxValue;
-                                                }
-                                            }
-
                                             try { _userStore.UpsertCareer(activeIdentityHash, slot); } catch { }
                                         }
 
@@ -5460,27 +2026,29 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             type = "skilltree-change",
                                             peer = peer,
                                             careerIndex = slotIndex,
-                                            applyReset = applyReset,
-                                            purchases = purchases != null ? purchases.Length : 0,
-                                            applied = appliedCount,
-                                            persisted = changed,
-                                            inferredSkillLevels = inferredSkillLevels,
-                                            karmaBefore = karmaBefore,
-                                            karmaCostApplied = karmaCostApplied,
+                                            applyReset = appliedSkillChanges.ApplyReset,
+                                            purchases = requestedChanges.Purchases != null ? requestedChanges.Purchases.Length : 0,
+                                            applied = appliedSkillChanges.AppliedCount,
+                                            persisted = appliedSkillChanges.Persisted,
+                                            karmaBefore = appliedSkillChanges.KarmaBefore,
+                                            karmaRefunded = appliedSkillChanges.KarmaRefunded,
+                                            karmaCostApplied = appliedSkillChanges.KarmaSpent,
                                             karmaAfter = slot.Karma,
-                                            karmaCostMissing = karmaCostMissing,
                                         });
 
-                                        // Notify the client so it commits the purchase into its runtime snapshot.
-                                        try
+                                        if (appliedSkillChanges.ShouldNotifyClient)
                                         {
-                                            var msgNoBase = direct.Value.MsgNo + 2;
-                                            var skillChangedPayload = BuildUtf16StringPayload(skillTreeChangedJson);
-                                            var skillChangedCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 34, skillChangedPayload), msgNoBase);
-                                            SendRawFrame(stream, peer, PrefixLength(skillChangedCore), "sent MetaGameplayCommunicationObject SkillTreeChanged in response to ChangeSkillTrees");
-                                        }
-                                        catch
-                                        {
+                                            try
+                                            {
+                                                var msgNoBase = direct.Value.MsgNo + 2;
+                                                var skillTreeChangedJson = JsonFxSerializerProvider.Current.Serialize<SkillTreeChanges>(appliedSkillChanges.AppliedChanges);
+                                                var skillChangedPayload = BuildUtf16StringPayload(skillTreeChangedJson);
+                                                var skillChangedCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 34, skillChangedPayload), msgNoBase);
+                                                SendRawFrame(stream, peer, PrefixLength(skillChangedCore), "sent MetaGameplayCommunicationObject SkillTreeChanged in response to ChangeSkillTrees");
+                                            }
+                                            catch
+                                            {
+                                            }
                                         }
                                     }
                                 }
@@ -5492,9 +2060,20 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 if (!IsNullOrWhiteSpace(rawMessage)
                                     && rawMessage.IndexOf("ItemPossessionChanges", StringComparison.Ordinal) >= 0)
                                 {
-                                    var parsed = TryDeserializeJsonDict(rawMessage);
-                                    var shopKeeper = parsed != null ? GetStringValue(parsed, "ShopKeeper") : null;
-                                    var changes = parsed != null ? GetArrayValue(parsed, "ItemChanges") : null;
+                                    ItemPossessionChanges requestedChanges = null;
+                                    try
+                                    {
+                                        requestedChanges = JsonFxSerializerProvider.Current.Deserialize<ItemPossessionChanges>(rawMessage);
+                                    }
+                                    catch
+                                    {
+                                        requestedChanges = null;
+                                    }
+
+                                    if (requestedChanges == null)
+                                    {
+                                        continue;
+                                    }
 
                                     var slotIndex = activeCareerIndex;
                                     if (slotIndex < 0)
@@ -5505,121 +2084,12 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     var slot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, slotIndex, false) : null;
                                     if (slot != null)
                                     {
-                                        if (slot.ItemPossessions == null)
+                                        var appliedShopChanges = _shopInventoryService.Apply(activeIdentityGuid, slot, requestedChanges);
+
+                                        if (appliedShopChanges.Persisted)
                                         {
-                                            slot.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                                            try { _userStore.UpsertCareer(activeIdentityHash, slot); } catch { }
                                         }
-
-                                        var totalCost = 0;
-                                        var totalRefund = 0;
-                                        var applied = 0;
-                                        var appliedItemChanges = new List<ItemChange>();
-
-                                        if (changes != null && changes.Length > 0)
-                                        {
-                                            for (var i = 0; i < changes.Length; i++)
-                                            {
-                                                var entry = changes[i] as IDictionary;
-                                                if (entry == null)
-                                                {
-                                                    continue;
-                                                }
-
-                                                var itemId = GetStringValue(entry, "ItemDefintionId");
-                                                var delta = GetInt32Value(entry, "Delta", 0);
-                                                var quality = GetInt32Value(entry, "Quality", 0);
-                                                var flavour = GetInt32Value(entry, "Flavour", -1);
-                                                if (IsNullOrWhiteSpace(itemId) || delta == 0)
-                                                {
-                                                    continue;
-                                                }
-
-                                                try
-                                                {
-                                                    appliedItemChanges.Add(new ItemChange(itemId, delta)
-                                                    {
-                                                        Quality = quality,
-                                                        Flavour = flavour,
-                                                    });
-                                                }
-                                                catch
-                                                {
-                                                }
-
-                                                var packedKey = itemId + "|" + quality.ToString(CultureInfo.InvariantCulture) + "|" + flavour.ToString(CultureInfo.InvariantCulture);
-                                                int existing;
-                                                if (!slot.ItemPossessions.TryGetValue(packedKey, out existing))
-                                                {
-                                                    existing = 0;
-                                                }
-
-                                                var next = existing + delta;
-                                                if (next <= 0)
-                                                {
-                                                    if (slot.ItemPossessions.ContainsKey(packedKey))
-                                                    {
-                                                        slot.ItemPossessions.Remove(packedKey);
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    slot.ItemPossessions[packedKey] = next;
-                                                }
-
-                                                int price;
-                                                if (delta > 0)
-                                                {
-                                                    if (TryResolveShopPrice(shopKeeper, itemId, out price) && price > 0)
-                                                    {
-                                                        try { totalCost = checked(totalCost + checked(price * delta)); } catch { totalCost = int.MaxValue; }
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    // Conservative sell/refund heuristic if we know shop price.
-                                                    if (TryResolveShopPrice(shopKeeper, itemId, out price) && price > 0)
-                                                    {
-                                                        var qty = -delta;
-                                                        var refundEach = price / 2;
-                                                        if (refundEach > 0)
-                                                        {
-                                                            try { totalRefund = checked(totalRefund + checked(refundEach * qty)); } catch { totalRefund = int.MaxValue; }
-                                                        }
-                                                    }
-                                                }
-
-                                                applied++;
-                                            }
-                                        }
-
-                                        if (totalCost > 0)
-                                        {
-                                            try
-                                            {
-                                                slot.Nuyen = slot.Nuyen - totalCost;
-                                            }
-                                            catch
-                                            {
-                                                slot.Nuyen = 0;
-                                            }
-                                        }
-                                        if (totalRefund > 0)
-                                        {
-                                            try
-                                            {
-                                                slot.Nuyen = slot.Nuyen + totalRefund;
-                                            }
-                                            catch
-                                            {
-                                                slot.Nuyen = int.MaxValue;
-                                            }
-                                        }
-                                        if (slot.Nuyen < 0)
-                                        {
-                                            slot.Nuyen = 0;
-                                        }
-
-                                        try { _userStore.UpsertCareer(activeIdentityHash, slot); } catch { }
 
                                         _logger.Log(new
                                         {
@@ -5627,11 +2097,12 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             type = "item-possession-change",
                                             peer = peer,
                                             careerIndex = slotIndex,
-                                            shopKeeper = shopKeeper,
-                                            itemChanges = changes != null ? changes.Length : 0,
-                                            applied = applied,
-                                            cost = totalCost,
-                                            refund = totalRefund,
+                                            shopKeeper = requestedChanges.ShopKeeper,
+                                            itemChanges = requestedChanges.ItemChanges != null ? requestedChanges.ItemChanges.Length : 0,
+                                            applied = appliedShopChanges.ShopChanges != null && appliedShopChanges.ShopChanges.AppliedChanges != null ? appliedShopChanges.ShopChanges.AppliedChanges.Length : 0,
+                                            failed = appliedShopChanges.ShopChanges != null && appliedShopChanges.ShopChanges.Failed,
+                                            nuyenBefore = appliedShopChanges.NuyenBefore,
+                                            totalNuyenChange = appliedShopChanges.ShopChanges != null ? appliedShopChanges.ShopChanges.TotalNuyenChange : 0,
                                             nuyen = slot.Nuyen,
                                         });
 
@@ -5643,17 +2114,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         {
                                             var msgNoBase = direct.Value.MsgNo + 20;
                                             var serializedInventory = SerializeInventoryFromSlot(slot);
-
-                                            // Client expects *compressed* shop changes (InventorySerializer.DeserializeShopItemChanges)
-                                            // not the raw JSON request payload.
-                                            var shopItemChanges = new ShopItemChanges
-                                            {
-                                                Failed = false,
-                                                TotalNuyenChange = (totalRefund > 0 ? totalRefund : 0) - (totalCost > 0 ? totalCost : 0),
-                                                AppliedChanges = appliedItemChanges.ToArray(),
-                                                NotAppliedChanges = new ItemChange[0],
-                                            };
-                                            var serializedShopChanges = InventorySerializer.SerializeShopItemChanges(shopItemChanges);
+                                            var serializedShopChanges = InventorySerializer.SerializeShopItemChanges(appliedShopChanges.ShopChanges);
 
                                             var inventoryChangedPayload = BuildUtf16StringPayload(serializedInventory, serializedShopChanges);
                                             var inventoryChangedCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 31, inventoryChangedPayload), msgNoBase + 1);
@@ -5690,337 +2151,24 @@ namespace Shadowrun.LocalService.Core.Protocols
                             // apply it unconditionally.
                             if (_userStore != null && payloadStrings.Count > 0 && PayloadContains(payloadStrings, "CharacterChangeCollection"))
                             {
-                                var rawChange = payloadStrings[0];
-                                // Reuse the existing handler by entering the same codepath.
-                                // (We don't require the shared header to decode as MetaGameplay field 6 here.)
-                                var rawMessage = rawChange;
-
-                                var parsedChange = TryDeserializeJsonDict(rawMessage);
-
-                                var hasAnyRelevantChange = rawMessage != null
-                                    && (rawMessage.IndexOf("\"NewName\"", StringComparison.Ordinal) >= 0
-                                        || rawMessage.IndexOf("SkinTextureIndexChange", StringComparison.Ordinal) >= 0
-                                        || rawMessage.IndexOf("BackgroundStoryChange", StringComparison.Ordinal) >= 0
-                                        || rawMessage.IndexOf("BodyChange", StringComparison.Ordinal) >= 0
-                                        || rawMessage.IndexOf("PortraitChange", StringComparison.Ordinal) >= 0
-                                        || rawMessage.IndexOf("VoiceSetChange", StringComparison.Ordinal) >= 0
-                                        || rawMessage.IndexOf("WantsBackgroundChangeChange", StringComparison.Ordinal) >= 0
-                                        || rawMessage.IndexOf("InventoryChanges", StringComparison.Ordinal) >= 0
-                                        || rawMessage.IndexOf("PrimaryWeaponChange", StringComparison.Ordinal) >= 0
-                                        || rawMessage.IndexOf("SecondaryWeaponChange", StringComparison.Ordinal) >= 0
-                                        || rawMessage.IndexOf("ArmorChange", StringComparison.Ordinal) >= 0);
-
-                                if (hasAnyRelevantChange)
+                                var rawMessage = payloadStrings[0];
+                                var slotIndex = activeCareerIndex;
+                                if (slotIndex < 0)
                                 {
-                                    var slotIndex = activeCareerIndex;
-                                    if (slotIndex < 0)
+                                    slotIndex = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetLastCareerIndex(activeIdentityHash) : 0;
+                                }
+
+                                var slot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, slotIndex, false) : null;
+                                if (slot != null)
+                                {
+                                    var wasPendingPersistenceCreation = slot.PendingPersistenceCreation;
+                                    CharacterChangeApplicationResult characterChangeResult;
+                                    if (TryApplyCharacterChangeCollectionToSlot(rawMessage, slot, out characterChangeResult))
                                     {
-                                        slotIndex = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetLastCareerIndex(activeIdentityHash) : 0;
-                                    }
-
-                                    var slot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, slotIndex, false) : null;
-                                    if (slot != null)
-                                    {
-                                        var wasPendingPersistenceCreation = slot.PendingPersistenceCreation;
-                                        var changed = false;
-                                        var shouldSendCorrection = false;
-                                        string ignoredPortraitOld = null;
-                                        string ignoredPortraitNew = null;
-
-                                        if (slot.EquippedItems == null)
+                                        var changed = characterChangeResult.Changed;
+                                        if (changed || characterChangeResult.ShouldSendCorrection)
                                         {
-                                            slot.EquippedItems = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                                        }
-
-                                        // Prefer structured parsing (avoids key collisions like WantsBackgroundChangeChange.New).
-                                        var newName = (parsedChange != null)
-                                            ? GetStringValue(GetDictValue(parsedChange, "NameChange"), "NewName")
-                                            : ExtractJsonStringValue(rawMessage, "NewName");
-                                        if (!IsNullOrWhiteSpace(newName) && !string.Equals(slot.CharacterName, newName, StringComparison.Ordinal))
-                                        {
-                                            slot.CharacterName = newName;
-                                            changed = true;
-                                        }
-
-                                        if (!slot.IsOccupied)
-                                        {
-                                            slot.IsOccupied = true;
-                                            changed = true;
-                                        }
-
-                                        if (parsedChange != null)
-                                        {
-                                            var skinChange = GetDictValue(parsedChange, "SkinTextureIndexChange");
-                                            var skin = GetInt32Value(skinChange, "NewIndex", -1);
-                                            if (skin >= 0 && slot.SkinTextureIndex != skin)
-                                            {
-                                                slot.SkinTextureIndex = skin;
-                                                changed = true;
-                                            }
-
-                                            var storyChange = GetDictValue(parsedChange, "BackgroundStoryChange");
-                                            var story = GetUInt64Value(storyChange, "NewStory", 0UL);
-                                            if (story != 0UL && slot.BackgroundStory != story)
-                                            {
-                                                slot.BackgroundStory = story;
-                                                changed = true;
-                                            }
-
-                                            var bodyChange = GetDictValue(parsedChange, "BodyChange");
-                                            if (bodyChange != null)
-                                            {
-                                                var meta = GetUInt64Value(bodyChange, "NewMetatype", 0UL);
-                                                var gender = GetUInt64Value(bodyChange, "NewGender", 0UL);
-                                                if (meta != 0UL && gender != 0UL)
-                                                {
-                                                    ulong bodytype;
-                                                    if (TryResolveBodytypeId(meta, gender, out bodytype) && bodytype != 0UL)
-                                                    {
-                                                        if (slot.Bodytype != bodytype)
-                                                        {
-                                                            slot.Bodytype = bodytype;
-                                                            changed = true;
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            var portraitChange = GetDictValue(parsedChange, "PortraitChange");
-                                            var newPortrait = GetStringValue(portraitChange, "NewPortrait");
-                                            if (!IsNullOrWhiteSpace(newPortrait) && !string.Equals(slot.PortraitPath, newPortrait, StringComparison.Ordinal))
-                                            {
-                                                // Empirically, the client can send a CharacterChangeCollection with only a PortraitChange
-                                                // during hub transitions (e.g., after the first mission), which resets the portrait to a
-                                                // default UI value. We treat portraits as immutable after initial creation unless the slot
-                                                // has never had a portrait set.
-                                                var allowPortraitUpdate = slot.PendingPersistenceCreation || IsNullOrWhiteSpace(slot.PortraitPath);
-                                                if (allowPortraitUpdate)
-                                                {
-                                                    slot.PortraitPath = newPortrait;
-                                                    // Keep the legacy summary portrait in sync.
-                                                    slot.Portrait = newPortrait;
-                                                    changed = true;
-
-                                                    // If BodyChange is missing (common in some flows), infer the bodytype from the portrait.
-                                                    if (slot.Bodytype == 0UL)
-                                                    {
-                                                        ulong inferredMeta;
-                                                        ulong inferredGender;
-                                                        if (TryInferMetatypeAndGenderFromPortrait(newPortrait, out inferredMeta, out inferredGender))
-                                                        {
-                                                            ulong inferredBodytype;
-                                                            if (TryResolveBodytypeId(inferredMeta, inferredGender, out inferredBodytype) && inferredBodytype != 0UL)
-                                                            {
-                                                                slot.Bodytype = inferredBodytype;
-                                                                changed = true;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    ignoredPortraitOld = GetStringValue(portraitChange, "OldPortrait");
-                                                    ignoredPortraitNew = newPortrait;
-                                                    shouldSendCorrection = true;
-                                                }
-                                            }
-
-                                            // Final fallback: if we still have no bodytype but do have a portrait, infer from current portrait.
-                                            if (slot.Bodytype == 0UL && !IsNullOrWhiteSpace(slot.PortraitPath))
-                                            {
-                                                ulong inferredMeta;
-                                                ulong inferredGender;
-                                                if (TryInferMetatypeAndGenderFromPortrait(slot.PortraitPath, out inferredMeta, out inferredGender))
-                                                {
-                                                    ulong inferredBodytype;
-                                                    if (TryResolveBodytypeId(inferredMeta, inferredGender, out inferredBodytype) && inferredBodytype != 0UL)
-                                                    {
-                                                        slot.Bodytype = inferredBodytype;
-                                                        changed = true;
-                                                    }
-                                                }
-                                            }
-
-                                            var voiceChange = GetDictValue(parsedChange, "VoiceSetChange");
-                                            var newVoice = GetStringValue(voiceChange, "NewVoiceSet");
-                                            if (!IsNullOrWhiteSpace(newVoice) && !string.Equals(slot.Voiceset, newVoice, StringComparison.Ordinal))
-                                            {
-                                                slot.Voiceset = newVoice;
-                                                changed = true;
-                                            }
-
-                                            var wantsChange = GetDictValue(parsedChange, "WantsBackgroundChangeChange");
-                                            var wantsNew = GetStringValue(wantsChange, "New");
-                                            bool wantsBool;
-                                            if (!IsNullOrWhiteSpace(wantsNew) && bool.TryParse(wantsNew, out wantsBool) && slot.WantsBackgroundChange != wantsBool)
-                                            {
-                                                slot.WantsBackgroundChange = wantsBool;
-                                                changed = true;
-                                            }
-
-                                            // Loadout changes (weapons/armor) from character editor.
-                                            // The editor uses CharacterChangeCollection.{PrimaryWeaponChange,SecondaryWeaponChange,ArmorChange}.
-                                            var primaryWeaponChange = GetDictValue(parsedChange, "PrimaryWeaponChange");
-                                            if (primaryWeaponChange != null)
-                                            {
-                                                var newWeapon = GetDictValue(primaryWeaponChange, "NewWeapon");
-                                                var newItemId = GetStringValue(newWeapon, "ItemId");
-                                                var newInvKey = GetInt32Value(newWeapon, "InventoryKey", 0);
-                                                if (!IsNullOrWhiteSpace(newItemId)
-                                                    && (!string.Equals(slot.PrimaryWeaponItemId, newItemId, StringComparison.Ordinal)
-                                                        || slot.PrimaryWeaponInventoryKey != newInvKey))
-                                                {
-                                                    slot.PrimaryWeaponItemId = newItemId;
-                                                    slot.PrimaryWeaponInventoryKey = newInvKey;
-                                                    changed = true;
-                                                }
-                                            }
-
-                                            var secondaryWeaponChange = GetDictValue(parsedChange, "SecondaryWeaponChange");
-                                            if (secondaryWeaponChange != null)
-                                            {
-                                                var newWeapon = GetDictValue(secondaryWeaponChange, "NewWeapon");
-                                                var newItemId = GetStringValue(newWeapon, "ItemId");
-                                                var newInvKey = GetInt32Value(newWeapon, "InventoryKey", 1);
-                                                if (!IsNullOrWhiteSpace(newItemId)
-                                                    && (!string.Equals(slot.SecondaryWeaponItemId, newItemId, StringComparison.Ordinal)
-                                                        || slot.SecondaryWeaponInventoryKey != newInvKey))
-                                                {
-                                                    slot.SecondaryWeaponItemId = newItemId;
-                                                    slot.SecondaryWeaponInventoryKey = newInvKey;
-                                                    changed = true;
-                                                }
-                                            }
-
-                                            var armorChange = GetDictValue(parsedChange, "ArmorChange");
-                                            if (armorChange != null)
-                                            {
-                                                // EquipArmor uses OldArmor/NewArmor.
-                                                var newArmor = GetDictValue(armorChange, "NewArmor") ?? GetDictValue(armorChange, "NewItem");
-                                                var newItemId = GetStringValue(newArmor, "ItemId");
-                                                var newInvKey = GetInt32Value(newArmor, "InventoryKey", 2);
-                                                if (!IsNullOrWhiteSpace(newItemId)
-                                                    && (!string.Equals(slot.ArmorItemId, newItemId, StringComparison.Ordinal)
-                                                        || slot.ArmorInventoryKey != newInvKey))
-                                                {
-                                                    slot.ArmorItemId = newItemId;
-                                                    slot.ArmorInventoryKey = newInvKey;
-                                                    changed = true;
-                                                }
-                                            }
-
-                                            var inv = GetArrayValue(parsedChange, "InventoryChanges");
-                                            if (inv != null && inv.Length > 0)
-                                            {
-                                                for (var i = 0; i < inv.Length; i++)
-                                                {
-                                                    var entry = inv[i] as IDictionary;
-                                                    if (entry == null)
-                                                    {
-                                                        continue;
-                                                    }
-
-                                                    ulong equipSlot = GetUInt64Value(entry, "Slot", 0UL);
-                                                    if (equipSlot == 0UL)
-                                                    {
-                                                        continue;
-                                                    }
-
-                                                    var newItem = GetDictValue(entry, "NewItem");
-                                                    var newItemId = GetStringValue(newItem, "ItemId");
-                                                    var key = equipSlot.ToString(CultureInfo.InvariantCulture);
-                                                    if (IsNullOrWhiteSpace(newItemId))
-                                                    {
-                                                        if (slot.EquippedItems.ContainsKey(key))
-                                                        {
-                                                            slot.EquippedItems.Remove(key);
-                                                            changed = true;
-                                                        }
-                                                    }
-                                                    else
-                                                    {
-                                                        string existing;
-                                                        if (!slot.EquippedItems.TryGetValue(key, out existing) || !string.Equals(existing, newItemId, StringComparison.Ordinal))
-                                                        {
-                                                            slot.EquippedItems[key] = newItemId;
-                                                            changed = true;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        if (parsedChange == null)
-                                        {
-                                            // Legacy string-based fallback.
-                                            if (rawMessage.IndexOf("SkinTextureIndexChange", StringComparison.Ordinal) >= 0)
-                                            {
-                                                int skin;
-                                                if (TryParseInt32(ExtractJsonStringValue(rawMessage, "NewIndex"), out skin))
-                                                {
-                                                    if (slot.SkinTextureIndex != skin)
-                                                    {
-                                                        slot.SkinTextureIndex = skin;
-                                                        changed = true;
-                                                    }
-                                                }
-                                            }
-                                            if (rawMessage.IndexOf("BackgroundStoryChange", StringComparison.Ordinal) >= 0)
-                                            {
-                                                ulong story;
-                                                if (TryParseUInt64(ExtractJsonStringValue(rawMessage, "NewStory"), out story))
-                                                {
-                                                    if (slot.BackgroundStory != story)
-                                                    {
-                                                        slot.BackgroundStory = story;
-                                                        changed = true;
-                                                    }
-                                                }
-                                            }
-                                            if (rawMessage.IndexOf("BodyChange", StringComparison.Ordinal) >= 0)
-                                            {
-                                                ulong meta;
-                                                ulong gender;
-                                                if (TryParseUInt64(ExtractJsonStringValue(rawMessage, "NewMetatype"), out meta)
-                                                    && TryParseUInt64(ExtractJsonStringValue(rawMessage, "NewGender"), out gender))
-                                                {
-                                                    ulong bodytype;
-                                                    if (TryResolveBodytypeId(meta, gender, out bodytype) && bodytype != 0UL)
-                                                    {
-                                                        if (slot.Bodytype != bodytype)
-                                                        {
-                                                            slot.Bodytype = bodytype;
-                                                            changed = true;
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            if (rawMessage.IndexOf("PortraitChange", StringComparison.Ordinal) >= 0)
-                                            {
-                                                var newPortrait = ExtractJsonStringValue(rawMessage, "NewPortrait");
-                                                if (!IsNullOrWhiteSpace(newPortrait) && !string.Equals(slot.PortraitPath, newPortrait, StringComparison.Ordinal))
-                                                {
-                                                    slot.PortraitPath = newPortrait;
-                                                    slot.Portrait = newPortrait;
-                                                    changed = true;
-                                                }
-                                            }
-
-                                            if (rawMessage.IndexOf("VoiceSetChange", StringComparison.Ordinal) >= 0)
-                                            {
-                                                var newVoice = ExtractJsonStringValue(rawMessage, "NewVoiceSet");
-                                                if (!IsNullOrWhiteSpace(newVoice) && !string.Equals(slot.Voiceset, newVoice, StringComparison.Ordinal))
-                                                {
-                                                    slot.Voiceset = newVoice;
-                                                    changed = true;
-                                                }
-                                            }
-                                        }
-
-                                        if (changed || shouldSendCorrection)
-                                        {
-                                            if (!changed && shouldSendCorrection)
+                                            if (!changed && characterChangeResult.ShouldSendCorrection)
                                             {
                                                 _logger.Log(new
                                                 {
@@ -6029,8 +2177,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                     peer = peer,
                                                     careerIndex = slotIndex,
                                                     reason = "portrait-update-after-creation",
-                                                    oldPortrait = ignoredPortraitOld,
-                                                    newPortrait = ignoredPortraitNew,
+                                                    oldPortrait = characterChangeResult.IgnoredPortraitOld,
+                                                    newPortrait = characterChangeResult.IgnoredPortraitNew,
                                                     currentPortrait = slot.PortraitPath,
                                                 });
                                             }
@@ -6050,32 +2198,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             // "mission-completed", producing the in-game "Server aborted mission" popup.
                                             if (changed && wasPendingPersistenceCreation)
                                             {
-                                                slot.MainCampaignCurrentChapter = 0;
-
-                                                // Starting cash/karma for a brand new runner.
-                                                slot.Nuyen = 0;
-
-                                                // Starting karma for a brand new runner.
-                                                slot.Karma = 0;
-                                                slot.SpentKarma = 0;
-
-                                                // Reset main campaign progression for a brand new runner.
-                                                slot.MainCampaignMissionStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                                                slot.MainCampaignMissionStates["1_010_Prologue"] = StoryMissionstate.Available.ToString();
-
-                                                // Reset interaction tracking so early-hub markers/dialog behave correctly.
-                                                if (slot.MainCampaignInteractedNpcs != null && slot.MainCampaignInteractedNpcs.Count > 0)
-                                                {
-                                                    slot.MainCampaignInteractedNpcs = new List<string>();
-                                                }
-
-                                                // Also clear per-connection completion tracking so the mission start isn't blocked.
-                                                completedStoryMissions.Clear();
-
-                                                if (IsNullOrWhiteSpace(slot.HubId))
-                                                {
-                                                    slot.HubId = DefaultHubId;
-                                                }
+                                                ResetNewCareerStoryProgression(slot, completedStoryMissions);
                                             }
 
                                             if (changed)
@@ -6110,11 +2233,21 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 activeCharacterName = slot.CharacterName;
                                             }
 
-                                            var hubId = !IsNullOrWhiteSpace(slot.HubId) ? slot.HubId : DefaultHubId;
-                                            var characterIdentifier = !IsNullOrWhiteSpace(slot.CharacterIdentifier)
+                                            var refreshedCharacterIdentifier = !IsNullOrWhiteSpace(slot.CharacterIdentifier)
                                                 ? slot.CharacterIdentifier
-                                                : (activeIdentityGuid.ToString() + ":" + slotIndex.ToString());
-                                            cachedHubStatePayload = BuildMetaHubPushPayload(4, SerializeHubStateOrFallback(hubId, characterIdentifier, slot.CharacterName, slot));
+                                                : (activeIdentityGuid.ToString() + ":" + slotIndex.ToString(CultureInfo.InvariantCulture));
+                                            RetireDuplicateHubSessionForCharacter(peer, refreshedCharacterIdentifier, "character-change-hub-refresh-pre-transition");
+
+                                            string refreshedHubId;
+                                            cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
+                                                slot,
+                                                activeIdentityGuid,
+                                                slotIndex,
+                                                false,
+                                                currentHubInstance,
+                                                out refreshedHubId,
+                                                out currentHubInstance);
+                                            currentHubInstanceId = refreshedHubId;
 
                                             var msgNoBase = direct.Value.MsgNo + 2;
                                             var summaryJson = BuildCareerSummaryJson(!IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetCareers(activeIdentityHash) : null);
@@ -6152,6 +2285,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 // not only a full metagame snapshot.
                                                 try
                                                 {
+                                                    var characterIdentifier = !IsNullOrWhiteSpace(slot.CharacterIdentifier)
+                                                        ? slot.CharacterIdentifier
+                                                        : (activeIdentityGuid.ToString() + ":" + slotIndex.ToString(CultureInfo.InvariantCulture));
                                                     var pcs = BuildPlayerCharacterSnapshotForSlot(characterIdentifier, slot.CharacterName, slot);
                                                     var serializedPcs = PCSSerializer.SerializePlayerCharacterSnapshot(pcs);
                                                     var pcsPayload = BuildUtf16StringPayload(serializedPcs);
@@ -6173,67 +2309,21 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 var baselineSetState = Interlocked.Read(ref metaSetStoryMissionStateSeen);
                                                 var baselineStart = Interlocked.Read(ref metaStartSingleplayerMissionSeen);
 
-                                                ThreadPool.QueueUserWorkItem(delegate
+                                                pendingPostCreateBaselineSend = baselineSend;
+                                                pendingPostCreateBaselineSetState = baselineSetState;
+                                                pendingPostCreateBaselineStart = baselineStart;
+                                                pendingPostCreateStoryprogressAfterMsgNo = commitMsgNo;
+                                                pendingPostCreateStoryprogressGeneration = arm;
+
+                                                _logger.Log(new
                                                 {
-                                                    // Give the UI a moment to finish swapping screens.
-                                                    SleepWithStop(stopEvent, 1200);
-                                                    if (stopEvent.WaitOne(0) || connectionClosed.WaitOne(0))
-                                                    {
-                                                        return;
-                                                    }
-
-                                                    try
-                                                    {
-                                                        var postCreateMsgNoBase = commitMsgNo + 40;
-
-                                                        var chapterChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.ChapterChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"NewChapterIndex\":0}";
-                                                        var chapterPayload = BuildUtf16StringPayload(chapterChangeJson);
-                                                        var chapterCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, chapterPayload), postCreateMsgNoBase + 1);
-                                                        SendRawFrame(stream, peer, PrefixLength(chapterCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (ChapterChange 0) after career creation commit");
-                                                    }
-                                                    catch
-                                                    {
-                                                    }
-
-                                                    try
-                                                    {
-                                                        var missionChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.MissionStateChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"Mission\":\"1_010_Prologue\",\"NewState\":\"Available\"}";
-                                                        var missionPayload = BuildUtf16StringPayload(missionChangeJson);
-                                                        var missionCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, missionPayload), commitMsgNo + 42);
-                                                        SendRawFrame(stream, peer, PrefixLength(missionCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (MissionStateChange Available) after career creation commit");
-                                                    }
-                                                    catch
-                                                    {
-                                                    }
-
-                                                    // Watchdog: if intro finishes but no mission-start messages are sent, log once.
-                                                    SleepWithStop(stopEvent, 10000);
-                                                    if (stopEvent.WaitOne(0) || connectionClosed.WaitOne(0))
-                                                    {
-                                                        return;
-                                                    }
-
-                                                    if (Interlocked.Read(ref postCreateArmGeneration) != arm)
-                                                    {
-                                                        return;
-                                                    }
-
-                                                    var sendNow = Interlocked.Read(ref metaSendMessageSeen);
-                                                    var setNow = Interlocked.Read(ref metaSetStoryMissionStateSeen);
-                                                    var startNow = Interlocked.Read(ref metaStartSingleplayerMissionSeen);
-                                                    if (sendNow <= baselineSend && setNow <= baselineSetState && startNow <= baselineStart)
-                                                    {
-                                                        _logger.Log(new
-                                                        {
-                                                            ts = RequestLogger.UtcNowIso(),
-                                                            type = "post-create-watchdog",
-                                                            peer = peer,
-                                                            note = "No MetaGameplay SendMessage observed after career creation commit; intro/mandatory-mission flow likely not triggered.",
-                                                            sendMessages = sendNow,
-                                                            setStoryMissionState = setNow,
-                                                            startSingleplayerMission = startNow,
-                                                        });
-                                                    }
+                                                    ts = RequestLogger.UtcNowIso(),
+                                                    type = "post-create-storyprogress",
+                                                    peer = peer,
+                                                    status = "armed",
+                                                    reason = "career-creation-commit",
+                                                    afterMsgNo = commitMsgNo,
+                                                    generation = arm,
                                                 });
                                             }
                                         }
@@ -6270,19 +2360,35 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 {
                                     if (requestedHostAccountId != Guid.Empty && requestedHostAccountId == activeIdentityGuid)
                                     {
-                                        routedHubId = routedSlot != null && !IsNullOrWhiteSpace(routedSlot.HubId)
-                                            ? routedSlot.HubId
-                                            : DefaultHubId;
-                                        routedHubSource = "self-career";
+                                        var currentStoryHubId = routedSlot != null && _storyProgressionService != null
+                                            ? _storyProgressionService.GetCurrentStoryHubId(activeIdentityGuid, routedSlot, "Main Campaign")
+                                            : null;
+                                        routedHubId = !IsNullOrWhiteSpace(currentStoryHubId)
+                                            ? currentStoryHubId
+                                            : (routedSlot != null && !IsNullOrWhiteSpace(routedSlot.HubId)
+                                                ? routedSlot.HubId
+                                                : DefaultHubId);
+                                        routedHubSource = !IsNullOrWhiteSpace(currentStoryHubId)
+                                            ? "self-storyhub"
+                                            : "self-career";
                                     }
-                                    else if (requestedHostAccountId != Guid.Empty && _hubPresenceRegistry.TryGetHubIdForAccount(requestedHostAccountId, out routedHubId))
+                                    else if (requestedHostAccountId != Guid.Empty && TryResolveHubIdForAccount(requestedHostAccountId, out routedHubId))
                                     {
                                         routedHubSource = "host-account";
                                     }
-                                    else if (!IsNullOrWhiteSpace(requestedHostCharacterId) && _hubPresenceRegistry.TryGetHubIdForCharacter(requestedHostCharacterId, out routedHubId))
+                                    else if (!IsNullOrWhiteSpace(requestedHostCharacterId) && TryResolveHubIdForCharacter(requestedHostCharacterId, out routedHubId))
                                     {
                                         routedHubSource = "host-character";
                                     }
+                                }
+
+                                if (requestedHostAccountId != Guid.Empty && requestedHostAccountId != activeIdentityGuid)
+                                {
+                                    _logger.UpdateConnectionHostAccountId("aplay", peer, connectionHash, requestedHostAccountId);
+                                }
+                                else
+                                {
+                                    _logger.ClearConnectionHostAccountId("aplay", peer, connectionHash);
                                 }
 
                                 if (IsNullOrWhiteSpace(routedHubId) && !IsNullOrWhiteSpace(currentHubInstanceId))
@@ -6291,6 +2397,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     routedHubSource = "current-peer";
                                 }
 
+                                string requestStoryHubReadyHubId = null;
+                                string requestStoryHubReadyCharacterId = null;
                                 if (!IsNullOrWhiteSpace(routedHubId))
                                 {
                                     HubPresenceRegistry.Participant previousParticipant;
@@ -6304,6 +2412,21 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     var routedCharacterName = routedSlot != null && !IsNullOrWhiteSpace(routedSlot.CharacterName)
                                         ? routedSlot.CharacterName
                                         : activeCharacterName;
+
+                                    RetireDuplicateHubSessionForCharacter(peer, routedCharacterIdentifier, "request-story-hub-for-pre-transition");
+
+                                    var transition = TryExecutePortedHubTransition(
+                                        routedHubId,
+                                        activeIdentityGuid,
+                                        routedCharacterIdentifier,
+                                        routedCharacterName,
+                                        routedSlot,
+                                        currentHubInstance);
+                                    if (transition != null && transition.TargetHubInstance != null)
+                                    {
+                                        currentHubInstance = transition.TargetHubInstance;
+                                        routedHubId = currentHubInstance.HubId;
+                                    }
 
                                     var routedX = previousParticipant != null ? previousParticipant.X : 0f;
                                     var routedY = previousParticipant != null ? previousParticipant.Y : 0f;
@@ -6322,27 +2445,38 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                     HubPresenceRegistry.Participant currentParticipant;
                                     _hubPresenceRegistry.TryGetParticipantForPeer(peer, out currentParticipant);
+                                    var previousHubId = ResolveParticipantHubId(previousParticipant, null);
+                                    var currentParticipantHubId = ResolveParticipantHubId(currentParticipant, routedHubId);
 
-                                    var shouldBroadcastAdd = previousParticipant == null
-                                        || !string.Equals(previousParticipant.HubId, routedHubId, StringComparison.OrdinalIgnoreCase)
-                                        || !string.Equals(previousParticipant.CharacterId, routedCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
+                                    var shouldBroadcastAdd = transition != null
+                                        ? transition.JoinUpdate != null
+                                        : previousParticipant == null
+                                            || !string.Equals(previousHubId, routedHubId, StringComparison.OrdinalIgnoreCase)
+                                            || !string.Equals(previousParticipant.CharacterId, routedCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
 
-                                    if (previousParticipant != null
-                                        && !IsNullOrWhiteSpace(previousParticipant.HubId)
-                                        && !IsNullOrWhiteSpace(previousParticipant.CharacterId)
-                                        && !string.Equals(previousParticipant.HubId, routedHubId, StringComparison.OrdinalIgnoreCase))
+                                    if (transition != null && transition.LeaveUpdate != null && !IsNullOrWhiteSpace(transition.LeaveUpdate.RemovedCharacter))
                                     {
-                                        BroadcastHubStateRemove(previousParticipant.HubId, peer, previousParticipant.CharacterId);
+                                        BroadcastHubStateRemove(transition.LeaveUpdate.InstanceId, peer, transition.LeaveUpdate.RemovedCharacter);
+                                    }
+                                    else if (previousParticipant != null
+                                        && !IsNullOrWhiteSpace(previousHubId)
+                                        && !IsNullOrWhiteSpace(previousParticipant.CharacterId)
+                                        && !string.Equals(previousHubId, routedHubId, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        BroadcastHubStateRemove(previousHubId, peer, previousParticipant.CharacterId);
                                     }
 
-                                    if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipant.HubId))
+                                    if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipantHubId))
                                     {
                                         if (shouldBroadcastAdd)
                                         {
-                                            ClearHubAnnouncementsForPeerHub(peer, currentParticipant.HubId);
+                                            ClearHubAnnouncementForAllPeers(currentParticipantHubId, currentParticipant.CharacterId);
+                                            ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
                                         }
 
-                                        armHubReadyFallback(currentParticipant.HubId, currentParticipant.CharacterId, "request-story-hub-for");
+                                        requestStoryHubReadyHubId = currentParticipantHubId;
+                                        requestStoryHubReadyCharacterId = currentParticipant.CharacterId;
+                                        armHubReadyFallback(currentParticipantHubId, currentParticipant.CharacterId, "request-story-hub-for");
 
                                     }
 
@@ -6351,15 +2485,19 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         ts = RequestLogger.UtcNowIso(),
                                         type = "hub-join-eval",
                                         path = "RequestStoryHubFor",
+                                        accountId = activeIdentityGuid != Guid.Empty ? activeIdentityGuid.ToString("D") : null,
+                                        hostAccountId = requestedHostAccountId != Guid.Empty && requestedHostAccountId != activeIdentityGuid ? requestedHostAccountId.ToString("D") : null,
                                         peer = peer,
-                                        previousHubId = previousParticipant != null ? (previousParticipant.HubId ?? string.Empty) : string.Empty,
+                                        previousHubId = previousHubId ?? string.Empty,
                                         previousCharacterId = previousParticipant != null ? (previousParticipant.CharacterId ?? string.Empty) : string.Empty,
-                                        currentHubId = currentParticipant != null ? (currentParticipant.HubId ?? string.Empty) : string.Empty,
+                                        currentHubId = currentParticipantHubId ?? string.Empty,
                                         currentCharacterId = currentParticipant != null ? (currentParticipant.CharacterId ?? string.Empty) : string.Empty,
                                         shouldBroadcastAdd = shouldBroadcastAdd,
                                     });
 
-                                    var serializedSharedHubState = BuildSerializedSharedHubStateOrFallback(routedHubId, routedCharacterIdentifier, routedCharacterName, routedSlot);
+                                    var serializedSharedHubState = currentHubInstance != null
+                                        ? currentHubInstance.SerializedHubState()
+                                        : BuildSerializedSharedHubStateOrFallback(routedHubId, routedCharacterIdentifier, routedCharacterName, routedSlot);
                                     cachedHubStatePayload = BuildMetaHubPushPayload(HubEntityId, serializedSharedHubState);
                                     currentHubInstanceId = routedHubId;
 
@@ -6367,9 +2505,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     {
                                         ts = RequestLogger.UtcNowIso(),
                                         type = "hub-route-storyhubfor",
+                                        accountId = activeIdentityGuid != Guid.Empty ? activeIdentityGuid.ToString("D") : null,
                                         peer = peer,
                                         hostCharacterId = requestedHostCharacterId ?? string.Empty,
-                                        hostAccountId = requestedHostAccountId != Guid.Empty ? requestedHostAccountId.ToString() : string.Empty,
+                                        hostAccountId = requestedHostAccountId != Guid.Empty && requestedHostAccountId != activeIdentityGuid ? requestedHostAccountId.ToString("D") : null,
                                         routedHubId = routedHubId,
                                         routeSource = routedHubSource,
                                     });
@@ -6404,16 +2543,26 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     }
                                 }
 
+                                if (!IsNullOrWhiteSpace(requestStoryHubReadyHubId)
+                                    && !IsNullOrWhiteSpace(requestStoryHubReadyCharacterId)
+                                    && TryActivateHubReadiness(peer, requestStoryHubReadyHubId, "request-story-hub-for"))
+                                {
+                                    cancelHubReadyFallback("request-story-hub-for");
+                                }
+
                             }
 
                             if (isMetaGameplayMessage)
                             {
+                                flushPendingPostCreateStoryprogress(direct.Value.MsgNo, "metagameplay-message");
+
                                 var rawMessage = payloadStrings[0];
 
                                 // Diagnostics: decode MetaGameplayCommunicationObject.SendMessage(...) payloads.
                                 if (isMetaGameplayWrappedMessage && rawMessage != null)
                                 {
                                     Interlocked.Increment(ref metaSendMessageSeen);
+                                    cancelPostCreateWatchdog("metagameplay-sendmessage");
 
                                     string messageType = null;
                                     try
@@ -6454,14 +2603,17 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     if (rawMessage.IndexOf("SetStoryMissionStateMessage", StringComparison.Ordinal) >= 0)
                                     {
                                         Interlocked.Increment(ref metaSetStoryMissionStateSeen);
+                                        markCreationInfoSatisfied("set-story-mission-state");
                                     }
                                     if (rawMessage.IndexOf("StartSingleplayerMissionMessage", StringComparison.Ordinal) >= 0)
                                     {
                                         Interlocked.Increment(ref metaStartSingleplayerMissionSeen);
+                                        markCreationInfoSatisfied("start-singleplayer-mission");
                                     }
                                     if (rawMessage.IndexOf("RequestCurrentStorylineHubMessage", StringComparison.Ordinal) >= 0)
                                     {
                                         Interlocked.Increment(ref metaRequestHubSeen);
+                                        markCreationInfoSatisfied("request-current-storyline-hub");
                                     }
                                 }
 
@@ -6473,6 +2625,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     && rawMessage.IndexOf("RequestCurrentStorylineHubMessage", StringComparison.Ordinal) >= 0
                                     && cachedHubStatePayload != null)
                                 {
+                                    string requestCurrentStorylineHubReadyHubId = null;
+                                    string requestCurrentStorylineHubReadyCharacterId = null;
                                     if (!IsNullOrWhiteSpace(currentHubInstanceId))
                                     {
                                         HubPresenceRegistry.Participant previousParticipant;
@@ -6503,17 +2657,47 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         var effectiveHubId = currentHubInstanceId;
                                         Guid followHostAccountId;
                                         string followHostHubId;
+                                        var hasFollowHost = false;
                                         if (PartyHubFollowRegistry.TryGetHostForMember(activeIdentityGuid, out followHostAccountId)
                                             && followHostAccountId != Guid.Empty
                                             && followHostAccountId != activeIdentityGuid
-                                            && _hubPresenceRegistry.TryGetHubIdForAccount(followHostAccountId, out followHostHubId)
+                                            && TryResolveHubIdForAccount(followHostAccountId, out followHostHubId)
                                             && !IsNullOrWhiteSpace(followHostHubId))
                                         {
+                                            hasFollowHost = true;
                                             effectiveHubId = followHostHubId;
+                                            _logger.UpdateConnectionHostAccountId("aplay", peer, connectionHash, followHostAccountId);
                                         }
-                                        else if (currentSlot != null && !IsNullOrWhiteSpace(currentSlot.HubId))
+                                        else
                                         {
-                                            effectiveHubId = currentSlot.HubId;
+                                            _logger.ClearConnectionHostAccountId("aplay", peer, connectionHash);
+                                            var currentStoryHubId = _storyProgressionService != null
+                                                ? _storyProgressionService.GetCurrentStoryHubId(activeIdentityGuid, currentSlot, "Main Campaign")
+                                                : null;
+
+                                            if (!IsNullOrWhiteSpace(currentStoryHubId))
+                                            {
+                                                effectiveHubId = currentStoryHubId;
+                                            }
+                                            else if (currentSlot != null && !IsNullOrWhiteSpace(currentSlot.HubId))
+                                            {
+                                                effectiveHubId = currentSlot.HubId;
+                                            }
+                                        }
+
+                                        RetireDuplicateHubSessionForCharacter(peer, currentCharacterIdentifier, "request-current-storyline-hub-pre-transition");
+
+                                        var transition = TryExecutePortedHubTransition(
+                                            effectiveHubId,
+                                            activeIdentityGuid,
+                                            currentCharacterIdentifier,
+                                            currentCharacterName,
+                                            currentSlot,
+                                            currentHubInstance);
+                                        if (transition != null && transition.TargetHubInstance != null)
+                                        {
+                                            currentHubInstance = transition.TargetHubInstance;
+                                            effectiveHubId = currentHubInstance.HubId;
                                         }
 
                                         currentHubInstanceId = effectiveHubId;
@@ -6535,27 +2719,38 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                         HubPresenceRegistry.Participant currentParticipant;
                                         _hubPresenceRegistry.TryGetParticipantForPeer(peer, out currentParticipant);
+                                        var previousHubId = ResolveParticipantHubId(previousParticipant, null);
+                                        var currentParticipantHubId = ResolveParticipantHubId(currentParticipant, effectiveHubId);
 
-                                        var shouldBroadcastAdd = previousParticipant == null
-                                            || !string.Equals(previousParticipant.HubId, effectiveHubId, StringComparison.OrdinalIgnoreCase)
-                                            || !string.Equals(previousParticipant.CharacterId, currentCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
+                                            var shouldBroadcastAdd = transition != null
+                                                ? transition.JoinUpdate != null
+                                                : previousParticipant == null
+                                                    || !string.Equals(previousHubId, effectiveHubId, StringComparison.OrdinalIgnoreCase)
+                                                    || !string.Equals(previousParticipant.CharacterId, currentCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
 
-                                        if (previousParticipant != null
-                                            && !IsNullOrWhiteSpace(previousParticipant.HubId)
-                                            && !IsNullOrWhiteSpace(previousParticipant.CharacterId)
-                                            && !string.Equals(previousParticipant.HubId, effectiveHubId, StringComparison.OrdinalIgnoreCase))
+                                            if (transition != null && transition.LeaveUpdate != null && !IsNullOrWhiteSpace(transition.LeaveUpdate.RemovedCharacter))
+                                            {
+                                                BroadcastHubStateRemove(transition.LeaveUpdate.InstanceId, peer, transition.LeaveUpdate.RemovedCharacter);
+                                            }
+                                            else if (previousParticipant != null
+                                                && !IsNullOrWhiteSpace(previousHubId)
+                                                && !IsNullOrWhiteSpace(previousParticipant.CharacterId)
+                                                && !string.Equals(previousHubId, effectiveHubId, StringComparison.OrdinalIgnoreCase))
                                         {
-                                            BroadcastHubStateRemove(previousParticipant.HubId, peer, previousParticipant.CharacterId);
+                                            BroadcastHubStateRemove(previousHubId, peer, previousParticipant.CharacterId);
                                         }
 
-                                        if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipant.HubId))
+                                        if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipantHubId))
                                         {
                                             if (shouldBroadcastAdd)
                                             {
-                                                ClearHubAnnouncementsForPeerHub(peer, currentParticipant.HubId);
+                                                    ClearHubAnnouncementForAllPeers(currentParticipantHubId, currentParticipant.CharacterId);
+                                                ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
                                             }
 
-                                            armHubReadyFallback(currentParticipant.HubId, currentParticipant.CharacterId, "request-current-storyline-hub");
+                                            requestCurrentStorylineHubReadyHubId = currentParticipantHubId;
+                                            requestCurrentStorylineHubReadyCharacterId = currentParticipant.CharacterId;
+                                            armHubReadyFallback(currentParticipantHubId, currentParticipant.CharacterId, "request-current-storyline-hub");
 
                                         }
 
@@ -6564,15 +2759,30 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             ts = RequestLogger.UtcNowIso(),
                                             type = "hub-join-eval",
                                             path = "RequestCurrentStorylineHubMessage",
+                                            accountId = activeIdentityGuid != Guid.Empty ? activeIdentityGuid.ToString("D") : null,
+                                            hostAccountId = hasFollowHost ? followHostAccountId.ToString("D") : null,
                                             peer = peer,
-                                            previousHubId = previousParticipant != null ? (previousParticipant.HubId ?? string.Empty) : string.Empty,
+                                            previousHubId = previousHubId ?? string.Empty,
                                             previousCharacterId = previousParticipant != null ? (previousParticipant.CharacterId ?? string.Empty) : string.Empty,
-                                            currentHubId = currentParticipant != null ? (currentParticipant.HubId ?? string.Empty) : string.Empty,
+                                            currentHubId = currentParticipantHubId ?? string.Empty,
                                             currentCharacterId = currentParticipant != null ? (currentParticipant.CharacterId ?? string.Empty) : string.Empty,
                                             shouldBroadcastAdd = shouldBroadcastAdd,
                                         });
 
-                                        var serializedSharedHubState = BuildSerializedSharedHubStateOrFallback(effectiveHubId, currentCharacterIdentifier, currentCharacterName, currentSlot);
+                                        _logger.Log(new
+                                        {
+                                            ts = RequestLogger.UtcNowIso(),
+                                            type = "hub-route-current-storyline",
+                                            accountId = activeIdentityGuid != Guid.Empty ? activeIdentityGuid.ToString("D") : null,
+                                            hostAccountId = hasFollowHost ? followHostAccountId.ToString("D") : null,
+                                            peer = peer,
+                                            routedHubId = effectiveHubId,
+                                            routeSource = hasFollowHost ? "follow-host" : "storyline-self",
+                                        });
+
+                                        var serializedSharedHubState = currentHubInstance != null
+                                            ? currentHubInstance.SerializedHubState()
+                                            : BuildSerializedSharedHubStateOrFallback(effectiveHubId, currentCharacterIdentifier, currentCharacterName, currentSlot);
                                         cachedHubStatePayload = BuildMetaHubPushPayload(HubEntityId, serializedSharedHubState);
                                     }
 
@@ -6591,6 +2801,13 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             var creationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 38, cachedCreationInfoPayload), requestMsgNoBase + 2);
                                             SendRawFrame(stream, peer, PrefixLength(creationInfoCore), "sent MetaGameplayCommunicationObject CreationInfoChanged in response to RequestCurrentStorylineHubMessage");
                                         }
+                                    }
+
+                                    if (!IsNullOrWhiteSpace(requestCurrentStorylineHubReadyHubId)
+                                        && !IsNullOrWhiteSpace(requestCurrentStorylineHubReadyCharacterId)
+                                        && TryActivateHubReadiness(peer, requestCurrentStorylineHubReadyHubId, "request-current-storyline-hub"))
+                                    {
+                                        cancelHubReadyFallback("request-current-storyline-hub");
                                     }
 
                                 }
@@ -6694,12 +2911,22 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                     activeCharacterName = slot.CharacterName;
                                                 }
 
-                                                // Refresh cached hub payload (used later when client requests hub state).
-                                                var hubId = !IsNullOrWhiteSpace(slot.HubId) ? slot.HubId : DefaultHubId;
-                                                var characterIdentifier = !IsNullOrWhiteSpace(slot.CharacterIdentifier)
+                                                var committedCharacterIdentifier = !IsNullOrWhiteSpace(slot.CharacterIdentifier)
                                                     ? slot.CharacterIdentifier
-                                                    : (activeIdentityGuid.ToString() + ":" + slotIndex.ToString());
-                                                cachedHubStatePayload = BuildMetaHubPushPayload(4, SerializeHubStateOrFallback(hubId, characterIdentifier, slot.CharacterName, slot));
+                                                    : (activeIdentityGuid.ToString() + ":" + activeCareerIndex.ToString(CultureInfo.InvariantCulture));
+                                                RetireDuplicateHubSessionForCharacter(peer, committedCharacterIdentifier, "character-commit-hub-refresh-pre-transition");
+
+                                                // Refresh cached hub payload (used later when client requests hub state).
+                                                string refreshedHubId;
+                                                cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
+                                                    slot,
+                                                    activeIdentityGuid,
+                                                    slotIndex,
+                                                    false,
+                                                    currentHubInstance,
+                                                    out refreshedHubId,
+                                                    out currentHubInstance);
+                                                currentHubInstanceId = refreshedHubId;
 
                                                 // Nudge client UI lists.
                                                 var msgNoBase = direct.Value.MsgNo + 2;
@@ -6728,421 +2955,21 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 // In the real game this updates the authoritative metagame state and is broadcast back.
                                 // Important subtlety: the client UI updates from *server* StoryprogressChanged (MissionStateChange),
                                 // not from its own outgoing SetStoryMissionStateMessage.
-                                if (isMetaGameplayWrappedMessage && rawMessage != null && rawMessage.IndexOf("SetStoryMissionStateMessage", StringComparison.Ordinal) >= 0)
+                                if (TryHandleSetStoryMissionStateMessage(
+                                    isMetaGameplayWrappedMessage,
+                                    rawMessage,
+                                    direct.Value.MsgNo,
+                                    stream,
+                                    peer,
+                                    completedStoryMissions,
+                                    activeIdentityHash,
+                                    activeIdentityGuid,
+                                    activeCareerIndex,
+                                    ref currentHubInstanceId,
+                                    ref currentHubInstance,
+                                    ref cachedHubStatePayload,
+                                    cachedCreationInfoPayload))
                                 {
-                                    // Outgoing AP message numbers: keep them monotonic and in send-order.
-                                    // The client can ignore out-of-order/duplicate msgNos.
-                                    //
-                                    // IMPORTANT: do NOT base this solely on the client-provided MsgNo.
-                                    // The client can resend the same request with a lower MsgNo than what we've already sent
-                                    // (e.g. repeated Accept/Claim dialogs). If we respond with lower msgNos, the client may ignore
-                                    // the MissionStateChange and UI will keep offering the same action until restart.
-                                    ulong outMsgNo = 0;
-                                    try
-                                    {
-                                        var minOutMsgNo = direct.Value.MsgNo + 1;
-
-                                        // Choose the next msgNo as max(lastSent+1, clientMsgNo+1).
-                                        var lastSent = Interlocked.Read(ref _metaGameplayOutMsgNoHighWatermark);
-                                        var lastSentU = lastSent > 0 ? (ulong)lastSent : 0UL;
-                                        outMsgNo = lastSentU + 1UL;
-                                        if (outMsgNo < minOutMsgNo)
-                                        {
-                                            outMsgNo = minOutMsgNo;
-                                        }
-
-                                        var missionName = ExtractJsonStringValue(rawMessage, "Mission");
-                                        var targetState = ExtractJsonStringValue(rawMessage, "TargetState");
-                                        if (!IsNullOrWhiteSpace(missionName) && !IsNullOrWhiteSpace(targetState))
-                                        {
-                                            var parsedTarget = ParseStoryMissionStateOrDefault(targetState, StoryMissionstate.Available);
-
-                                        // Keep our in-memory completion check (used to cancel DirectStart missions that were already finished).
-                                        // ReadyToReceiveRewards is also treated as "completed enough" for mandatory-mission logic.
-                                        if (parsedTarget >= StoryMissionstate.ReadyToReceiveRewards)
-                                        {
-                                            completedStoryMissions.Add(missionName);
-                                        }
-
-                                        var shouldGrantStoryRewards = false;
-                                        StoryMissionstate previousState = StoryMissionstate.Available;
-                                        CareerSlot slotForStoryRewards = null;
-                                        // Persist the requested state so it survives restarts.
-                                        if (_userStore != null)
-                                        {
-                                            try
-                                            {
-                                                var slot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false) : null;
-                                                if (slot != null)
-                                                {
-                                                    slotForStoryRewards = slot;
-
-                                                    if (slot.MainCampaignMissionStates == null)
-                                                    {
-                                                        slot.MainCampaignMissionStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                                                    }
-
-                                                    try
-                                                    {
-                                                        string existing;
-                                                        if (slot.MainCampaignMissionStates.TryGetValue(missionName, out existing) && !IsNullOrWhiteSpace(existing))
-                                                        {
-                                                            previousState = ParseStoryMissionStateOrDefault(existing, StoryMissionstate.Available);
-                                                        }
-                                                    }
-                                                    catch
-                                                    {
-                                                        previousState = StoryMissionstate.Available;
-                                                    }
-
-                                                    // Retail-like: story rewards are redeemed when moving ReadyToReceiveRewards -> Completed.
-                                                    if (previousState == StoryMissionstate.ReadyToReceiveRewards && parsedTarget == StoryMissionstate.Completed)
-                                                    {
-                                                        shouldGrantStoryRewards = true;
-                                                    }
-
-                                                    // Store canonical enum names; our snapshot generator parses these.
-                                                    slot.MainCampaignMissionStates[missionName] = parsedTarget.ToString();
-
-                                                    // Fallback for client flows that do not emit InteractedWithNpcMessage:
-                                                    // when a chapter mission transitions to playable/completed, mark current chapter
-                                                    // dialog NPCs as interacted so repeat dialog/"new" markers are cleared.
-                                                    if (parsedTarget == StoryMissionstate.ReadyToPlay || parsedTarget == StoryMissionstate.Completed)
-                                                    {
-                                                        TryMarkCurrentChapterDialogNpcsAsInteracted(slot, "Main Campaign");
-                                                    }
-
-                                                    _userStore.UpsertCareer(activeIdentityHash, slot);
-                                                }
-                                            }
-                                            catch
-                                            {
-                                            }
-                                        }
-
-                                        // If the player just redeemed story rewards in the hub, apply them now.
-                                        // The StoryRewardDialog content is client-driven (from mission definition), but wallet/inventory are authoritative server-side.
-                                        int storyKarma = 0;
-                                        int storyNuyen = 0;
-                                        var storyItemChangesApplied = new List<ItemChange>();
-                                        var grantedAnyStoryRewards = false;
-                                        if (shouldGrantStoryRewards && slotForStoryRewards != null)
-                                        {
-                                            try
-                                            {
-                                                int found;
-                                                if (TryResolveMissionStoryCurrencyReward(missionName, "Victory", "Karma", out found) && found != 0)
-                                                {
-                                                    storyKarma = found;
-                                                }
-                                                if (TryResolveMissionStoryCurrencyReward(missionName, "Victory", "Nuyen", out found) && found != 0)
-                                                {
-                                                    storyNuyen = found;
-                                                }
-
-                                                ItemChange[] storyItems;
-                                                if (TryResolveMissionStoryItemChanges(missionName, "Victory", out storyItems) && storyItems != null && storyItems.Length > 0)
-                                                {
-                                                    if (slotForStoryRewards.ItemPossessions == null)
-                                                    {
-                                                        slotForStoryRewards.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                                                    }
-
-                                                    for (var i = 0; i < storyItems.Length; i++)
-                                                    {
-                                                        var c = storyItems[i];
-                                                        if (c == null || IsNullOrWhiteSpace(c.ItemDefintionId) || c.Delta == 0)
-                                                        {
-                                                            continue;
-                                                        }
-
-                                                        try
-                                                        {
-                                                            storyItemChangesApplied.Add(new ItemChange(c.ItemDefintionId, c.Delta)
-                                                            {
-                                                                Quality = c.Quality,
-                                                                Flavour = c.Flavour,
-                                                            });
-                                                        }
-                                                        catch
-                                                        {
-                                                        }
-
-                                                        var packedKey = c.ItemDefintionId + "|" + c.Quality.ToString(CultureInfo.InvariantCulture) + "|" + c.Flavour.ToString(CultureInfo.InvariantCulture);
-                                                        int existing;
-                                                        if (!slotForStoryRewards.ItemPossessions.TryGetValue(packedKey, out existing))
-                                                        {
-                                                            existing = 0;
-                                                        }
-
-                                                        var next = existing + c.Delta;
-                                                        if (next <= 0)
-                                                        {
-                                                            if (slotForStoryRewards.ItemPossessions.ContainsKey(packedKey))
-                                                            {
-                                                                slotForStoryRewards.ItemPossessions.Remove(packedKey);
-                                                            }
-                                                        }
-                                                        else
-                                                        {
-                                                            slotForStoryRewards.ItemPossessions[packedKey] = next;
-                                                        }
-                                                    }
-                                                }
-
-                                                if (storyKarma != 0)
-                                                {
-                                                    try
-                                                    {
-                                                        checked
-                                                        {
-                                                            slotForStoryRewards.Karma = slotForStoryRewards.Karma + storyKarma;
-                                                        }
-                                                    }
-                                                    catch
-                                                    {
-                                                        slotForStoryRewards.Karma = int.MaxValue;
-                                                    }
-                                                }
-
-                                                if (storyNuyen != 0)
-                                                {
-                                                    try
-                                                    {
-                                                        checked
-                                                        {
-                                                            slotForStoryRewards.Nuyen = slotForStoryRewards.Nuyen + storyNuyen;
-                                                        }
-                                                    }
-                                                    catch
-                                                    {
-                                                        slotForStoryRewards.Nuyen = int.MaxValue;
-                                                    }
-                                                }
-
-                                                grantedAnyStoryRewards = (storyKarma != 0 || storyNuyen != 0 || (storyItemChangesApplied != null && storyItemChangesApplied.Count > 0));
-                                                if (grantedAnyStoryRewards)
-                                                {
-                                                    try { _userStore.UpsertCareer(slotForStoryRewards); } catch { }
-
-                                                    _logger.Log(new
-                                                    {
-                                                        ts = RequestLogger.UtcNowIso(),
-                                                        type = "story-reward",
-                                                        peer = peer,
-                                                        mission = missionName,
-                                                        previousState = previousState.ToString(),
-                                                        newState = parsedTarget.ToString(),
-                                                        karmaDelta = storyKarma,
-                                                        karmaTotal = slotForStoryRewards.Karma,
-                                                        nuyenDelta = storyNuyen,
-                                                        nuyenTotal = slotForStoryRewards.Nuyen,
-                                                        itemChanges = storyItemChangesApplied != null ? storyItemChangesApplied.Count : 0,
-                                                        careerIndex = activeCareerIndex,
-                                                    });
-                                                }
-                                            }
-                                            catch
-                                            {
-                                                storyKarma = 0;
-                                                storyNuyen = 0;
-                                                try { storyItemChangesApplied.Clear(); } catch { }
-                                                grantedAnyStoryRewards = false;
-                                            }
-                                        }
-
-                                        // CONTRACT (SetStoryMissionStateMessage response sequence):
-                                        // 1) Apply authoritative mission/chapter/NPC-interaction state first.
-                                        // 2) StoryprogressChanged(MissionStateChange) MUST be sent first so mission UI updates immediately.
-                                        // 3) StoryprogressChanged(ChapterChange) is sent only when chapter truly advances.
-                                        // 4) SendMetagameplayDataSnapshotToClient from final authoritative state.
-                                        // 5) Hub communication object is sent in response to RequestCurrentStorylineHubMessage/RequestStoryHubFor.
-                                        // 6) Preserve strictly increasing msgNo ordering for every outbound metagameplay event.
-
-                                        // CRITICAL: send MissionStateChange immediately so UI reacts (quest markers, claim option, etc).
-                                        try
-                                        {
-                                            var storyProgressChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.MissionStateChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"Mission\":\"" + missionName + "\",\"NewState\":\"" + parsedTarget.ToString() + "\"}";
-                                            var storyProgressChangePayload = BuildUtf16StringPayload(storyProgressChangeJson);
-                                            var storyProgressChangeCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, storyProgressChangePayload), outMsgNo++);
-                                            SendRawFrame(stream, peer, PrefixLength(storyProgressChangeCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (MissionStateChange " + parsedTarget.ToString() + ")");
-                                        }
-                                        catch
-                                        {
-                                        }
-
-                                        // Tell the client what it earned so PlayerCharacterController pockets currency and UI updates.
-                                        // Include StoryRewards item changes so the reward dialog + inventory stay consistent.
-                                        if (grantedAnyStoryRewards && slotForStoryRewards != null)
-                                        {
-                                            try
-                                            {
-                                                var earnedCurrencies = new List<object>();
-                                                if (storyKarma != 0)
-                                                {
-                                                    earnedCurrencies.Add(new Dictionary<string, object>
-                                                    {
-                                                        { "CurrencyId", "Karma" },
-                                                        { "EarnedValue", storyKarma },
-                                                    });
-                                                }
-                                                if (storyNuyen != 0)
-                                                {
-                                                    earnedCurrencies.Add(new Dictionary<string, object>
-                                                    {
-                                                        { "CurrencyId", "Nuyen" },
-                                                        { "EarnedValue", storyNuyen },
-                                                    });
-                                                }
-
-                                                object[] storyItemPayload = new object[0];
-                                                if (storyItemChangesApplied != null && storyItemChangesApplied.Count > 0)
-                                                {
-                                                    var list = new List<object>();
-                                                    for (var i = 0; i < storyItemChangesApplied.Count; i++)
-                                                    {
-                                                        var c = storyItemChangesApplied[i];
-                                                        if (c == null || IsNullOrWhiteSpace(c.ItemDefintionId) || c.Delta == 0)
-                                                        {
-                                                            continue;
-                                                        }
-                                                        list.Add(new Dictionary<string, object>
-                                                        {
-                                                            { "ItemDefintionId", c.ItemDefintionId },
-                                                            { "Delta", c.Delta },
-                                                            { "Quality", c.Quality },
-                                                            { "Flavour", c.Flavour },
-                                                        });
-                                                    }
-                                                    storyItemPayload = list.ToArray();
-                                                }
-
-                                                var rewardJson = Json.Serialize(new Dictionary<string, object>
-                                                {
-                                                    { "GrantedUnlocks", new string[0] },
-                                                    { "EarnedCurrencies", earnedCurrencies.ToArray() },
-                                                    { "ItemChanges", storyItemPayload },
-                                                });
-
-                                                var rewardPayload = BuildUtf16StringPayload(rewardJson);
-                                                var rewardCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 35, rewardPayload), outMsgNo++);
-                                                SendRawFrame(stream, peer, PrefixLength(rewardCore), "sent MetaGameplayCommunicationObject GotMissionReward (StoryRewards redemption)");
-                                            }
-                                            catch
-                                            {
-                                            }
-                                        }
-
-                                        // Retail-like: advance chapter once current chapter's required missions are fully completed/claimed.
-                                        // If the advancement triggers, reserve msgNos to avoid collisions with our own pushes.
-                                        var chapterAdvanced = false;
-                                        if (slotForStoryRewards != null)
-                                        {
-                                            try
-                                            {
-                                                chapterAdvanced = TryAdvanceMainCampaignIfEligible(activeIdentityHash, slotForStoryRewards, peer, stream, "Main Campaign", outMsgNo, ref cachedHubStatePayload, cachedCreationInfoPayload, false);
-                                                if (chapterAdvanced)
-                                                {
-                                                    outMsgNo = outMsgNo + 1;
-                                                }
-                                            }
-                                            catch
-                                            {
-                                            }
-                                        }
-
-                                        if (!chapterAdvanced
-                                            && slotForStoryRewards != null
-                                            && (parsedTarget == StoryMissionstate.ReadyToPlay || parsedTarget == StoryMissionstate.Completed)
-                                            && slotForStoryRewards.MainCampaignCurrentChapter >= 0)
-                                        {
-                                            // Trigger a client-side hub refresh request when chapter hub names are stable.
-                                            // Emit transient chapter change to a different-hub chapter, then restore the real chapter.
-                                            // The authoritative snapshot sent below remains the source of truth.
-                                            try
-                                            {
-                                                var currentChapterIndex = slotForStoryRewards.MainCampaignCurrentChapter;
-                                                var currentHubId = !IsNullOrWhiteSpace(slotForStoryRewards.HubId) ? slotForStoryRewards.HubId : DefaultHubId;
-
-                                                int triggerChapterIndex;
-                                                if (TryGetRefreshTriggerChapterIndexWithDifferentHub("Main Campaign", currentChapterIndex, currentHubId, out triggerChapterIndex))
-                                                {
-                                                    var triggerChapterJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.ChapterChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"NewChapterIndex\":" + triggerChapterIndex.ToString(CultureInfo.InvariantCulture) + "}";
-                                                    var triggerChapterPayload = BuildUtf16StringPayload(triggerChapterJson);
-                                                    var triggerChapterCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, triggerChapterPayload), outMsgNo++);
-                                                    SendRawFrame(stream, peer, PrefixLength(triggerChapterCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (ChapterChange " + triggerChapterIndex.ToString(CultureInfo.InvariantCulture) + ") refresh trigger after SetStoryMissionStateMessage");
-
-                                                    var restoreChapterJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.ChapterChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"NewChapterIndex\":" + currentChapterIndex.ToString(CultureInfo.InvariantCulture) + "}";
-                                                    var restoreChapterPayload = BuildUtf16StringPayload(restoreChapterJson);
-                                                    var restoreChapterCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, restoreChapterPayload), outMsgNo++);
-                                                    SendRawFrame(stream, peer, PrefixLength(restoreChapterCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (ChapterChange " + currentChapterIndex.ToString(CultureInfo.InvariantCulture) + ") refresh restore after SetStoryMissionStateMessage");
-                                                }
-                                            }
-                                            catch
-                                            {
-                                            }
-                                        }
-
-                                        // Always rebuild the cached hub payload from the latest persisted slot state (mission state changes + rewards).
-                                        if (slotForStoryRewards != null)
-                                        {
-                                            try
-                                            {
-                                                var characterIdentifier = !IsNullOrWhiteSpace(slotForStoryRewards.CharacterIdentifier)
-                                                    ? slotForStoryRewards.CharacterIdentifier
-                                                    : (activeIdentityGuid.ToString() + ":" + activeCareerIndex.ToString());
-                                                var forceNewHubInstanceId = (parsedTarget == StoryMissionstate.ReadyToPlay || parsedTarget == StoryMissionstate.Completed || chapterAdvanced);
-                                                cachedHubStatePayload = BuildHubStatePayloadForSlot(slotForStoryRewards, characterIdentifier, forceNewHubInstanceId);
-                                            }
-                                            catch
-                                            {
-                                            }
-                                        }
-
-                                        // Send a fresh metagame snapshot after state changes/rewards so StorylineController rebuilds authoritatively.
-                                        if (slotForStoryRewards != null)
-                                        {
-                                            try
-                                            {
-                                                var zipped = _careerInfoGenerator.GetZippedCareerInfo(activeIdentityGuid, activeCareerIndex, slotForStoryRewards);
-                                                var metaSnapshotPayload = BuildUtf16StringPayload(zipped);
-                                                var metaSnapshotCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 26, metaSnapshotPayload), outMsgNo++);
-                                                SendRawFrame(stream, peer, PrefixLength(metaSnapshotCore), "sent MetaGameplayCommunicationObject SendMetagameplayDataSnapshotToClient after SetStoryMissionStateMessage");
-                                            }
-                                            catch
-                                            {
-                                            }
-                                        }
-
-                                        }
-
-                                        // Echo the original wrapped message so the client's SendMessage promise resolves.
-                                        var echoPayload = BuildUtf16StringPayload(rawMessage);
-                                        var echoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 1, echoPayload), outMsgNo++);
-                                        SendRawFrame(stream, peer, PrefixLength(echoCore), "echoed MetaGameplayCommunicationObject Message (SetStoryMissionStateMessage)");
-                                    }
-                                    finally
-                                    {
-                                        // outMsgNo tracks the next-to-use value; update our high-watermark to the last used.
-                                        // Avoid decreasing it if something else advanced it concurrently.
-                                        if (outMsgNo > 0)
-                                        {
-                                            var lastUsed = outMsgNo - 1UL;
-                                            while (true)
-                                            {
-                                                var observed = Interlocked.Read(ref _metaGameplayOutMsgNoHighWatermark);
-                                                var observedU = observed > 0 ? (ulong)observed : 0UL;
-                                                if (lastUsed <= observedU)
-                                                {
-                                                    break;
-                                                }
-                                                if (Interlocked.CompareExchange(ref _metaGameplayOutMsgNoHighWatermark, (long)lastUsed, observed) == observed)
-                                                {
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
                                 }
 
                                 // Persist NPC interactions so dialog/new-marker state behaves like retail on relaunch.
@@ -7206,187 +3033,39 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         // The client is now waiting for either StartMissionAccepted or StartMissionCancelled.
                                         // If we do neither, it will remain stuck in a mission-start-in-progress state.
                                         var nudgeMsgNoBase = direct.Value.MsgNo + 250;
-                                        var cancelledCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 24, new byte[0]), nudgeMsgNoBase);
-                                        SendRawFrame(stream, peer, PrefixLength(cancelledCore), "sent MetaGameplayCommunicationObject StartMissionCancelled (mission already completed)");
-
-                                        // Nudge the client back to the hub state we already advertise.
-                                        if (cachedHubStatePayload != null && cachedCreationInfoPayload != null)
-                                        {
-                                            var hubStateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 37, cachedHubStatePayload), nudgeMsgNoBase + 1);
-                                            SendRawFrame(stream, peer, PrefixLength(hubStateCore), "sent MetaGameplayCommunicationObject SendHubCommunicationObjectToClient (mission already completed)");
-
-                                            var creationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 38, cachedCreationInfoPayload), nudgeMsgNoBase + 2);
-                                            SendRawFrame(stream, peer, PrefixLength(creationInfoCore), "sent MetaGameplayCommunicationObject CreationInfoChanged (mission already completed)");
-                                        }
+                                        SendMissionStartCancelledWithHubRestore(stream, peer, nudgeMsgNoBase, cachedHubStatePayload, cachedCreationInfoPayload);
                                         continue;
                                     }
 
                                     var requestMsgNoBase = direct.Value.MsgNo + 250;
 
-                                    if (!sentMissionEntityIntros)
-                                    {
-                                        var gameworldIntroRaw = Concat(new byte[] { 3 }, BitConverter.GetBytes((ulong)gameworldEntityId), BitConverter.GetBytes(gameworldCommunicationObjectTypeId), BitConverter.GetBytes(0));
-                                        var gameworldIntroCore = BuildCoreDirectSystem(1, gameworldIntroRaw, requestMsgNoBase + 1);
-                                        SendRawFrame(stream, peer, PrefixLength(gameworldIntroCore), "sent AP introduce shared entity (type=7 gameworld communication object, id=5)");
-
-                                        var missionInstanceIntroRaw = Concat(new byte[] { 3 }, BitConverter.GetBytes((ulong)missionInstanceEntityId), BitConverter.GetBytes(missionInstanceCommunicationObjectTypeId), BitConverter.GetBytes(0));
-                                        var missionInstanceIntroCore = BuildCoreDirectSystem(1, missionInstanceIntroRaw, requestMsgNoBase + 2);
-                                        SendRawFrame(stream, peer, PrefixLength(missionInstanceIntroCore), "sent AP introduce shared entity (type=9 mission instance communication object, id=6)");
-
-                                        var missionCommandIntroRaw = Concat(new byte[] { 3 }, BitConverter.GetBytes((ulong)missionCommandEntityId), BitConverter.GetBytes(missionCommandCommunicationObjectTypeId), BitConverter.GetBytes(0));
-                                        var missionCommandIntroCore = BuildCoreDirectSystem(1, missionCommandIntroRaw, requestMsgNoBase + 3);
-                                        SendRawFrame(stream, peer, PrefixLength(missionCommandIntroCore), "sent AP introduce shared entity (type=10 mission command communication object, id=7)");
-
-                                        var gameworldOwnerCore = BuildCoreDirectSystem(1, BuildApSharedEntitySetOwner(gameworldEntityId, gameworldCommunicationObjectTypeId), requestMsgNoBase + 4);
-                                        SendRawFrame(stream, peer, PrefixLength(gameworldOwnerCore), "sent AP shared-entity set-owner (entity=5)");
-
-                                        var missionInstanceOwnerCore = BuildCoreDirectSystem(1, BuildApSharedEntitySetOwner(missionInstanceEntityId, missionInstanceCommunicationObjectTypeId), requestMsgNoBase + 5);
-                                        SendRawFrame(stream, peer, PrefixLength(missionInstanceOwnerCore), "sent AP shared-entity set-owner (entity=6)");
-
-                                        var missionCommandOwnerCore = BuildCoreDirectSystem(1, BuildApSharedEntitySetOwner(missionCommandEntityId, missionCommandCommunicationObjectTypeId), requestMsgNoBase + 6);
-                                        SendRawFrame(stream, peer, PrefixLength(missionCommandOwnerCore), "sent AP shared-entity set-owner (entity=7)");
-
-                                        sentMissionEntityIntros = true;
-                                    }
+                                    EnsureMissionEntitiesIntroduced(
+                                        stream,
+                                        peer,
+                                        requestMsgNoBase,
+                                        gameworldEntityId,
+                                        missionInstanceEntityId,
+                                        missionCommandEntityId,
+                                        gameworldCommunicationObjectTypeId,
+                                        missionInstanceCommunicationObjectTypeId,
+                                        missionCommandCommunicationObjectTypeId,
+                                        ref sentMissionEntityIntros);
 
                                     var seed0 = 0x11111111u;
                                     var seed1 = 0x22222222u;
                                     var seed2 = 0x33333333u;
                                     var seed3 = 0x44444444u;
 
-                                    PlayerCharacterSnapshot[] selectedHenchmen = null;
-                                    if (parsedSelections != null && parsedSelections.Count > 0)
-                                    {
-                                        // Ensure the hench cache is warm so we can map HenchmanId -> snapshot.
-                                        SerializeDefaultHenchmanCollection();
+                                    var selectedHenchmen = ResolveSelectedHenchmenForSoloMission(peer, mapName, parsedSelections, activeIdentityGuid, activeIdentityHash, activeCareerIndex);
+                                    var compressedMatchConfiguration = BuildSoloMissionMatchConfiguration(mapName, activeIdentityGuid, activeIdentityHash, activeCareerIndex, activeCharacterName, gameClientEntityId, selectedHenchmen);
 
-                                        var snapshots = CachedHenchmanCollectionSnapshots;
-                                        if (snapshots != null && snapshots.Count > 0)
-                                        {
-                                            var ownerKarma = 0;
-                                            var ownerSpentKarma = 0;
-                                            var ownerNuyen = 0;
-                                            CareerSlot slotForWallet = null;
-                                            if (_userStore != null)
-                                            {
-                                                try
-                                                {
-                                                    slotForWallet = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false) : null;
-                                                }
-                                                catch
-                                                {
-                                                    slotForWallet = null;
-                                                }
-                                            }
-                                            if (slotForWallet != null)
-                                            {
-                                                ownerKarma = slotForWallet.Karma;
-                                                ownerSpentKarma = slotForWallet.SpentKarma;
-                                                ownerNuyen = slotForWallet.Nuyen;
-                                            }
-
-                                            var resolved = new List<PlayerCharacterSnapshot>();
-                                            for (var i = 0; i < parsedSelections.Count; i++)
-                                            {
-                                                var selection = parsedSelections[i];
-
-                                                // Selection points into the collection we sent to the client.
-                                                if (selection.HenchmanId < 0 || selection.HenchmanId >= snapshots.Count)
-                                                {
-                                                    continue;
-                                                }
-
-                                                var src = snapshots[selection.HenchmanId];
-                                                var clone = CloneHenchSnapshotForMission(src, activeIdentityGuid, i, ownerKarma, ownerSpentKarma, ownerNuyen);
-                                                if (clone != null)
-                                                {
-                                                    resolved.Add(clone);
-                                                }
-                                            }
-
-                                            if (resolved.Count > 0)
-                                            {
-                                                selectedHenchmen = resolved.ToArray();
-                                            }
-
-                                            _logger.Log(new
-                                            {
-                                                ts = RequestLogger.UtcNowIso(),
-                                                type = "mission-start",
-                                                peer = peer,
-                                                mapName = mapName,
-                                                henchSelectionCount = parsedSelections.Count,
-                                                henchResolvedCount = selectedHenchmen != null ? selectedHenchmen.Length : 0,
-                                                henchCollectionCreationIndex = CachedHenchmanCollectionCreationIndex,
-                                                henchSelectionCreationIndex = parsedSelections != null && parsedSelections.Count > 0 ? (int?)parsedSelections[0].CollectionCreationIndex : null,
-                                            });
-                                        }
-                                    }
-
-                                    var compressedMatchConfiguration = (selectedHenchmen != null && selectedHenchmen.Length > 0)
-                                        ? _matchConfigurationGenerator.GetCompressedMatchConfiguration(mapName, activeIdentityGuid, activeCareerIndex, activeCharacterName, selectedHenchmen, gameClientEntityId)
-                                        : _matchConfigurationGenerator.GetCompressedMatchConfiguration(mapName, activeIdentityGuid, activeCareerIndex, activeCharacterName, gameClientEntityId);
-                                    if (_userStore != null)
-                                    {
-                                        try
-                                        {
-                                            var activeSlot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false) : null;
-                                            if (activeSlot != null)
-                                            {
-                                                if (selectedHenchmen != null && selectedHenchmen.Length > 0)
-                                                {
-                                                    compressedMatchConfiguration = _matchConfigurationGenerator.GetCompressedMatchConfiguration(mapName, activeIdentityGuid, activeCareerIndex, activeSlot, selectedHenchmen, gameClientEntityId);
-                                                }
-                                                else
-                                                {
-                                                    compressedMatchConfiguration = _matchConfigurationGenerator.GetCompressedMatchConfiguration(mapName, activeIdentityGuid, activeCareerIndex, activeSlot, null, gameClientEntityId);
-                                                }
-                                            }
-                                        }
-                                        catch
-                                        {
-                                        }
-                                    }
-
-                                    // Create / reset the authoritative simulation for this mission.
-                                    // This uses StaticDataLoader.CreateForClient against the extracted JSON tree under LocalServiceRoot/static-data.
                                     try
                                     {
-                                        var storyLineForLoot = "Main Campaign";
-                                        var chapterForLoot = 0;
-                                        if (_userStore != null)
-                                        {
-                                            try
-                                            {
-                                                var slotForLoot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false) : null;
-                                                if (slotForLoot != null)
-                                                {
-                                                    chapterForLoot = slotForLoot.MainCampaignCurrentChapter;
-                                                }
-                                            }
-                                            catch
-                                            {
-                                            }
-                                        }
-
-                                        simulationSession = ServerSimulationSession.Create(
-                                            _logger,
-                                            peer,
-                                            _options.StaticDataDir,
-                                            _options.StreamingAssetsDir,
-                                            mapName,
-                                            compressedMatchConfiguration,
-                                            seed0,
-                                            seed1,
-                                            seed2,
-                                            seed3,
-                                            storyLineForLoot,
-                                            chapterForLoot,
-                                            _options != null && _options.EnableAiLogic);
+                                        simulationSession = CreateSoloMissionSimulation(peer, mapName, activeIdentityHash, activeCareerIndex, compressedMatchConfiguration, seed0, seed1, seed2, seed3);
 
                                         if (simulationSession != null)
                                         {
-                                            MissionRuntimeRegistry.MarkSoloMissionStarted(peer);
+                                            RegisterSoloMissionSession(peer, simulationSession);
                                         }
                                     }
                                     catch (Exception ex)
@@ -7403,921 +3082,45 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         });
                                     }
 
-                                    var startMissionAcceptedPayload = Concat(
-                                        BitConverter.GetBytes(1L),
-                                        BitConverter.GetBytes(seed0),
-                                        BitConverter.GetBytes(seed1),
-                                        BitConverter.GetBytes(seed2),
-                                        BitConverter.GetBytes(seed3),
-                                        BuildUtf16StringPayload(compressedMatchConfiguration),
-                                        BitConverter.GetBytes((ulong)gameworldEntityId),
-                                        BitConverter.GetBytes((ulong)missionInstanceEntityId),
-                                        BitConverter.GetBytes((ulong)missionCommandEntityId));
-
-                                    var startMissionAcceptedCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 23, startMissionAcceptedPayload), requestMsgNoBase + 7);
-                                    SendRawFrame(stream, peer, PrefixLength(startMissionAcceptedCore), "sent MetaGameplayCommunicationObject StartMissionAccepted (map=" + mapName + ")");
-
-                                    SleepWithStop(stopEvent, 6000);
-                                    var startMissionForClientsCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, missionInstanceEntityId, 0, new byte[0]), requestMsgNoBase + 8);
-                                    SendRawFrame(stream, peer, PrefixLength(startMissionForClientsCore), "sent MissionInstanceCommunicationObject StartMissionForClients");
+                                    SendMissionStartAccepted(
+                                        stream,
+                                        peer,
+                                        requestMsgNoBase,
+                                        seed0,
+                                        seed1,
+                                        seed2,
+                                        seed3,
+                                        compressedMatchConfiguration,
+                                        gameworldEntityId,
+                                        missionInstanceEntityId,
+                                        missionCommandEntityId,
+                                        "sent MetaGameplayCommunicationObject StartMissionAccepted (map=" + mapName + ")");
                                 }
                             }
 
                             var isMissionCommandCall = shared.Value.ApMsgId == 1 && shared.Value.EntityId == missionCommandEntityId;
                             if (isMissionCommandCall)
                             {
-                                object missionLog = null;
-                                byte[] followPathCore = null;
-                                byte[] activateCore = null;
-
-                                int? followPathAgentId = null;
-                                int? followPathTargetX = null;
-                                int? followPathTargetY = null;
-                                int? activateSkillId = null;
-                                int? activateAgentId = null;
-
-                                var responseMsgNoBase = direct.Value.MsgNo + 1000;
-                                var data = shared.Value.Data;
-
-                                if (shared.Value.FieldId == 0)
-                                {
-                                    ushort refType;
-                                    ulong refId;
-                                    int offset;
-                                    if (TryReadGameClientRef(data, 0, out refType, out refId, out offset))
-                                    {
-                                        missionLog = new
-                                        {
-                                            ts = RequestLogger.UtcNowIso(),
-                                            type = "aplay-mission-command",
-                                            peer = peer,
-                                            field = "MissionReady",
-                                            gameClientRefType = refType,
-                                            gameClientRefId = refId,
-                                        };
-                                    }
-                                }
-
-                                // MissionCommand LeaveMission (client clicks through mission end / exits mission)
-                                if (shared.Value.FieldId == 1)
-                                {
-                                    ushort refType;
-                                    ulong refId;
-                                    int offset;
-                                    if (TryReadGameClientRef(data, 0, out refType, out refId, out offset))
-                                    {
-                                        missionLog = new
-                                        {
-                                            ts = RequestLogger.UtcNowIso(),
-                                            type = "aplay-mission-command",
-                                            peer = peer,
-                                            field = "LeaveMission",
-                                            gameClientRefType = refType,
-                                            gameClientRefId = refId,
-                                        };
-                                    }
-
-                                    // Participant id is the local player's PlayerID, which maps to the GameClientConnection entity id.
-                                    var participantId = gameClientEntityId;
-
-                                    // Distinguish leaving after a real mission end (Victory/Defeat flow) from leaving mid-mission.
-                                    // If the sim is still running, treat LeaveMission as an abort/fail: do not grant completion credit
-                                    // and do not apply Victory story rewards.
-                                    var leavingMidMission = false;
-                                    if (simulationSession != null)
-                                    {
-                                        try
-                                        {
-                                            leavingMidMission = simulationSession.IsMissionStarted && !simulationSession.IsMissionStopped;
-                                        }
-                                        catch
-                                        {
-                                            leavingMidMission = false;
-                                        }
-                                    }
-
-                                    // Determine outcome (Abort/Victory/Defeat). Victory/Defeat are only meaningful once the mission ended.
-                                    var missionOutcome = leavingMidMission ? "Abort" : "Victory";
-                                    if (!leavingMidMission && simulationSession != null)
-                                    {
-                                        try
-                                        {
-                                            string simOutcome;
-                                            if (simulationSession.TryGetMissionOutcomeForPlayer(participantId, out simOutcome) && !IsNullOrWhiteSpace(simOutcome))
-                                            {
-                                                missionOutcome = simOutcome;
-                                            }
-                                            else
-                                            {
-                                                // If the mission stopped without an outcome being tracked, treat it as a failure.
-                                                if (simulationSession.IsMissionStopped)
-                                                {
-                                                    missionOutcome = "Defeat";
-                                                }
-                                            }
-                                        }
-                                        catch
-                                        {
-                                            // keep default
-                                        }
-                                    }
-
-                                    var isVictory = string.Equals(missionOutcome, "Victory", StringComparison.OrdinalIgnoreCase);
-
-                                    // Determine the mission we are leaving.
-                                    var completedMapName = !IsNullOrWhiteSpace(currentMissionMapName) ? currentMissionMapName : "1_010_Prologue";
-                                    var wasAlreadyCompleted = completedStoryMissions.Contains(completedMapName);
-
-                                    // Only mark completed if we are leaving after a real mission end.
-                                    // If leaving mid-mission, keep it replayable and do NOT give completion credit.
-                                    if (isVictory)
-                                    {
-                                        // Mark the just-finished mission completed so the client doesn't auto-start it again.
-                                        // (The prologue is a DirectStart mission and will otherwise immediately restart on hub load.)
-                                        completedStoryMissions.Add(completedMapName);
-                                    }
-
-                                    // Persist mission completion/abort for this career so it survives restarts.
-                                    if (_userStore != null)
-                                    {
-                                        try
-                                        {
-                                            var progressSlot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false) : null;
-                                            if (progressSlot != null)
-                                            {
-                                                if (progressSlot.MainCampaignMissionStates == null)
-                                                {
-                                                    progressSlot.MainCampaignMissionStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                                                }
-
-                                                if (!isVictory)
-                                                {
-                                                    // Abort/defeat: keep the mission replayable and do not advance.
-                                                    progressSlot.MainCampaignMissionStates[completedMapName] = StoryMissionstate.ReadyToPlay.ToString();
-                                                }
-                                                else
-                                                {
-                                                    // Retail-like: after a mission finishes, it becomes ReadyToReceiveRewards.
-                                                    // The player (in hub) then redeems rewards, which moves it to Completed.
-                                                    progressSlot.MainCampaignMissionStates[completedMapName] = StoryMissionstate.ReadyToReceiveRewards.ToString();
-                                                }
-                                                _userStore.UpsertCareer(activeIdentityHash, progressSlot);
-
-                                                if (isVictory)
-                                                {
-                                                    // If this completes the chapter, advance now (retail server pushes ChapterChange).
-                                                    // During mission shutdown we only want to advance state + refresh cached hub payload.
-                                                    // Sending unsolicited hub instances here can arrive before Meta UI is recreated,
-                                                    // then get dropped client-side and also get duplicate-suppressed when the client
-                                                    // later requests the hub instance.
-                                                    TryAdvanceMainCampaignIfEligible(activeIdentityHash, progressSlot, peer, stream, "Main Campaign", responseMsgNoBase + 9, ref cachedHubStatePayload, cachedCreationInfoPayload, false);
-                                                }
-                                            }
-                                        }
-                                        catch
-                                        {
-                                        }
-                                    }
-
-                                    // Apply post-mission rewards. The victory popup uses mission definitions client-side,
-                                    // but the spendable karma balance comes from the PlayerCharacterSnapshot we send.
-                                    // The client does not send the reward amount; we resolve it from extracted static-data.
-                                    int karmaReward = 0;
-                                    int nuyenReward = 0;
-
-                                    // Loot pickup during the mission (loot boxes, interaction loot) is processed inside the simulation.
-                                    // The client build ships with a no-op DefaultMissionLootController, so our sim installs a LocalMissionLootController
-                                    // and queues grants here for persistence.
-                                    int lootNuyenReward = 0;
-                                    string[] lootItemIds = new string[0];
-                                    string[] lootTables = new string[0];
-                                    var lootItemChanges = new List<ItemChange>();
-                                    if (simulationSession != null)
-                                    {
-                                        try
-                                        {
-                                            Shadowrun.LocalService.Core.Simulation.LocalMissionLootController.LootGrant[] grants = null;
-                                            var coopLootAppliedAlready = false;
-
-                                            // Coop missions: drain once per shared sim, then apply snapshot to each participant once.
-                                            if (!IsNullOrWhiteSpace(currentCoopGroupName))
-                                            {
-                                                CoopMissionSessionState coopSession = null;
-                                                lock (_coopMissionLock)
-                                                {
-                                                    _coopMissionSessions.TryGetValue(currentCoopGroupName, out coopSession);
-                                                }
-
-                                                if (coopSession != null)
-                                                {
-                                                    lock (coopSession.SyncRoot)
-                                                    {
-                                                        if (coopSession.LootAppliedToParticipants == null)
-                                                        {
-                                                            coopSession.LootAppliedToParticipants = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-                                                        }
-
-                                                        if (coopSession.LootSnapshot == null)
-                                                        {
-                                                            coopSession.LootSnapshot = simulationSession.DrainPendingLoot();
-                                                        }
-
-                                                        // Key by identity+career; two humans can be different indices.
-                                                        var participantKey = (activeIdentityHash ?? string.Empty) + ":" + activeCareerIndex.ToString(CultureInfo.InvariantCulture);
-                                                        bool already;
-                                                        if (coopSession.LootAppliedToParticipants.TryGetValue(participantKey, out already) && already)
-                                                        {
-                                                            coopLootAppliedAlready = true;
-                                                            grants = new Shadowrun.LocalService.Core.Simulation.LocalMissionLootController.LootGrant[0];
-                                                        }
-                                                        else
-                                                        {
-                                                            coopSession.LootAppliedToParticipants[participantKey] = true;
-                                                            grants = coopSession.LootSnapshot ?? new Shadowrun.LocalService.Core.Simulation.LocalMissionLootController.LootGrant[0];
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            if (grants == null)
-                                            {
-                                                // Single-player: each connection owns its sim; drain directly.
-                                                grants = simulationSession.DrainPendingLoot();
-                                            }
-
-                                            if (grants != null && grants.Length > 0)
-                                            {
-                                                var items = new List<string>();
-                                                var tables = new List<string>();
-                                                for (var i = 0; i < grants.Length; i++)
-                                                {
-                                                    var g = grants[i];
-                                                    if (g == null)
-                                                    {
-                                                        continue;
-                                                    }
-
-                                                    if (!IsNullOrWhiteSpace(g.LootTable))
-                                                    {
-                                                        tables.Add(g.LootTable);
-                                                    }
-
-                                                    if (!IsNullOrWhiteSpace(g.ItemId))
-                                                    {
-                                                        items.Add(g.ItemId);
-
-                                                        // Persist loot as actual inventory items; the client expects ItemChanges in GotMissionReward.
-                                                        // Preserve Quality/Flavour from the sim loot roll (used for augmented items).
-                                                        if (g.Delta != 0)
-                                                        {
-                                                            try
-                                                            {
-                                                                lootItemChanges.Add(new ItemChange(g.ItemId, g.Delta)
-                                                                {
-                                                                    Quality = g.Quality,
-                                                                    Flavour = g.Flavour,
-                                                                });
-                                                            }
-                                                            catch
-                                                            {
-                                                            }
-                                                        }
-                                                    }
-
-                                                    if (g.Nuyen > 0)
-                                                    {
-                                                        try
-                                                        {
-                                                            checked
-                                                            {
-                                                                lootNuyenReward = lootNuyenReward + g.Nuyen;
-                                                            }
-                                                        }
-                                                        catch
-                                                        {
-                                                            lootNuyenReward = int.MaxValue;
-                                                        }
-                                                    }
-                                                }
-
-                                                lootItemIds = items.ToArray();
-                                                lootTables = tables.ToArray();
-
-                                                _logger.Log(new
-                                                {
-                                                    ts = RequestLogger.UtcNowIso(),
-                                                    type = "mission-loot-drain",
-                                                    peer = peer,
-                                                    mapName = completedMapName,
-                                                    coopGroupName = currentCoopGroupName,
-                                                    coopAppliedAlready = coopLootAppliedAlready,
-                                                    grants = grants.Length,
-                                                    nuyenFromLoot = lootNuyenReward,
-                                                    lootTables = lootTables,
-                                                    itemIds = lootItemIds,
-                                                    itemChanges = lootItemChanges != null ? lootItemChanges.Count : 0,
-                                                });
-                                            }
-                                        }
-                                        catch
-                                        {
-                                        }
-                                    }
-
-                                    if (!isVictory)
-                                    {
-                                        _logger.Log(new
-                                        {
-                                            ts = RequestLogger.UtcNowIso(),
-                                            type = "mission-exit",
-                                            peer = peer,
-                                            mapName = completedMapName,
-                                            outcome = missionOutcome,
-                                            note = leavingMidMission ? "LeaveMission mid-mission; skipping completion credit/rewards" : "LeaveMission after mission end; non-victory outcome",
-                                        });
-                                    }
-                                    
-                                    int found;
-                                    if (!leavingMidMission && TryResolveMissionCurrencyReward(completedMapName, missionOutcome, "Karma", out found) && found > 0)
-                                    {
-                                        karmaReward = found;
-                                    }
-
-                                    if (!leavingMidMission && TryResolveMissionCurrencyReward(completedMapName, missionOutcome, "Nuyen", out found) && found > 0)
-                                    {
-                                        nuyenReward = found;
-                                    }
-
-                                    // Note: we intentionally do NOT convert loot items to nuyen here.
-                                    // Retail treats loot as items (ItemChanges); players can sell later.
-                                    if (lootNuyenReward > 0)
-                                    {
-                                        _logger.Log(new
-                                        {
-                                            ts = RequestLogger.UtcNowIso(),
-                                            type = "mission-loot",
-                                            peer = peer,
-                                            mapName = completedMapName,
-                                            nuyenValueIfAutoSold = lootNuyenReward,
-                                            lootTables = lootTables,
-                                            itemIds = lootItemIds,
-                                        });
-                                    }
-
-                                    CareerSlot rewardSlot = null;
-                                    if (_userStore != null)
-                                    {
-                                        rewardSlot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false) : null;
-
-                                        var appliedLootItems = 0;
-                                        if (rewardSlot != null && lootItemChanges != null && lootItemChanges.Count > 0)
-                                        {
-                                            if (rewardSlot.ItemPossessions == null)
-                                            {
-                                                rewardSlot.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                                            }
-
-                                            for (var i = 0; i < lootItemChanges.Count; i++)
-                                            {
-                                                var c = lootItemChanges[i];
-                                                if (c == null || IsNullOrWhiteSpace(c.ItemDefintionId) || c.Delta == 0)
-                                                {
-                                                    continue;
-                                                }
-
-                                                var packedKey = c.ItemDefintionId + "|" + c.Quality.ToString(CultureInfo.InvariantCulture) + "|" + c.Flavour.ToString(CultureInfo.InvariantCulture);
-                                                int existing;
-                                                if (!rewardSlot.ItemPossessions.TryGetValue(packedKey, out existing))
-                                                {
-                                                    existing = 0;
-                                                }
-
-                                                var next = existing + c.Delta;
-                                                if (next <= 0)
-                                                {
-                                                    if (rewardSlot.ItemPossessions.ContainsKey(packedKey))
-                                                    {
-                                                        rewardSlot.ItemPossessions.Remove(packedKey);
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    rewardSlot.ItemPossessions[packedKey] = next;
-                                                }
-                                                appliedLootItems++;
-                                            }
-                                        }
-
-                                        if (rewardSlot != null && (karmaReward > 0 || nuyenReward > 0 || appliedLootItems > 0))
-                                        {
-                                            if (karmaReward > 0)
-                                            {
-                                                try
-                                                {
-                                                    checked
-                                                    {
-                                                        rewardSlot.Karma = rewardSlot.Karma + karmaReward;
-                                                    }
-                                                }
-                                                catch
-                                                {
-                                                    // If overflow ever happens, just clamp to int.MaxValue.
-                                                    rewardSlot.Karma = int.MaxValue;
-                                                }
-                                            }
-
-                                            if (nuyenReward > 0)
-                                            {
-                                                try
-                                                {
-                                                    checked
-                                                    {
-                                                        rewardSlot.Nuyen = rewardSlot.Nuyen + nuyenReward;
-                                                    }
-                                                }
-                                                catch
-                                                {
-                                                    // If overflow ever happens, just clamp to int.MaxValue.
-                                                    rewardSlot.Nuyen = int.MaxValue;
-                                                }
-                                            }
-
-                                            if (!IsNullOrWhiteSpace(activeIdentityHash))
-                                            {
-                                                _userStore.UpsertCareer(activeIdentityHash, rewardSlot);
-                                            }
-
-                                            _logger.Log(new
-                                            {
-                                                ts = RequestLogger.UtcNowIso(),
-                                                type = "mission-reward",
-                                                peer = peer,
-                                                mapName = completedMapName,
-                                                outcome = missionOutcome,
-                                                karmaDelta = karmaReward,
-                                                karmaTotal = rewardSlot.Karma,
-                                                nuyenDelta = nuyenReward,
-                                                nuyenTotal = rewardSlot.Nuyen,
-                                                lootItemChanges = lootItemChanges != null ? lootItemChanges.Count : 0,
-                                                lootItemsApplied = appliedLootItems,
-                                                careerIndex = activeCareerIndex,
-                                            });
-
-                                            // Tell the client what it earned so InventoryController applies ItemChanges.
-                                            try
-                                            {
-                                                var earnedCurrencies = new List<object>();
-                                                if (karmaReward != 0)
-                                                {
-                                                    earnedCurrencies.Add(new Dictionary<string, object>
-                                                    {
-                                                        { "CurrencyId", "Karma" },
-                                                        { "EarnedValue", karmaReward },
-                                                    });
-                                                }
-                                                if (nuyenReward != 0)
-                                                {
-                                                    earnedCurrencies.Add(new Dictionary<string, object>
-                                                    {
-                                                        { "CurrencyId", "Nuyen" },
-                                                        { "EarnedValue", nuyenReward },
-                                                    });
-                                                }
-
-                                                var itemChangesPayload = new object[0];
-                                                if (lootItemChanges != null && lootItemChanges.Count > 0)
-                                                {
-                                                    var list = new List<object>();
-                                                    for (var i = 0; i < lootItemChanges.Count; i++)
-                                                    {
-                                                        var c = lootItemChanges[i];
-                                                        if (c == null || IsNullOrWhiteSpace(c.ItemDefintionId) || c.Delta == 0)
-                                                        {
-                                                            continue;
-                                                        }
-                                                        list.Add(new Dictionary<string, object>
-                                                        {
-                                                            { "ItemDefintionId", c.ItemDefintionId },
-                                                            { "Delta", c.Delta },
-                                                            { "Quality", c.Quality },
-                                                            { "Flavour", c.Flavour },
-                                                        });
-                                                    }
-                                                    itemChangesPayload = list.ToArray();
-                                                }
-
-                                                var missionRewardJson = Json.Serialize(new Dictionary<string, object>
-                                                {
-                                                    { "GrantedUnlocks", new string[0] },
-                                                    { "EarnedCurrencies", earnedCurrencies.ToArray() },
-                                                    { "ItemChanges", itemChangesPayload },
-                                                });
-
-                                                var missionRewardPayload = BuildUtf16StringPayload(missionRewardJson);
-                                                var missionRewardCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 35, missionRewardPayload), responseMsgNoBase + 6);
-                                                SendRawFrame(stream, peer, PrefixLength(missionRewardCore), "sent MetaGameplayCommunicationObject GotMissionReward after LeaveMission");
-                                            }
-                                            catch
-                                            {
-                                            }
-                                        }
-                                    }
-
-                                    // Intentionally skip StoryprogressChanged here.
-                                    // In the offline/local flow the client can have a null/tearing-down metagameplay viewmodel during mission exit,
-                                    // and StorylineController.ApplyMissionStateChange can throw (seen in output_log.txt) which destabilizes the transition.
-                                    // We already persist mission states and re-send a full metagameplay snapshot after LeaveMission.
-
-                                    // After mission exit, send an updated metagameplay snapshot so hub UI reflects rewards.
-                                    // Do NOT push hub instances here; the client requests its hub instance (RequestStoryHubFor
-                                    // or RequestCurrentStorylineHubMessage) once the Metagameplay UI exists.
-                                    // Unsolicited pushes can arrive too early, be discarded, and then get duplicate-suppressed
-                                    // when the client makes the real request.
-                                    if (_userStore != null)
-                                    {
-                                        try
-                                        {
-                                            var slotForSnapshot = rewardSlot ?? (!IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false) : null);
-                                            var zippedCareerInfo = slotForSnapshot != null
-                                                ? _careerInfoGenerator.GetZippedCareerInfo(activeIdentityGuid, activeCareerIndex, slotForSnapshot)
-                                                : _careerInfoGenerator.GetZippedCareerInfo(activeIdentityGuid, activeCareerIndex, activeCharacterName, false);
-
-                                            var metaSnapshotPayload = BuildUtf16StringPayload(zippedCareerInfo);
-                                            var metaSnapshotCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 26, metaSnapshotPayload), responseMsgNoBase + 10);
-                                            SendRawFrame(stream, peer, PrefixLength(metaSnapshotCore), "sent MetaGameplayCommunicationObject SendMetagameplayDataSnapshotToClient after LeaveMission (reward sync)");
-
-                                            // Refresh cached hub push payload to embed the updated PlayerCharacterSnapshot.
-                                            if (slotForSnapshot != null)
-                                            {
-                                                var hubId = !IsNullOrWhiteSpace(slotForSnapshot.HubId) ? slotForSnapshot.HubId : DefaultHubId;
-                                                var characterIdentifier = !IsNullOrWhiteSpace(slotForSnapshot.CharacterIdentifier)
-                                                    ? slotForSnapshot.CharacterIdentifier
-                                                    : (activeIdentityGuid.ToString() + ":" + activeCareerIndex.ToString());
-                                                cachedHubStatePayload = BuildMetaHubPushPayload(4, SerializeHubStateOrFallback(hubId, characterIdentifier, slotForSnapshot.CharacterName, slotForSnapshot));
-                                            }
-                                        }
-                                        catch
-                                        {
-                                        }
-                                    }
-
-                                    var leavePayload = BitConverter.GetBytes(participantId);
-                                    var leaveCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameworldEntityId, 3, leavePayload), responseMsgNoBase + 13);
-                                    SendRawFrame(stream, peer, PrefixLength(leaveCore), "sent GameworldCommunicationObject LeaveMission (participantId=" + participantId + ")");
-
-                                    // Also emit GameworldCommunicationObject Stop to mirror the normal shutdown sequence.
-                                    var stopCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameworldEntityId, 0, new byte[0]), responseMsgNoBase + 14);
-                                    SendRawFrame(stream, peer, PrefixLength(stopCore), "sent GameworldCommunicationObject Stop after LeaveMission");
-
-                                    if (simulationSession != null)
-                                    {
-                                        // For coop missions, simulation is shared across peers. Don't stop it on the
-                                        // first client to leave; stop it only when the last participant unregisters.
-                                        if (!IsNullOrWhiteSpace(currentCoopGroupName))
-                                        {
-                                            UnregisterCoopMissionParticipant(currentCoopGroupName, peer);
-                                            currentCoopGroupName = null;
-                                            simulationSession = null;
-                                            simulationSessionSync = null;
-                                        }
-                                        else
-                                        {
-                                            try
-                                            {
-                                                simulationSession.Stop();
-                                            }
-                                            catch
-                                            {
-                                            }
-                                            MissionRuntimeRegistry.MarkSoloMissionEnded(peer);
-                                            simulationSession = null;
-                                            simulationSessionSync = null;
-                                        }
-                                    }
-                                }
-
-                                if (shared.Value.FieldId == 2)
-                                {
-                                    ushort refType;
-                                    ulong refId;
-                                    int offset;
-                                    if (TryReadGameClientRef(data, 0, out refType, out refId, out offset))
-                                    {
-                                        int x, y, z;
-                                        if (TryReadInt32LE(data, ref offset, out x)
-                                            && TryReadInt32LE(data, ref offset, out y)
-                                            && TryReadInt32LE(data, ref offset, out z))
-                                        {
-                                            // MissionCommand FollowPath is sent as three int32 values.
-                                            // The GameworldCommunicationObject callback is:
-                                            //   onFollowPath(int agentId, int targetX, int targetY)
-                                            followPathAgentId = x;
-                                            followPathTargetX = y;
-                                            followPathTargetY = z;
-                                            var followPathPayload = Concat(BitConverter.GetBytes(x), BitConverter.GetBytes(y), BitConverter.GetBytes(z));
-                                            followPathCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameworldEntityId, 1, followPathPayload), responseMsgNoBase + 1);
-                                        }
-                                    }
-                                }
-
-                                if (shared.Value.FieldId == 3)
-                                {
-                                    ushort refType;
-                                    ulong refId;
-                                    int offset;
-                                    if (TryReadGameClientRef(data, 0, out refType, out refId, out offset))
-                                    {
-                                        int a, b, c, d, e, f;
-                                        if (TryReadInt32LE(data, ref offset, out a)
-                                            && TryReadInt32LE(data, ref offset, out b)
-                                            && TryReadInt32LE(data, ref offset, out c)
-                                            && TryReadInt32LE(data, ref offset, out d)
-                                            && TryReadInt32LE(data, ref offset, out e)
-                                            && TryReadInt32LE(data, ref offset, out f))
-                                        {
-                                            // MissionCommand ActivateActiveSkill is sent as six int32 values.
-                                            // The GameworldCommunicationObject callback is:
-                                            //   onActivateActiveSkill(int weaponIndex, int skillIndex, int skillId, int agentId, int targetX, int targetY, SeedPackage seeds)
-                                            activateSkillId = c;
-                                            activateAgentId = d;
-
-                                            // Seed package for deterministic simulation (server authoritative).
-                                            var seed0 = 0x11111111u;
-                                            var seed1 = 0x22222222u;
-                                            var seed2 = 0x33333333u;
-                                            var seed3 = 0x44444444u;
-                                            var seedPkg = new Cliffhanger.SRO.ServerClientCommons.Gameworld.Communication.SeedPackage(seed0, seed1, seed2, seed3);
-                                            if (simulationSession != null)
-                                            {
-                                                try
-                                                {
-                                                    if (simulationSessionSync != null)
-                                                    {
-                                                        lock (simulationSessionSync)
-                                                        {
-                                                            seedPkg = simulationSession.CreateSeedPackage();
-                                                            simulationSession.ExecuteActivateSkill(a, b, c, d, e, f, seedPkg);
-                                                        }
-                                                    }
-                                                    else
-                                                    {
-                                                        seedPkg = simulationSession.CreateSeedPackage();
-                                                        simulationSession.ExecuteActivateSkill(a, b, c, d, e, f, seedPkg);
-                                                    }
-                                                }
-                                                catch (Exception ex)
-                                                {
-                                                    _logger.Log(new
-                                                    {
-                                                        ts = RequestLogger.UtcNowIso(),
-                                                        type = "sim",
-                                                        peer = peer,
-                                                        status = "execute-failed",
-                                                        cmd = "ActivateActiveSkill",
-                                                        skillId = c,
-                                                        agentId = d,
-                                                        message = ex.Message,
-                                                    });
-                                                }
-
-                                                seed0 = seedPkg.Seed0;
-                                                seed1 = seedPkg.Seed1;
-                                                seed2 = seedPkg.Seed2;
-                                                seed3 = seedPkg.Seed3;
-                                            }
-
-                                            var activatePayload = Concat(
-                                                BitConverter.GetBytes(a),
-                                                BitConverter.GetBytes(b),
-                                                BitConverter.GetBytes(c),
-                                                BitConverter.GetBytes(d),
-                                                BitConverter.GetBytes(e),
-                                                BitConverter.GetBytes(f),
-                                                BitConverter.GetBytes(seed0),
-                                                BitConverter.GetBytes(seed1),
-                                                BitConverter.GetBytes(seed2),
-                                                BitConverter.GetBytes(seed3));
-
-                                            activateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameworldEntityId, 2, activatePayload), responseMsgNoBase + 2);
-                                        }
-                                    }
-                                }
-
-                                // Update observed human agent IDs and detect when player regained control.
-                                // We treat any non-EndTeamTurn action/move as "player input".
-                                // (Legacy note) We used to keep an observed agentId set for AI-turn probe spam.
-                                // That approach is removed; keep per-agent action counters only.
-
-                                if (missionLog != null)
-                                {
-                                    _logger.Log(missionLog);
-                                }
-                                if (followPathCore != null)
-                                {
-                                    SendRawFrame(stream, peer, PrefixLength(followPathCore), "echoed GameworldCommunicationObject FollowPath from MissionCommand");
-                                    BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(followPathCore), "echoed GameworldCommunicationObject FollowPath from MissionCommand (coop bcast)");
-
-                                    if (simulationSession != null && followPathAgentId.HasValue && followPathTargetX.HasValue && followPathTargetY.HasValue)
-                                    {
-                                        IList<ServerSimulationSession.AiTurnAction> aiActions = null;
-                                        try
-                                        {
-                                            if (simulationSessionSync != null)
-                                            {
-                                                lock (simulationSessionSync)
-                                                {
-                                                    simulationSession.ExecuteFollowPath(followPathAgentId.Value, followPathTargetX.Value, followPathTargetY.Value);
-                                                    aiActions = simulationSession.SkipAiTurnsIfNeeded();
-                                                }
-                                            }
-                                            else
-                                            {
-                                                simulationSession.ExecuteFollowPath(followPathAgentId.Value, followPathTargetX.Value, followPathTargetY.Value);
-                                                aiActions = simulationSession.SkipAiTurnsIfNeeded();
-                                            }
-                                        }
-                                        catch (Exception ex)
-                                        {
-                                            _logger.Log(new
-                                            {
-                                                ts = RequestLogger.UtcNowIso(),
-                                                type = "sim",
-                                                peer = peer,
-                                                status = "execute-failed",
-                                                cmd = "FollowPath",
-                                                agentId = followPathAgentId.Value,
-                                                targetX = followPathTargetX.Value,
-                                                targetY = followPathTargetY.Value,
-                                                message = ex.Message,
-                                            });
-                                        }
-
-                                        // Player often ends their last action with movement. If the authoritative sim
-                                        // moved to an AI team, immediately skip AI turns here too.
-                                        try
-                                        {
-                                            if (aiActions != null && aiActions.Count > 0)
-                                            {
-                                                // Use sequential message numbers immediately after the echoed mission command.
-                                                // Some clients appear to ignore or de-dupe frames with large msgNo jumps.
-                                                var baseMsgNo = responseMsgNoBase + 3;
-                                                var idx = 0;
-                                                foreach (var aiAction in aiActions)
-                                                {
-                                                    if (aiAction.Kind == ServerSimulationSession.AiTurnActionKind.FollowPath)
-                                                    {
-                                                        var payload = Concat(
-                                                            BitConverter.GetBytes(aiAction.AgentId),
-                                                            BitConverter.GetBytes(aiAction.TargetX),
-                                                            BitConverter.GetBytes(aiAction.TargetY));
-
-                                                        var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameworldEntityId, 1, payload), baseMsgNo + (ulong)idx);
-                                                        SendRawFrame(stream, peer, PrefixLength(core), "sim: AI FollowPath (agentId=" + aiAction.AgentId + ", x=" + aiAction.TargetX + ", y=" + aiAction.TargetY + ")");
-                                                        BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(core), "sim: AI FollowPath (coop bcast) (agentId=" + aiAction.AgentId + ")");
-                                                    }
-                                                    else
-                                                    {
-                                                        var seed0 = aiAction.Seeds.Seed0;
-                                                        var seed1 = aiAction.Seeds.Seed1;
-                                                        var seed2 = aiAction.Seeds.Seed2;
-                                                        var seed3 = aiAction.Seeds.Seed3;
-
-                                                        var payload = Concat(
-                                                            BitConverter.GetBytes(aiAction.WeaponIndex),
-                                                            BitConverter.GetBytes(aiAction.SkillIndex),
-                                                            BitConverter.GetBytes(aiAction.SkillId),
-                                                            BitConverter.GetBytes(aiAction.AgentId),
-                                                            BitConverter.GetBytes(aiAction.TargetX),
-                                                            BitConverter.GetBytes(aiAction.TargetY),
-                                                            BitConverter.GetBytes(seed0),
-                                                            BitConverter.GetBytes(seed1),
-                                                            BitConverter.GetBytes(seed2),
-                                                            BitConverter.GetBytes(seed3));
-
-                                                        var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameworldEntityId, 2, payload), baseMsgNo + (ulong)idx);
-                                                        if (aiAction.SkillId == EndTeamTurnSkillId)
-                                                        {
-                                                            SendRawFrame(stream, peer, PrefixLength(core), "sim: auto-ended AI team turn (agentId=" + aiAction.AgentId + ")");
-                                                            BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(core), "sim: auto-ended AI team turn (coop bcast) (agentId=" + aiAction.AgentId + ")");
-                                                        }
-                                                        else
-                                                        {
-                                                            SendRawFrame(stream, peer, PrefixLength(core), "sim: AI ActivateActiveSkill (agentId=" + aiAction.AgentId + ", skillId=" + aiAction.SkillId + ")");
-                                                            BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(core), "sim: AI ActivateActiveSkill (coop bcast) (agentId=" + aiAction.AgentId + ", skillId=" + aiAction.SkillId + ")");
-                                                        }
-                                                    }
-                                                    idx++;
-                                                }
-                                            }
-                                        }
-                                        catch (Exception ex)
-                                        {
-                                            _logger.Log(new
-                                            {
-                                                ts = RequestLogger.UtcNowIso(),
-                                                type = "sim",
-                                                peer = peer,
-                                                status = "skip-ai-failed",
-                                                message = ex.Message,
-                                            });
-                                        }
-
-                                        // If this action granted loot (e.g., interaction skill), show the in-mission loot popup.
-                                        SendPendingLootPreviews(simulationSession, stream, peer, responseMsgNoBase + 900);
-                                    }
-                                }
-                                if (activateCore != null)
-                                {
-                                    SendRawFrame(stream, peer, PrefixLength(activateCore), "echoed GameworldCommunicationObject ActivateActiveSkill from MissionCommand");
-                                    BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(activateCore), "echoed GameworldCommunicationObject ActivateActiveSkill from MissionCommand (coop bcast)");
-
-                                    if (simulationSession != null)
-                                    {
-                                        // If the authoritative simulation moved to an AI team, immediately skip AI turns.
-                                        try
-                                        {
-                                            IList<ServerSimulationSession.AiTurnAction> aiActions;
-                                            if (simulationSessionSync != null)
-                                            {
-                                                lock (simulationSessionSync)
-                                                {
-                                                    aiActions = simulationSession.SkipAiTurnsIfNeeded();
-                                                }
-                                            }
-                                            else
-                                            {
-                                                aiActions = simulationSession.SkipAiTurnsIfNeeded();
-                                            }
-                                            if (aiActions != null && aiActions.Count > 0)
-                                            {
-                                                // Use sequential message numbers immediately after the echoed mission command.
-                                                // Some clients appear to ignore or de-dupe frames with large msgNo jumps.
-                                                var baseMsgNo = responseMsgNoBase + 3;
-                                                var idx = 0;
-                                                foreach (var aiAction in aiActions)
-                                                {
-                                                    if (aiAction.Kind == ServerSimulationSession.AiTurnActionKind.FollowPath)
-                                                    {
-                                                        var payload = Concat(
-                                                            BitConverter.GetBytes(aiAction.AgentId),
-                                                            BitConverter.GetBytes(aiAction.TargetX),
-                                                            BitConverter.GetBytes(aiAction.TargetY));
-
-                                                        var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameworldEntityId, 1, payload), baseMsgNo + (ulong)idx);
-                                                        SendRawFrame(stream, peer, PrefixLength(core), "sim: AI FollowPath (agentId=" + aiAction.AgentId + ", x=" + aiAction.TargetX + ", y=" + aiAction.TargetY + ")");
-                                                        BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(core), "sim: AI FollowPath (coop bcast) (agentId=" + aiAction.AgentId + ")");
-                                                    }
-                                                    else
-                                                    {
-                                                        var seed0 = aiAction.Seeds.Seed0;
-                                                        var seed1 = aiAction.Seeds.Seed1;
-                                                        var seed2 = aiAction.Seeds.Seed2;
-                                                        var seed3 = aiAction.Seeds.Seed3;
-
-                                                        var payload = Concat(
-                                                            BitConverter.GetBytes(aiAction.WeaponIndex),
-                                                            BitConverter.GetBytes(aiAction.SkillIndex),
-                                                            BitConverter.GetBytes(aiAction.SkillId),
-                                                            BitConverter.GetBytes(aiAction.AgentId),
-                                                            BitConverter.GetBytes(aiAction.TargetX),
-                                                            BitConverter.GetBytes(aiAction.TargetY),
-                                                            BitConverter.GetBytes(seed0),
-                                                            BitConverter.GetBytes(seed1),
-                                                            BitConverter.GetBytes(seed2),
-                                                            BitConverter.GetBytes(seed3));
-
-                                                        var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameworldEntityId, 2, payload), baseMsgNo + (ulong)idx);
-                                                        if (aiAction.SkillId == EndTeamTurnSkillId)
-                                                        {
-                                                            SendRawFrame(stream, peer, PrefixLength(core), "sim: auto-ended AI team turn (agentId=" + aiAction.AgentId + ")");
-                                                            BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(core), "sim: auto-ended AI team turn (coop bcast) (agentId=" + aiAction.AgentId + ")");
-                                                        }
-                                                        else
-                                                        {
-                                                            SendRawFrame(stream, peer, PrefixLength(core), "sim: AI ActivateActiveSkill (agentId=" + aiAction.AgentId + ", skillId=" + aiAction.SkillId + ")");
-                                                            BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(core), "sim: AI ActivateActiveSkill (coop bcast) (agentId=" + aiAction.AgentId + ", skillId=" + aiAction.SkillId + ")");
-                                                        }
-                                                    }
-                                                    idx++;
-                                                }
-                                            }
-                                        }
-                                        catch (Exception ex)
-                                        {
-                                            _logger.Log(new
-                                            {
-                                                ts = RequestLogger.UtcNowIso(),
-                                                type = "sim",
-                                                peer = peer,
-                                                status = "skip-ai-failed",
-                                                message = ex.Message,
-                                            });
-                                        }
-
-                                        // If this action granted loot, show the in-mission loot popup.
-                                        SendPendingLootPreviews(simulationSession, stream, peer, responseMsgNoBase + 950);
-                                    }
-                                }
+                                HandleMissionCommandCall(
+                                    stream,
+                                    peer,
+                                    shared.Value.FieldId,
+                                    shared.Value.Data,
+                                    direct.Value.MsgNo,
+                                    gameworldEntityId,
+                                    missionInstanceEntityId,
+                                    gameClientEntityId,
+                                    activeIdentityHash,
+                                    activeIdentityGuid,
+                                    activeCareerIndex,
+                                    activeCharacterName,
+                                    currentMissionMapName,
+                                    completedStoryMissions,
+                                    ref currentCoopGroupName,
+                                    ref simulationSession,
+                                    ref simulationSessionSync,
+                                    ref cachedHubStatePayload,
+                                    cachedCreationInfoPayload);
                             }
                         }
 
@@ -8328,11 +3131,21 @@ namespace Shadowrun.LocalService.Core.Protocols
                         {
                             if (simulationSession != null && IsNullOrWhiteSpace(currentCoopGroupName))
                             {
-                                MissionRuntimeRegistry.MarkSoloMissionEnded(peer);
+                                StopAndForgetSoloMission(peer, "socket-closed");
+                                simulationSession = null;
+                                simulationSessionSync = null;
                             }
 
                             cancelHubReadyFallback("socket-closed");
+                            cancelPostCreateWatchdog("socket-closed");
                             connectionClosed.Set();
+                            HubPresenceRegistry.Participant disconnectedParticipant;
+                            _hubPresenceRegistry.TryGetParticipantForPeer(peer, out disconnectedParticipant);
+                            if (currentHubInstance != null && disconnectedParticipant != null && !IsNullOrWhiteSpace(disconnectedParticipant.CharacterId))
+                            {
+                                _portedHubInstanceManager.RemoveCharacterFromHub(currentHubInstance, disconnectedParticipant.CharacterId);
+                                currentHubInstance = null;
+                            }
                             RemoveHubPresenceWithBroadcast(peer);
                             _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "aplay-conn", peer = peer, note = "socket closed" });
                             break;
@@ -8345,132 +3158,27 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                         UnregisterCoopMissionParticipant(currentCoopGroupName, peer);
                     }
-
-                    cancelHubReadyFallback("connection-teardown");
-                    RemoveHubPresenceWithBroadcast(peer);
-                    UnregisterHubPeerStream(peer, stream);
-                }
-            }
-        }
-
-        private void RegisterCoopMissionParticipant(string coopGroupName, string peer, NetworkStream stream)
-        {
-            if (IsNullOrWhiteSpace(coopGroupName) || stream == null)
-            {
-                return;
-            }
-
-            lock (_coopMissionLock)
-            {
-                List<CoopMissionParticipant> list;
-                if (!_coopMissionParticipants.TryGetValue(coopGroupName, out list) || list == null)
-                {
-                    list = new List<CoopMissionParticipant>();
-                    _coopMissionParticipants[coopGroupName] = list;
-                }
-
-                // Remove existing entries for this peer (reconnects).
-                for (var i = list.Count - 1; i >= 0; i--)
-                {
-                    if (list[i] == null || string.Equals(list[i].Peer, peer, StringComparison.OrdinalIgnoreCase))
+                    else
                     {
-                        list.RemoveAt(i);
+                        StopAndForgetSoloMission(peer, "connection-teardown");
                     }
-                }
 
-                list.Add(new CoopMissionParticipant(peer, stream));
-            }
-        }
-
-        private void UnregisterCoopMissionParticipant(string coopGroupName, string peer)
-        {
-            if (IsNullOrWhiteSpace(coopGroupName) || IsNullOrWhiteSpace(peer))
-            {
-                return;
-            }
-
-            lock (_coopMissionLock)
-            {
-                List<CoopMissionParticipant> list;
-                if (!_coopMissionParticipants.TryGetValue(coopGroupName, out list) || list == null)
-                {
-                    return;
-                }
-
-                for (var i = list.Count - 1; i >= 0; i--)
-                {
-                    if (list[i] == null || string.Equals(list[i].Peer, peer, StringComparison.OrdinalIgnoreCase))
-                    {
-                        list.RemoveAt(i);
-                    }
-                }
-
-                if (list.Count == 0)
-                {
-                    _coopMissionParticipants.Remove(coopGroupName);
-                    _coopMissionHenchSelections.Remove(coopGroupName);
-
-                    CoopMissionSessionState session;
-                    if (_coopMissionSessions.TryGetValue(coopGroupName, out session) && session != null)
-                    {
-                        _coopMissionSessions.Remove(coopGroupName);
-                        try
+                        cancelHubReadyFallback("connection-teardown");
+                        cancelPostCreateWatchdog("connection-teardown");
+                        HubPresenceRegistry.Participant teardownParticipant;
+                        _hubPresenceRegistry.TryGetParticipantForPeer(peer, out teardownParticipant);
+                        if (currentHubInstance != null && teardownParticipant != null && !IsNullOrWhiteSpace(teardownParticipant.CharacterId))
                         {
-                            lock (session.SyncRoot)
-                            {
-                                if (session.Simulation != null)
-                                {
-                                    session.Simulation.Stop();
-                                    session.Simulation = null;
-                                    MissionRuntimeRegistry.MarkCoopMissionEnded(coopGroupName);
-                                }
-                            }
+                            _portedHubInstanceManager.RemoveCharacterFromHub(currentHubInstance, teardownParticipant.CharacterId);
+                            currentHubInstance = null;
                         }
-                        catch
-                        {
-                        }
+                        RemoveHubPresenceWithBroadcast(peer);
+                        UnregisterHubPeerStream(peer, stream);
                     }
                 }
-            }
-        }
-
-        private void BroadcastToCoopMissionPeers(string coopGroupName, string senderPeer, byte[] decoded, string note)
-        {
-            if (IsNullOrWhiteSpace(coopGroupName) || decoded == null || decoded.Length == 0)
-            {
-                return;
-            }
-
-            CoopMissionParticipant[] targets = null;
-            lock (_coopMissionLock)
-            {
-                List<CoopMissionParticipant> list;
-                if (!_coopMissionParticipants.TryGetValue(coopGroupName, out list) || list == null || list.Count == 0)
+                finally
                 {
-                    return;
-                }
-                targets = list.ToArray();
-            }
-
-            for (var i = 0; i < targets.Length; i++)
-            {
-                var t = targets[i];
-                if (t == null || t.Stream == null)
-                {
-                    continue;
-                }
-                if (!IsNullOrWhiteSpace(senderPeer) && string.Equals(t.Peer, senderPeer, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    SendRawFrame(t.Stream, t.Peer, decoded, note);
-                }
-                catch
-                {
-                    // Drop broken streams on next unregister; avoid throwing in main loop.
+                    _logger.ClearConnectionContext("aplay", peer, connectionHash);
                 }
             }
         }
@@ -8630,918 +3338,5 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
-        private static bool LooksLikeHttp(byte[] bytes)
-        {
-            return StartsWithAscii(bytes, "GET ") || StartsWithAscii(bytes, "POST ") || StartsWithAscii(bytes, "HEAD ");
-        }
-
-        private static bool StartsWithAscii(byte[] bytes, string prefix)
-        {
-            if (bytes == null || prefix == null)
-            {
-                return false;
-            }
-            var p = Encoding.ASCII.GetBytes(prefix);
-            return StartsWith(bytes, p);
-        }
-
-        private static bool StartsWith(byte[] bytes, byte[] prefix)
-        {
-            if (bytes == null || prefix == null || bytes.Length < prefix.Length)
-            {
-                return false;
-            }
-            for (var i = 0; i < prefix.Length; i++)
-            {
-                if (bytes[i] != prefix[i])
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        private static bool TryExtractNullTerminatedFrame(List<byte> buffer, out byte[] frame)
-        {
-            var nullIndex = buffer.IndexOf(0);
-            if (nullIndex < 0)
-            {
-                frame = new byte[0];
-                return false;
-            }
-
-            frame = buffer.Take(nullIndex).ToArray();
-            buffer.RemoveRange(0, nullIndex + 1);
-            return true;
-        }
-
-        private static byte[] ReadChunk(NetworkStream stream)
-        {
-            var buffer = new byte[4096];
-            try
-            {
-                var read = stream.Read(buffer, 0, buffer.Length);
-                if (read <= 0)
-                {
-                    return new byte[0];
-                }
-                if (read == buffer.Length)
-                {
-                    return buffer;
-                }
-                var slice = new byte[read];
-                Buffer.BlockCopy(buffer, 0, slice, 0, read);
-                return slice;
-            }
-            catch
-            {
-                return new byte[0];
-            }
-        }
-
-        private static byte[] PrefixLength(byte[] payload)
-        {
-            return Concat(BitConverter.GetBytes(payload.Length), payload);
-        }
-
-        private static byte[] BuildCoreDirectSystem(uint serverId, byte[] raw, ulong msgNo)
-        {
-            return Concat(new byte[] { 0x02 }, BitConverter.GetBytes(serverId), BitConverter.GetBytes(raw.Length), raw, BitConverter.GetBytes(msgNo));
-        }
-
-        private static byte[] BuildApSharedFieldEvent(byte apMsgId, ulong entityId, ushort fieldId, byte[] data)
-        {
-            return Concat(new[] { apMsgId }, BitConverter.GetBytes(entityId), BitConverter.GetBytes(fieldId), BitConverter.GetBytes(data.Length), data);
-        }
-
-        private static byte[] BuildApSharedEntitySetOwner(ulong entityId, ushort typeId)
-        {
-            return Concat(new byte[] { 7 }, BitConverter.GetBytes(entityId), BitConverter.GetBytes(typeId));
-        }
-
-        private static byte[] BuildGameClientWelcomePayload(ulong accountRefId, string careerSummary)
-        {
-            return Concat(BitConverter.GetBytes(accountRefId), BuildUtf16StringPayload(careerSummary));
-        }
-
-        private static byte[] BuildAccountWelcomePayload(int index, string zippedCareerInfo, ulong metaGameplayRef)
-        {
-            return Concat(BitConverter.GetBytes(index), BitConverter.GetBytes(metaGameplayRef), BuildUtf16StringPayload(zippedCareerInfo), BuildApDatePayload(DateTimeOffset.UtcNow));
-        }
-
-        private static byte[] BuildMetaHubPushPayload(ulong hubRefId, string serializedState)
-        {
-            return Concat(BitConverter.GetBytes(hubRefId), BuildUtf16StringPayload(serializedState));
-        }
-
-        private static byte[] BuildApDatePayload(DateTimeOffset dt)
-        {
-            var utc = dt.ToUniversalTime();
-            return Concat(
-                new[] { (byte)utc.Day },
-                new[] { (byte)utc.Month },
-                BitConverter.GetBytes((ushort)utc.Year),
-                new[] { (byte)utc.Hour },
-                new[] { (byte)utc.Minute },
-                new[] { (byte)utc.Second },
-                BitConverter.GetBytes((ushort)utc.Millisecond));
-        }
-
-        private static string BuildCareerSummaryJson(List<CareerSlot> careers)
-        {
-            // JSON array of objects: { Name, Portrait, Index, IsOccupied }
-            // Keep the shape identical to the previous hardcoded stub.
-            var slots = new Dictionary<int, CareerSlot>();
-            if (careers != null)
-            {
-                for (var i = 0; i < careers.Count; i++)
-                {
-                    var s = careers[i];
-                    if (s == null)
-                    {
-                        continue;
-                    }
-                    slots[s.Index] = s;
-                }
-            }
-
-            var sb = new StringBuilder();
-            sb.Append("[");
-            for (var idx = 0; idx < 6; idx++)
-            {
-                CareerSlot s;
-                if (!slots.TryGetValue(idx, out s) || s == null)
-                {
-                    s = new CareerSlot();
-                    s.Index = idx;
-                    s.IsOccupied = false;
-                    s.CharacterName = string.Empty;
-                    s.Portrait = string.Empty;
-                }
-
-                // Career selection UI expects a non-empty portrait path for occupied careers.
-                // Older persisted slots (and our initial defaults) can have an empty Portrait/PortraitPath.
-                var portrait = s.Portrait;
-                if (IsNullOrWhiteSpace(portrait))
-                {
-                    portrait = s.PortraitPath;
-                }
-                if (IsNullOrWhiteSpace(portrait) && s.IsOccupied)
-                {
-                    portrait = PlayerCharacterDefaultValues.PortraitPath;
-                }
-
-                if (idx > 0)
-                {
-                    sb.Append(",");
-                }
-
-                sb.Append("{\"Name\":\"");
-                sb.Append(JsonEscape(s.CharacterName));
-                sb.Append("\",\"Portrait\":\"");
-                sb.Append(JsonEscape(portrait));
-                sb.Append("\",\"Index\":");
-                sb.Append(idx.ToString());
-                sb.Append(",\"IsOccupied\":");
-                sb.Append(s.IsOccupied ? "true" : "false");
-                sb.Append("}");
-            }
-            sb.Append("]");
-            return sb.ToString();
-        }
-
-        private static string BuildDefaultCareerSummary()
-        {
-            return BuildCareerSummaryJson(null);
-        }
-
-        private static string JsonEscape(string value)
-        {
-            if (value == null)
-            {
-                return string.Empty;
-            }
-            return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
-        }
-
-        private static int? ParseInt32Payload(byte[] data)
-        {
-            if (data == null || data.Length < 4)
-            {
-                return null;
-            }
-            return ReadInt32LE(data, 0);
-        }
-
-        private static List<string> ParseUtf16StringPayload(byte[] data)
-        {
-            var output = new List<string>();
-            var pos = 0;
-            while (pos + 4 <= data.Length && output.Count < 8)
-            {
-                var strlen = ReadInt32LE(data, pos);
-                pos += 4;
-                if (strlen < 0)
-                {
-                    break;
-                }
-
-                // Protect against integer overflow on (strlen * 2) and bogus lengths.
-                // strlen is the number of UTF-16 code units, so the byte length must fit inside the remaining buffer.
-                var remaining = data.Length - pos;
-                if (strlen > (remaining / 2))
-                {
-                    break;
-                }
-
-                var byteLenLong = (long)strlen * 2L;
-                if (byteLenLong < 0 || byteLenLong > int.MaxValue)
-                {
-                    break;
-                }
-
-                var byteLen = (int)byteLenLong;
-                if (byteLen == 0)
-                {
-                    output.Add(string.Empty);
-                    continue;
-                }
-
-                output.Add(Encoding.Unicode.GetString(data, pos, byteLen));
-                pos += byteLen;
-            }
-            return output;
-        }
-
-        private static bool TryParsePrepareMatchPayload(
-            byte[] data,
-            out string matchIdentifier,
-            out string players,
-            out bool coop,
-            out string mapName,
-            out string selectedHenchmen)
-        {
-            matchIdentifier = null;
-            players = null;
-            coop = false;
-            mapName = null;
-            selectedHenchmen = null;
-
-            if (data == null || data.Length < 13)
-            {
-                return false;
-            }
-
-            var pos = 0;
-            if (!TryReadUtf16LengthPrefixedString(data, ref pos, out matchIdentifier))
-            {
-                return false;
-            }
-
-            if (!TryReadUtf16LengthPrefixedString(data, ref pos, out players))
-            {
-                return false;
-            }
-
-            if (pos >= data.Length)
-            {
-                return false;
-            }
-
-            coop = data[pos++] != 0;
-
-            if (!TryReadUtf16LengthPrefixedString(data, ref pos, out mapName))
-            {
-                return false;
-            }
-
-            if (!TryReadUtf16LengthPrefixedString(data, ref pos, out selectedHenchmen))
-            {
-                return false;
-            }
-
-            return true;
-        }
-
-        private static bool TryReadUtf16LengthPrefixedString(byte[] data, ref int pos, out string value)
-        {
-            value = null;
-            if (data == null || pos < 0 || pos + 4 > data.Length)
-            {
-                return false;
-            }
-
-            var strlen = ReadInt32LE(data, pos);
-            pos += 4;
-            if (strlen < 0)
-            {
-                return false;
-            }
-
-            var remaining = data.Length - pos;
-            if (strlen > (remaining / 2))
-            {
-                return false;
-            }
-
-            var byteLenLong = (long)strlen * 2L;
-            if (byteLenLong < 0 || byteLenLong > int.MaxValue)
-            {
-                return false;
-            }
-
-            var byteLen = (int)byteLenLong;
-            value = byteLen == 0 ? string.Empty : Encoding.Unicode.GetString(data, pos, byteLen);
-            pos += byteLen;
-            return true;
-        }
-
-        private static byte[] BuildUtf16StringPayload(params string[] values)
-        {
-            var chunks = new List<byte[]>();
-            foreach (var value in values)
-            {
-                var encoded = Encoding.Unicode.GetBytes(value ?? string.Empty);
-                chunks.Add(BitConverter.GetBytes(encoded.Length / 2));
-                chunks.Add(encoded);
-            }
-            return Concat(chunks.ToArray());
-        }
-
-        private static CoreDirectSystem? ParseCoreDirectSystem(byte[] corePayload)
-        {
-            if (corePayload.Length < 17 || corePayload[0] != 3)
-            {
-                return null;
-            }
-
-            var pos = 1;
-            uint serverId;
-            int rawLen;
-            ulong msgNo;
-            if (!TryReadUInt32LE(corePayload, ref pos, out serverId)) return null;
-            if (!TryReadInt32LE(corePayload, ref pos, out rawLen)) return null;
-            if (rawLen < 0 || pos + rawLen + 8 > corePayload.Length) return null;
-
-            var raw = new byte[rawLen];
-            Buffer.BlockCopy(corePayload, pos, raw, 0, rawLen);
-            pos += rawLen;
-            if (!TryReadUInt64LE(corePayload, ref pos, out msgNo)) return null;
-            return new CoreDirectSystem(serverId, raw, msgNo);
-        }
-
-        private static ApSharedFieldEvent? ParseApSharedFieldEvent(byte[] raw)
-        {
-            if (raw.Length < 15)
-            {
-                return null;
-            }
-
-            var pos = 0;
-            var apMsgId = raw[pos++];
-            ulong entityId;
-            ushort fieldId;
-            int dataLen;
-            if (!TryReadUInt64LE(raw, ref pos, out entityId)) return null;
-            if (!TryReadUInt16LE(raw, ref pos, out fieldId)) return null;
-            if (!TryReadInt32LE(raw, ref pos, out dataLen)) return null;
-            if (dataLen < 0 || pos + dataLen > raw.Length) return null;
-            var data = new byte[dataLen];
-            Buffer.BlockCopy(raw, pos, data, 0, dataLen);
-            return new ApSharedFieldEvent(apMsgId, entityId, fieldId, data);
-        }
-
-        private static bool TryReadInt32LE(byte[] data, ref int offset, out int value)
-        {
-            if (offset + 4 > data.Length)
-            {
-                value = 0;
-                return false;
-            }
-            value = ReadInt32LE(data, offset);
-            offset += 4;
-            return true;
-        }
-
-        private static bool TryReadUInt16LE(byte[] data, ref int offset, out ushort value)
-        {
-            if (offset + 2 > data.Length)
-            {
-                value = 0;
-                return false;
-            }
-            value = BitConverter.ToUInt16(data, offset);
-            offset += 2;
-            return true;
-        }
-
-        private static bool TryReadUInt32LE(byte[] data, ref int offset, out uint value)
-        {
-            if (offset + 4 > data.Length)
-            {
-                value = 0;
-                return false;
-            }
-            value = BitConverter.ToUInt32(data, offset);
-            offset += 4;
-            return true;
-        }
-
-        private static bool TryReadUInt64LE(byte[] data, ref int offset, out ulong value)
-        {
-            if (offset + 8 > data.Length)
-            {
-                value = 0;
-                return false;
-            }
-            value = BitConverter.ToUInt64(data, offset);
-            offset += 8;
-            return true;
-        }
-
-        private static bool TryReadGameClientRef(byte[] data, int offset, out ushort refType, out ulong refId, out int nextOffset)
-        {
-            refType = 0;
-            refId = 0;
-            nextOffset = offset;
-            if (data == null || offset + 10 > data.Length)
-            {
-                return false;
-            }
-            refType = BitConverter.ToUInt16(data, offset);
-            refId = BitConverter.ToUInt64(data, offset + 2);
-            nextOffset = offset + 10;
-            return true;
-        }
-
-        private static int ReadInt32LE(byte[] data, int offset)
-        {
-            return BitConverter.ToInt32(data, offset);
-        }
-
-        private static byte[] Concat(params byte[][] chunks)
-        {
-            var total = 0;
-            for (var i = 0; i < chunks.Length; i++)
-            {
-                total += chunks[i] != null ? chunks[i].Length : 0;
-            }
-            var result = new byte[total];
-            var offset = 0;
-            for (var i = 0; i < chunks.Length; i++)
-            {
-                var chunk = chunks[i];
-                if (chunk == null || chunk.Length == 0)
-                {
-                    continue;
-                }
-                Buffer.BlockCopy(chunk, 0, result, offset, chunk.Length);
-                offset += chunk.Length;
-            }
-            return result;
-        }
-
-        private static void SleepWithStop(ManualResetEvent stopEvent, int milliseconds)
-        {
-            var remaining = milliseconds;
-            while (remaining > 0 && !stopEvent.WaitOne(0))
-            {
-                var step = Math.Min(200, remaining);
-                Thread.Sleep(step);
-                remaining -= step;
-            }
-        }
-
-        private static bool PayloadContains(List<string> strings, string needle)
-        {
-            if (strings == null || needle == null)
-            {
-                return false;
-            }
-            for (var i = 0; i < strings.Count; i++)
-            {
-                var s = strings[i] ?? string.Empty;
-                if (s.IndexOf(needle, StringComparison.Ordinal) >= 0)
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private static string TryExtractUtf16JsonObject(byte[] data)
-        {
-            if (data == null || data.Length < 2)
-            {
-                return null;
-            }
-
-            // Look for the UTF-16 LE bytes for '{' (0x7B 0x00).
-            var start = -1;
-            for (var i = 0; i + 1 < data.Length; i++)
-            {
-                if (data[i] == 0x7B && data[i + 1] == 0x00)
-                {
-                    start = i;
-                    break;
-                }
-            }
-            if (start < 0)
-            {
-                return null;
-            }
-
-            var len = data.Length - start;
-            if ((len % 2) != 0)
-            {
-                len--; // keep UTF-16 alignment
-            }
-            if (len <= 0)
-            {
-                return null;
-            }
-
-            var s = Encoding.Unicode.GetString(data, start, len);
-            if (IsNullOrWhiteSpace(s))
-            {
-                return null;
-            }
-
-            // Trim to the last '}' to avoid trailing binary fields.
-            var end = s.LastIndexOf('}');
-            if (end >= 0)
-            {
-                s = s.Substring(0, end + 1);
-            }
-            s = s.Trim('\0', ' ', '\r', '\n', '\t');
-            return s;
-        }
-
-        private static string ExtractJsonStringValue(string json, string key)
-        {
-            if (IsNullOrWhiteSpace(json) || IsNullOrWhiteSpace(key))
-            {
-                return null;
-            }
-
-            var pattern = "\"" + key + "\"";
-            var idx = json.IndexOf(pattern, StringComparison.Ordinal);
-            if (idx < 0)
-            {
-                return null;
-            }
-
-            idx = json.IndexOf(':', idx);
-            if (idx < 0)
-            {
-                return null;
-            }
-
-            idx++;
-            while (idx < json.Length && char.IsWhiteSpace(json[idx]))
-            {
-                idx++;
-            }
-            if (idx >= json.Length)
-            {
-                return null;
-            }
-
-            // Handle both "key":"value" and "key":123 numeric tokens (as seen in CharacterChangeCollection).
-            if (json[idx] == '"')
-            {
-                var end = json.IndexOf('"', idx + 1);
-                if (end < 0)
-                {
-                    return null;
-                }
-                return json.Substring(idx + 1, end - idx - 1);
-            }
-
-            var start = idx;
-            while (idx < json.Length)
-            {
-                var ch = json[idx];
-                if (ch == ',' || ch == '}' || ch == ']')
-                {
-                    break;
-                }
-                if (char.IsWhiteSpace(ch))
-                {
-                    break;
-                }
-                idx++;
-            }
-            if (idx <= start)
-            {
-                return null;
-            }
-            return json.Substring(start, idx - start).Trim();
-        }
-
-        private static string SafeGetIdentifierExtension(PlayerCharacterSnapshot snapshot)
-        {
-            if (snapshot == null)
-            {
-                return null;
-            }
-
-            var id = snapshot.CharacterIdentifier;
-            if (IsNullOrWhiteSpace(id))
-            {
-                return null;
-            }
-
-            var idx = id.IndexOf(':');
-            if (idx < 0 || idx + 1 >= id.Length)
-            {
-                return null;
-            }
-
-            return id.Substring(idx + 1);
-        }
-
-        private static bool IsPrologueMissionName(string missionName)
-        {
-            if (IsNullOrWhiteSpace(missionName))
-            {
-                return false;
-            }
-
-            // Observed / possible identifiers:
-            // - "1_010_Prologue" (used by our fallback + some metagame messages)
-            // - "S010_Prologue" (matches StreamingAssets/levels folder)
-            // - any mission name containing "Prologue" as a safe heuristic
-            var trimmed = missionName.Trim();
-            if (trimmed.IndexOf("Prologue", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                return true;
-            }
-            if (string.Equals(trimmed, "1_010_Prologue", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-            if (string.Equals(trimmed, "S010_Prologue", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-            return false;
-        }
-
-        private static bool TryParseInt32(string value, out int result)
-        {
-            result = 0;
-            if (IsNullOrWhiteSpace(value))
-            {
-                return false;
-            }
-            return int.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out result);
-        }
-
-        private static bool TryParseUInt64(string value, out ulong result)
-        {
-            result = 0UL;
-            if (IsNullOrWhiteSpace(value))
-            {
-                return false;
-            }
-            return ulong.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out result);
-        }
-
-        private static bool IsNullOrWhiteSpace(string value)
-        {
-            return value == null || value.Trim().Length == 0;
-        }
-
-        private static bool ContainsGuid(Guid[] values, Guid value)
-        {
-            if (values == null)
-            {
-                return false;
-            }
-            for (var i = 0; i < values.Length; i++)
-            {
-                if (values[i] == value)
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private static Guid[] OrderGuidsWithLeaderFirst(Guid[] values, Guid leader)
-        {
-            if (values == null || values.Length <= 1)
-            {
-                return values;
-            }
-            if (leader == Guid.Empty)
-            {
-                return values;
-            }
-
-            var leaderIndex = -1;
-            for (var i = 0; i < values.Length; i++)
-            {
-                if (values[i] == leader)
-                {
-                    leaderIndex = i;
-                    break;
-                }
-            }
-            if (leaderIndex <= 0)
-            {
-                // -1 = leader not present; 0 = already first.
-                return values;
-            }
-
-            // Preserve relative order of all other values.
-            var ordered = new Guid[values.Length];
-            ordered[0] = leader;
-            var writeIdx = 1;
-            for (var i = 0; i < values.Length; i++)
-            {
-                if (i == leaderIndex)
-                {
-                    continue;
-                }
-                ordered[writeIdx++] = values[i];
-            }
-            return ordered;
-        }
-
-        private static Guid[] ParseGuidsFromLooseText(string text, int max)
-        {
-            if (IsNullOrWhiteSpace(text) || max <= 0)
-            {
-                return new Guid[0];
-            }
-
-            var list = new List<Guid>();
-            var s = text.Trim();
-
-            // Look for GUID patterns like xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.
-            // The coop member list often looks like: ["<guid>:0", "<guid>:0"]
-            for (var i = 0; i + 36 <= s.Length; i++)
-            {
-                if (s[i + 8] != '-' || s[i + 13] != '-' || s[i + 18] != '-' || s[i + 23] != '-')
-                {
-                    continue;
-                }
-
-                var candidate = s.Substring(i, 36);
-                try
-                {
-                    var g = new Guid(candidate);
-                    var exists = false;
-                    for (var j = 0; j < list.Count; j++)
-                    {
-                        if (list[j] == g)
-                        {
-                            exists = true;
-                            break;
-                        }
-                    }
-                    if (!exists)
-                    {
-                        list.Add(g);
-                        if (list.Count >= max)
-                        {
-                            break;
-                        }
-                    }
-                    i += 35;
-                }
-                catch
-                {
-                    // Not a GUID; keep scanning.
-                }
-            }
-
-            return list.ToArray();
-        }
-
-        private sealed class GuidStringOrdinalComparer : IComparer<Guid>
-        {
-            public static readonly GuidStringOrdinalComparer Instance = new GuidStringOrdinalComparer();
-
-            public int Compare(Guid x, Guid y)
-            {
-                return string.CompareOrdinal(x.ToString(), y.ToString());
-            }
-        }
-
-        private static IPAddress ResolveBindAddress(string host)
-        {
-            if (string.IsNullOrEmpty(host) || host == "0.0.0.0" || host == "+")
-            {
-                return IPAddress.Any;
-            }
-            if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
-            {
-                return IPAddress.Loopback;
-            }
-            IPAddress ip;
-            if (IPAddress.TryParse(host, out ip))
-            {
-                return ip;
-            }
-            return IPAddress.Any;
-        }
-
-        private static byte[] HexToBytes(string hex)
-        {
-            if (hex == null)
-            {
-                return new byte[0];
-            }
-            hex = hex.Trim();
-            if (hex.Length % 2 != 0)
-            {
-                throw new ArgumentException("hex must have even length");
-            }
-            var bytes = new byte[hex.Length / 2];
-            for (var i = 0; i < bytes.Length; i++)
-            {
-                bytes[i] = (byte)((FromHexNibble(hex[i * 2]) << 4) | FromHexNibble(hex[i * 2 + 1]));
-            }
-            return bytes;
-        }
-
-        private static int FromHexNibble(char c)
-        {
-            if (c >= '0' && c <= '9') return c - '0';
-            if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-            if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
-            throw new ArgumentException("invalid hex char");
-        }
-
-        private static string ToHexString(byte[] bytes, int offset, int count)
-        {
-            if (bytes == null)
-            {
-                return string.Empty;
-            }
-            var sb = new StringBuilder(count * 2);
-            for (var i = 0; i < count; i++)
-            {
-                sb.Append(bytes[offset + i].ToString("x2"));
-            }
-            return sb.ToString();
-        }
-
-        private struct CoreDirectSystem
-        {
-            public readonly uint ServerId;
-            public readonly byte[] Raw;
-            public readonly ulong MsgNo;
-
-            public CoreDirectSystem(uint serverId, byte[] raw, ulong msgNo)
-            {
-                ServerId = serverId;
-                Raw = raw;
-                MsgNo = msgNo;
-            }
-        }
-
-        private struct ApSharedFieldEvent
-        {
-            public readonly byte ApMsgId;
-            public readonly ulong EntityId;
-            public readonly ushort FieldId;
-            public readonly byte[] Data;
-
-            public ApSharedFieldEvent(byte apMsgId, ulong entityId, ushort fieldId, byte[] data)
-            {
-                ApMsgId = apMsgId;
-                EntityId = entityId;
-                FieldId = fieldId;
-                Data = data;
-            }
-        }
-
-        private sealed class CoopMissionParticipant
-        {
-            public readonly string Peer;
-            public readonly NetworkStream Stream;
-
-            public CoopMissionParticipant(string peer, NetworkStream stream)
-            {
-                Peer = peer;
-                Stream = stream;
-            }
-        }
-
-        private sealed class HubPeerTarget
-        {
-            public readonly string Peer;
-            public readonly NetworkStream Stream;
-
-            public HubPeerTarget(string peer, NetworkStream stream)
-            {
-                Peer = peer;
-                Stream = stream;
-            }
-        }
     }
 }

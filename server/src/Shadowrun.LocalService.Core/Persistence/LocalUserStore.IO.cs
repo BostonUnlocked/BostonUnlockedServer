@@ -78,7 +78,7 @@ namespace Shadowrun.LocalService.Core.Persistence
         {
             var fresh = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
             fresh["IdentityHash"] = IsGuidish(identityHash) ? NormalizeGuidish(identityHash) : null;
-            fresh["DisplayName"] = BuildAnonymizedDisplayName("OfflineRunner");
+            fresh["DisplayName"] = BuildAnonymizedDisplayName(identityHash);
             fresh["Careers"] = null;
             fresh["LastCareerIndex"] = 0;
             return fresh;
@@ -86,6 +86,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         private IDictionary LoadAccountStoreNoThrow(bool persistMigration)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.LoadAccountStoreNoThrow();
+            }
+
             IDictionary loaded = null;
             try
             {
@@ -175,6 +180,12 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         private void SaveAccountStoreNoThrow(IDictionary store)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                _sqliteStore.SaveAccountStoreNoThrow(store);
+                return;
+            }
+
             try
             {
                 // Do not persist any global "active" identity pointers at the root.
@@ -206,6 +217,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         private IDictionary LoadAccountForIdentityNoThrow(string identityHash, bool createIfMissing)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.LoadAccountForIdentityNoThrow(identityHash, createIfMissing);
+            }
+
             if (!IsGuidish(identityHash))
             {
                 identityHash = null;
@@ -239,6 +255,11 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         private IDictionary LoadAccountNoThrow()
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.LoadAccountNoThrow();
+            }
+
             try
             {
                 var store = LoadAccountStoreNoThrow(true);
@@ -274,6 +295,12 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         private void SaveAccountNoThrow(IDictionary account)
         {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                _sqliteStore.SaveAccountNoThrow(account);
+                return;
+            }
+
             try
             {
                 if (account == null)
@@ -331,121 +358,6 @@ namespace Shadowrun.LocalService.Core.Persistence
                             type = "persistence",
                             op = "save-account-failed",
                             path = _accountPath,
-                            message = ex.Message,
-                        });
-                    }
-                }
-                catch
-                {
-                }
-            }
-        }
-
-        private Dictionary<string, string> LoadSessionsNoThrow()
-        {
-            try
-            {
-                if (File.Exists(_sessionsPath))
-                {
-                    var json = File.ReadAllText(_sessionsPath, Encoding.UTF8);
-                    var obj = Json.DeserializeObject(json) as IDictionary;
-                    if (obj != null)
-                    {
-                        var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                        foreach (DictionaryEntry entry in obj)
-                        {
-                            var key = entry.Key as string;
-                            var value = entry.Value as string;
-                            if (!IsNullOrWhiteSpace(key) && !IsNullOrWhiteSpace(value))
-                            {
-                                dict[NormalizeGuidish(key)] = NormalizeGuidish(value);
-                            }
-                        }
-                        return dict;
-                    }
-                }
-            }
-            catch
-            {
-            }
-
-            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        private void SaveSessionsNoThrow(Dictionary<string, string> sessions)
-        {
-            try
-            {
-                var obj = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
-                foreach (var kvp in sessions)
-                {
-                    obj[kvp.Key] = kvp.Value;
-                }
-                var json = Json.Serialize(obj);
-                File.WriteAllText(_sessionsPath, json, Encoding.UTF8);
-            }
-            catch (Exception ex)
-            {
-                try
-                {
-                    if (_logger != null)
-                    {
-                        _logger.Log(new
-                        {
-                            ts = RequestLogger.UtcNowIso(),
-                            type = "persistence",
-                            op = "save-sessions-failed",
-                            path = _sessionsPath,
-                            message = ex.Message,
-                        });
-                    }
-                }
-                catch
-                {
-                }
-            }
-        }
-
-        private IDictionary LoadPlayerInfoNoThrow()
-        {
-            try
-            {
-                if (File.Exists(_playerInfoPath))
-                {
-                    var json = File.ReadAllText(_playerInfoPath, Encoding.UTF8);
-                    var obj = Json.DeserializeObject(json) as IDictionary;
-                    if (obj != null)
-                    {
-                        return obj;
-                    }
-                }
-            }
-            catch
-            {
-            }
-
-            return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        private void SavePlayerInfoNoThrow(IDictionary root)
-        {
-            try
-            {
-                var json = Json.Serialize(root);
-                File.WriteAllText(_playerInfoPath, json, Encoding.UTF8);
-            }
-            catch (Exception ex)
-            {
-                try
-                {
-                    if (_logger != null)
-                    {
-                        _logger.Log(new
-                        {
-                            ts = RequestLogger.UtcNowIso(),
-                            type = "persistence",
-                            op = "save-playerinfo-failed",
-                            path = _playerInfoPath,
                             message = ex.Message,
                         });
                     }
