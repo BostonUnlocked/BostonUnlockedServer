@@ -20,9 +20,12 @@ namespace Shadowrun.LocalService.Core.Simulation
         public IList<AiTurnAction> SkipAiTurnsIfNeeded()
         {
             var actions = new List<AiTurnAction>();
+            const int AI_TURN_ITERATION_CAP = 256;
+            var hitIterationCap = false;
+            int iterationIndex = 0;
 
             // Safety: avoid infinite loops if the sim gets into a bad state.
-            for (var i = 0; i < 64; i++)
+            for (iterationIndex = 0; iterationIndex < AI_TURN_ITERATION_CAP; iterationIndex++)
             {
                 if (_simulation.IsMissionStopped)
                 {
@@ -66,17 +69,42 @@ namespace Shadowrun.LocalService.Core.Simulation
                 actions.Add(action);
             }
 
+            // Track if we exited due to hitting the iteration cap (not a normal break condition)
+            if (iterationIndex >= AI_TURN_ITERATION_CAP)
+            {
+                hitIterationCap = true;
+            }
+
             if (actions.Count > 0)
             {
-                _logger.Log(new
+                var logEntry = new Dictionary<string, object>
                 {
-                    ts = RequestLogger.UtcNowIso(),
-                    type = "sim",
-                    peer = _peer,
-                    action = "skip-ai",
-                    count = actions.Count,
-                    agents = actions.Select(a => a.AgentId).ToArray(),
-                });
+                    { "ts", RequestLogger.UtcNowIso() },
+                    { "type", "sim" },
+                    { "peer", _peer },
+                    { "action", "skip-ai" },
+                    { "count", actions.Count },
+                    { "agents", actions.Select(a => a.AgentId).ToArray() },
+                    { "capValue", AI_TURN_ITERATION_CAP },
+                    { "hitCap", hitIterationCap },
+                };
+
+                // If we hit the cap, include context about remaining AI team
+                if (hitIterationCap)
+                {
+                    var team = _turnObserver.CurrentTeam;
+                    if (team != null)
+                    {
+                        logEntry["remainingTeamId"] = team.ID;
+                        logEntry["remainingTeamAiControlled"] = team.AIControlled;
+                        if (_turnObserver.CurrentActivatableMembers != null)
+                        {
+                            logEntry["remainingActivatableCount"] = _turnObserver.CurrentActivatableMembers.Length;
+                        }
+                    }
+                }
+
+                _logger.Log(logEntry);
             }
 
             return actions;
