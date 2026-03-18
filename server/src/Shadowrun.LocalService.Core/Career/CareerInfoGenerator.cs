@@ -60,6 +60,15 @@ namespace Shadowrun.LocalService.Core.Career
                 string cached;
                 if (_cache.TryGetValue(cacheKey, out cached) && !IsNullOrWhiteSpace(cached))
                 {
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "career-info-generate",
+                        status = "cache-hit",
+                        blobLength = cached.Length,
+                        characterName = characterName,
+                        pendingPersistenceCreation = pendingPersistenceCreation,
+                    });
                     return cached;
                 }
 
@@ -251,6 +260,14 @@ namespace Shadowrun.LocalService.Core.Career
                     managedDir = "Dependencies",
                     characterName = characterName,
                     pendingPersistenceCreation = pendingPersistenceCreation,
+                    slotMainCampaignCurrentChapter = slot != null ? slot.MainCampaignCurrentChapter : -1,
+                    slotMainCampaignMissionStates = BuildSlotMissionStateSummary(slot, 64),
+                    slotMainCampaignInteractedNpcs = BuildSlotInteractedNpcSummary(slot, 64),
+                    slotStoryProgressKey = BuildStoryProgressKey(slot),
+                    snapshotStorylineNames = BuildStorylineNameSummary(story, 8),
+                    snapshotMainCampaignChapter = GetRuntimeChapter(story, "Main Campaign"),
+                    snapshotMainCampaignRuntimeMissions = BuildRuntimeMissionSummary(story, "Main Campaign", 64),
+                    snapshotMainCampaignInteractedNpcs = BuildRuntimeInteractedNpcSummary(story, "Main Campaign", 64),
                 });
                 return blob;
             }
@@ -750,6 +767,196 @@ namespace Shadowrun.LocalService.Core.Career
                 sb.Append(';');
             }
             return sb.ToString();
+        }
+
+        private static string[] BuildSlotMissionStateSummary(CareerSlot slot, int maxEntries)
+        {
+            if (slot == null || slot.MainCampaignMissionStates == null || slot.MainCampaignMissionStates.Count == 0)
+            {
+                return new string[0];
+            }
+
+            var keys = new List<string>(slot.MainCampaignMissionStates.Keys);
+            keys.Sort(StringComparer.OrdinalIgnoreCase);
+
+            var limit = maxEntries > 0 ? maxEntries : keys.Count;
+            if (limit > keys.Count)
+            {
+                limit = keys.Count;
+            }
+
+            var summary = new List<string>(limit);
+            for (var i = 0; i < keys.Count && summary.Count < limit; i++)
+            {
+                var key = keys[i];
+                if (IsNullOrWhiteSpace(key))
+                {
+                    continue;
+                }
+
+                string state;
+                if (!slot.MainCampaignMissionStates.TryGetValue(key, out state) || IsNullOrWhiteSpace(state))
+                {
+                    continue;
+                }
+
+                summary.Add(key + "=" + state);
+            }
+
+            return summary.ToArray();
+        }
+
+        private static string[] BuildSlotInteractedNpcSummary(CareerSlot slot, int maxEntries)
+        {
+            if (slot == null || slot.MainCampaignInteractedNpcs == null || slot.MainCampaignInteractedNpcs.Count == 0)
+            {
+                return new string[0];
+            }
+
+            var npcs = new List<string>(slot.MainCampaignInteractedNpcs);
+            npcs.Sort(StringComparer.OrdinalIgnoreCase);
+
+            var limit = maxEntries > 0 ? maxEntries : npcs.Count;
+            if (limit > npcs.Count)
+            {
+                limit = npcs.Count;
+            }
+
+            var summary = new List<string>(limit);
+            for (var i = 0; i < npcs.Count && summary.Count < limit; i++)
+            {
+                var npc = npcs[i];
+                if (IsNullOrWhiteSpace(npc))
+                {
+                    continue;
+                }
+
+                summary.Add(npc);
+            }
+
+            return summary.ToArray();
+        }
+
+        private static string[] BuildStorylineNameSummary(IStoryProgressRuntimestate story, int maxEntries)
+        {
+            if (story == null || story.Storylines == null || story.Storylines.Count == 0)
+            {
+                return new string[0];
+            }
+
+            var limit = maxEntries > 0 ? maxEntries : story.Storylines.Count;
+            if (limit > story.Storylines.Count)
+            {
+                limit = story.Storylines.Count;
+            }
+
+            var summary = new List<string>(limit);
+            for (var i = 0; i < story.Storylines.Count && summary.Count < limit; i++)
+            {
+                var runtime = story.Storylines[i];
+                if (runtime == null || IsNullOrWhiteSpace(runtime.Storyline))
+                {
+                    continue;
+                }
+
+                summary.Add(runtime.Storyline + "#" + runtime.CurrentChapter.ToString(CultureInfo.InvariantCulture));
+            }
+
+            return summary.ToArray();
+        }
+
+        private static int GetRuntimeChapter(IStoryProgressRuntimestate story, string storylineName)
+        {
+            var runtime = FindRuntimeStoryline(story, storylineName);
+            return runtime != null ? runtime.CurrentChapter : -1;
+        }
+
+        private static string[] BuildRuntimeMissionSummary(IStoryProgressRuntimestate story, string storylineName, int maxEntries)
+        {
+            var runtime = FindRuntimeStoryline(story, storylineName);
+            if (runtime == null || runtime.RuntimeMissions == null || runtime.RuntimeMissions.Count == 0)
+            {
+                return new string[0];
+            }
+
+            var entries = new List<string>(runtime.RuntimeMissions.Count);
+            for (var i = 0; i < runtime.RuntimeMissions.Count; i++)
+            {
+                var mission = runtime.RuntimeMissions[i];
+                if (mission == null || IsNullOrWhiteSpace(mission.Mission))
+                {
+                    continue;
+                }
+
+                var optionalSuffix = mission.IsOptionalMission ? "(optional)" : string.Empty;
+                entries.Add(mission.Mission + "=" + mission.State.ToString() + optionalSuffix);
+            }
+
+            entries.Sort(StringComparer.OrdinalIgnoreCase);
+            var limit = maxEntries > 0 ? maxEntries : entries.Count;
+            if (limit > entries.Count)
+            {
+                limit = entries.Count;
+            }
+
+            var summary = new string[limit];
+            for (var i = 0; i < limit; i++)
+            {
+                summary[i] = entries[i];
+            }
+
+            return summary;
+        }
+
+        private static string[] BuildRuntimeInteractedNpcSummary(IStoryProgressRuntimestate story, string storylineName, int maxEntries)
+        {
+            var runtime = FindRuntimeStoryline(story, storylineName);
+            if (runtime == null || runtime.InteractedNpcs == null || runtime.InteractedNpcs.Count == 0)
+            {
+                return new string[0];
+            }
+
+            var npcs = new List<string>(runtime.InteractedNpcs);
+            npcs.Sort(StringComparer.OrdinalIgnoreCase);
+
+            var limit = maxEntries > 0 ? maxEntries : npcs.Count;
+            if (limit > npcs.Count)
+            {
+                limit = npcs.Count;
+            }
+
+            var summary = new List<string>(limit);
+            for (var i = 0; i < npcs.Count && summary.Count < limit; i++)
+            {
+                var npc = npcs[i];
+                if (IsNullOrWhiteSpace(npc))
+                {
+                    continue;
+                }
+
+                summary.Add(npc);
+            }
+
+            return summary.ToArray();
+        }
+
+        private static RuntimeStoryline FindRuntimeStoryline(IStoryProgressRuntimestate story, string storylineName)
+        {
+            if (story == null || story.Storylines == null || story.Storylines.Count == 0 || IsNullOrWhiteSpace(storylineName))
+            {
+                return null;
+            }
+
+            for (var i = 0; i < story.Storylines.Count; i++)
+            {
+                var runtime = story.Storylines[i];
+                if (runtime != null && string.Equals(runtime.Storyline, storylineName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return runtime;
+                }
+            }
+
+            return null;
         }
 
         private static string BuildEquippedItemsKey(CareerSlot slot)

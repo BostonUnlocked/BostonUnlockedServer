@@ -159,6 +159,11 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         private string ResolveParticipantHubId(HubPresenceRegistry.Participant participant, string fallbackHubId)
         {
+            if (participant != null && !IsNullOrWhiteSpace(participant.HubId))
+            {
+                return participant.HubId;
+            }
+
             if (participant != null && !IsNullOrWhiteSpace(participant.CharacterId))
             {
                 string authoritativeHubId;
@@ -166,11 +171,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                 {
                     return authoritativeHubId;
                 }
-            }
-
-            if (participant != null && !IsNullOrWhiteSpace(participant.HubId))
-            {
-                return participant.HubId;
             }
 
             return fallbackHubId;

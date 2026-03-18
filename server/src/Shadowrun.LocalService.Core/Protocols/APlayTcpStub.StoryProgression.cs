@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Net.Sockets;
-using System.Threading;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay;
 using Shadowrun.LocalService.Core.Metagameplay;
 using Shadowrun.LocalService.Core.Persistence;
@@ -32,17 +31,8 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             ulong outMsgNo = 0;
-            try
+            
             {
-                var minOutMsgNo = incomingMsgNo + 1;
-                var lastSent = Interlocked.Read(ref _metaGameplayOutMsgNoHighWatermark);
-                var lastSentU = lastSent > 0 ? (ulong)lastSent : 0UL;
-                outMsgNo = lastSentU + 1UL;
-                if (outMsgNo < minOutMsgNo)
-                {
-                    outMsgNo = minOutMsgNo;
-                }
-
                 var missionName = ExtractJsonStringValue(rawMessage, "Mission");
                 var targetState = ExtractJsonStringValue(rawMessage, "TargetState");
                 if (!IsNullOrWhiteSpace(missionName) && !IsNullOrWhiteSpace(targetState))
@@ -84,12 +74,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                             mission = missionName,
                             previousState = storyStateUpdate.PreviousState.ToString(),
                             requestedState = parsedTarget.ToString(),
+                            incomingMsgNo = incomingMsgNo,
                             careerIndex = activeCareerIndex,
                         });
-
-                        var echoPayloadIgnored = BuildUtf16StringPayload(rawMessage);
-                        var echoCoreIgnored = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 1, echoPayloadIgnored), outMsgNo++);
-                        SendRawFrame(stream, peer, PrefixLength(echoCoreIgnored), "echoed MetaGameplayCommunicationObject Message (SetStoryMissionStateMessage ignored)");
                         return true;
                     }
 
@@ -134,6 +121,71 @@ namespace Shadowrun.LocalService.Core.Protocols
                         }
                     }
 
+                    var chapterAdvanced = false;
+                    var chapterAdvanceNewIndex = 0;
+                    if (slotForStoryRewards != null)
+                    {
+                        try
+                        {
+                            var chapterAdvance = _storyProgressionService.TryAdvanceIfEligible(activeIdentityGuid, slotForStoryRewards, "Main Campaign");
+                            chapterAdvanced = chapterAdvance.Advanced;
+                            if (chapterAdvanced)
+                            {
+                                chapterAdvanceNewIndex = chapterAdvance.NewChapterIndex;
+                                if (_userStore != null && !IsNullOrWhiteSpace(activeIdentityHash))
+                                {
+                                    _userStore.UpsertCareer(activeIdentityHash, slotForStoryRewards);
+                                }
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+
+                    // Keep storyprogress transitions and hub routing decoupled.
+                    // Hub state/session transitions are driven by explicit hub request flows.
+
+                    var shouldSendMissionReward = storyRewardApplication.ShouldNotifyClient && slotForStoryRewards != null;
+
+                    // Keep the accepted story-state burst aligned with retail ordering:
+                    // chapter advancement already emits a StoryprogressChanged(ChapterChange),
+                    // so avoid appending an immediate field-26 snapshot in that same burst.
+                    var shouldSendMetaSnapshot = slotForStoryRewards != null
+                        && storyRewardApplication.ShouldNotifyClient
+                        && !chapterAdvanced;
+
+                    var minOutMsgNo = incomingMsgNo + 1UL;
+                    if (minOutMsgNo == 0UL)
+                    {
+                        minOutMsgNo = 1UL;
+                    }
+
+                    var sendCount = 1
+                        + (shouldSendMissionReward ? 1 : 0)
+                        + (chapterAdvanced ? 1 : 0)
+                        + (shouldSendMetaSnapshot ? 1 : 0);
+                    outMsgNo = ReserveMetaGameplayMsgNosWithFloor(minOutMsgNo, sendCount);
+                    var firstOutMsgNo = outMsgNo;
+
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "story-state-accepted",
+                        peer = peer,
+                        mission = missionName,
+                        previousState = storyStateUpdate.PreviousState.ToString(),
+                        requestedState = parsedTarget.ToString(),
+                        incomingMsgNo = incomingMsgNo,
+                        expectedFirstOutMsgNo = minOutMsgNo,
+                        firstOutMsgNo = firstOutMsgNo,
+                        sendCount = sendCount,
+                        chapterAdvanced = chapterAdvanced,
+                        shouldSendMissionReward = shouldSendMissionReward,
+                        shouldSendMetaSnapshot = shouldSendMetaSnapshot,
+                        careerIndex = activeCareerIndex,
+                    });
+
                     try
                     {
                         var storyProgressChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.MissionStateChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"Mission\":\"" + missionName + "\",\"NewState\":\"" + parsedTarget.ToString() + "\"}";
@@ -145,100 +197,49 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                     }
 
-                    if (storyRewardApplication.ShouldNotifyClient && slotForStoryRewards != null)
+                    if (shouldSendMissionReward)
                     {
                         SendMissionReward(stream, peer, outMsgNo++, storyRewardApplication.TransportReward, "(StoryRewards redemption)");
                     }
 
-                    var chapterAdvanced = false;
-                    if (slotForStoryRewards != null)
+                    if (chapterAdvanced)
                     {
                         try
                         {
-                            var chapterAdvance = _storyProgressionService.TryAdvanceIfEligible(activeIdentityGuid, slotForStoryRewards, "Main Campaign");
-                            chapterAdvanced = chapterAdvance.Advanced;
-                            if (chapterAdvanced)
-                            {
-                                if (_userStore != null && !IsNullOrWhiteSpace(activeIdentityHash))
-                                {
-                                    _userStore.UpsertCareer(activeIdentityHash, slotForStoryRewards);
-                                }
-
-                                var chapterChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.ChapterChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"NewChapterIndex\":" + chapterAdvance.NewChapterIndex.ToString(CultureInfo.InvariantCulture) + "}";
-                                var chapterChangePayload = BuildUtf16StringPayload(chapterChangeJson);
-                                var chapterChangeCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, chapterChangePayload), outMsgNo++);
-                                SendRawFrame(stream, peer, PrefixLength(chapterChangeCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (ChapterChange " + chapterAdvance.NewChapterIndex.ToString(CultureInfo.InvariantCulture) + ")");
-                            }
+                            var chapterChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.ChapterChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"NewChapterIndex\":" + chapterAdvanceNewIndex.ToString(CultureInfo.InvariantCulture) + "}";
+                            var chapterChangePayload = BuildUtf16StringPayload(chapterChangeJson);
+                            var chapterChangeCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, chapterChangePayload), outMsgNo++);
+                            SendRawFrame(stream, peer, PrefixLength(chapterChangeCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (ChapterChange " + chapterAdvanceNewIndex.ToString(CultureInfo.InvariantCulture) + ")");
                         }
                         catch
                         {
                         }
                     }
 
-                    if (slotForStoryRewards != null)
-                    {
-                        try
-                        {
-                            var storyCharacterIdentifier = slotForStoryRewards != null && !IsNullOrWhiteSpace(slotForStoryRewards.CharacterIdentifier)
-                                ? slotForStoryRewards.CharacterIdentifier
-                                : (activeIdentityGuid.ToString() + ":" + activeCareerIndex.ToString(CultureInfo.InvariantCulture));
-                            RetireDuplicateHubSessionForCharacter(peer, storyCharacterIdentifier, "storyprogress-hub-refresh-pre-transition");
-
-                            var forceNewHubInstanceId = (parsedTarget == StoryMissionstate.Completed || chapterAdvanced);
-                            cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
-                                slotForStoryRewards,
-                                activeIdentityGuid,
-                                activeCareerIndex,
-                                forceNewHubInstanceId,
-                                currentHubInstance,
-                                out currentHubInstanceId,
-                                out currentHubInstance);
-                        }
-                        catch
-                        {
-                        }
-                    }
-
-                    if (slotForStoryRewards != null
-                        && (storyRewardApplication.ShouldNotifyClient
-                            || parsedTarget == StoryMissionstate.ReadyToPlay
-                            || parsedTarget == StoryMissionstate.Completed
-                            || chapterAdvanced))
+                    if (shouldSendMetaSnapshot)
                     {
                         try
                         {
                             var zipped = _careerInfoGenerator.GetZippedCareerInfo(activeIdentityGuid, activeCareerIndex, slotForStoryRewards);
+                            _logger.Log(new
+                            {
+                                ts = RequestLogger.UtcNowIso(),
+                                type = "field26-snapshot-send",
+                                trigger = "set-story-mission-state",
+                                mission = missionName,
+                                targetState = parsedTarget.ToString(),
+                                chapterAdvanced = chapterAdvanced,
+                                shouldNotifyClient = storyRewardApplication.ShouldNotifyClient,
+                                careerIndex = activeCareerIndex,
+                                blobLength = !IsNullOrWhiteSpace(zipped) ? zipped.Length : 0,
+                                slotMainCampaignCurrentChapter = slotForStoryRewards.MainCampaignCurrentChapter,
+                            });
                             var metaSnapshotPayload = BuildUtf16StringPayload(zipped);
                             var metaSnapshotCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 26, metaSnapshotPayload), outMsgNo++);
                             SendRawFrame(stream, peer, PrefixLength(metaSnapshotCore), "sent MetaGameplayCommunicationObject SendMetagameplayDataSnapshotToClient after SetStoryMissionStateMessage");
                         }
                         catch
                         {
-                        }
-                    }
-                }
-
-                var echoPayload = BuildUtf16StringPayload(rawMessage);
-                var echoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 1, echoPayload), outMsgNo++);
-                SendRawFrame(stream, peer, PrefixLength(echoCore), "echoed MetaGameplayCommunicationObject Message (SetStoryMissionStateMessage)");
-            }
-            finally
-            {
-                if (outMsgNo > 0)
-                {
-                    var lastUsed = outMsgNo - 1UL;
-                    while (true)
-                    {
-                        var observed = Interlocked.Read(ref _metaGameplayOutMsgNoHighWatermark);
-                        var observedU = observed > 0 ? (ulong)observed : 0UL;
-                        if (observedU >= lastUsed)
-                        {
-                            break;
-                        }
-
-                        if (Interlocked.CompareExchange(ref _metaGameplayOutMsgNoHighWatermark, (long)lastUsed, observed) == observed)
-                        {
-                            break;
                         }
                     }
                 }
