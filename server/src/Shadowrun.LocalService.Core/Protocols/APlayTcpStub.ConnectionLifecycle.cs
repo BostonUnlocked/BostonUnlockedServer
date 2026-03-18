@@ -72,7 +72,95 @@ namespace Shadowrun.LocalService.Core.Protocols
                 var last = first + (ulong)count - 1UL;
                 if (Interlocked.CompareExchange(ref _metaGameplayOutMsgNoHighWatermark, (long)last, observed) == observed)
                 {
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "metagameplay-msgno-reserve",
+                        mode = "reserve",
+                        count = count,
+                        observed = observedU,
+                        first = first,
+                        last = last,
+                    });
                     return first;
+                }
+            }
+        }
+
+        private ulong ReserveMetaGameplayMsgNosWithFloor(ulong minNextMsgNo, int count)
+        {
+            if (count <= 0)
+            {
+                count = 1;
+            }
+
+            if (minNextMsgNo == 0UL)
+            {
+                minNextMsgNo = 1UL;
+            }
+
+            while (true)
+            {
+                var observed = Interlocked.Read(ref _metaGameplayOutMsgNoHighWatermark);
+                var observedU = observed > 0 ? (ulong)observed : 0UL;
+                var first = observedU + 1UL;
+                if (first == 0UL)
+                {
+                    first = 1UL;
+                }
+
+                if (first < minNextMsgNo)
+                {
+                    first = minNextMsgNo;
+                }
+
+                var last = first + (ulong)count - 1UL;
+                if (Interlocked.CompareExchange(ref _metaGameplayOutMsgNoHighWatermark, (long)last, observed) == observed)
+                {
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "metagameplay-msgno-reserve",
+                        mode = "reserve-with-floor",
+                        count = count,
+                        minNextMsgNo = minNextMsgNo,
+                        observed = observedU,
+                        first = first,
+                        last = last,
+                    });
+                    return first;
+                }
+            }
+        }
+
+        private void EnsureMetaGameplayMsgNoFloor(ulong minNextMsgNo)
+        {
+            if (minNextMsgNo <= 1UL)
+            {
+                return;
+            }
+
+            var minLastSent = minNextMsgNo - 1UL;
+            while (true)
+            {
+                var observed = Interlocked.Read(ref _metaGameplayOutMsgNoHighWatermark);
+                var observedU = observed > 0 ? (ulong)observed : 0UL;
+                if (observedU >= minLastSent)
+                {
+                    return;
+                }
+
+                if (Interlocked.CompareExchange(ref _metaGameplayOutMsgNoHighWatermark, (long)minLastSent, observed) == observed)
+                {
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "metagameplay-msgno-floor",
+                        minNextMsgNo = minNextMsgNo,
+                        previous = observedU,
+                        updated = minLastSent,
+                    });
+                    return;
                 }
             }
         }
