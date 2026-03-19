@@ -363,6 +363,19 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
+        private void ResetHubPushDedupForPeer(string peer)
+        {
+            if (IsNullOrWhiteSpace(peer))
+            {
+                return;
+            }
+
+            lock (_hubPushDedupLock)
+            {
+                _hubPushDedupByPeer.Remove(peer);
+            }
+        }
+
         public APlayTcpStub(LocalServiceOptions options, RequestLogger logger)
             : this(options, logger, new LocalUserStore(options, logger), null, null, null)
         {
@@ -2370,8 +2383,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     routedHubSource = "current-peer";
                                 }
 
-                                string requestStoryHubReadyHubId = null;
-                                string requestStoryHubReadyCharacterId = null;
                                 if (!IsNullOrWhiteSpace(routedHubId))
                                 {
                                     HubPresenceRegistry.Participant previousParticipant;
@@ -2441,15 +2452,14 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                     if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipantHubId))
                                     {
+                                        // Force a fresh hub-ready/replay cycle for this peer on story-hub requests.
+                                        // This is needed when the client returns from mission but hub/character IDs are unchanged.
+                                        ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
+
                                         if (shouldBroadcastAdd)
                                         {
                                             ClearHubAnnouncementForAllPeers(currentParticipantHubId, currentParticipant.CharacterId);
-                                            ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
                                         }
-
-                                        requestStoryHubReadyHubId = currentParticipantHubId;
-                                        requestStoryHubReadyCharacterId = currentParticipant.CharacterId;
-                                        armHubReadyFallback(currentParticipantHubId, currentParticipant.CharacterId, "request-story-hub-for");
 
                                     }
 
@@ -2489,6 +2499,10 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                 var requestMsgNoBase = direct.Value.MsgNo + 111;
 
+                                // Keep request-driven hub responses deterministic: do not suppress the first
+                                // post-request push based on recent payload history.
+                                ResetHubPushDedupForPeer(peer);
+
                                 try
                                 {
                                     if (!ShouldSuppressDuplicateHubPush(peer, false, cachedHubStatePayload))
@@ -2514,13 +2528,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     catch
                                     {
                                     }
-                                }
-
-                                if (!IsNullOrWhiteSpace(requestStoryHubReadyHubId)
-                                    && !IsNullOrWhiteSpace(requestStoryHubReadyCharacterId)
-                                    && TryActivateHubReadiness(peer, requestStoryHubReadyHubId, "request-story-hub-for"))
-                                {
-                                    cancelHubReadyFallback("request-story-hub-for");
                                 }
 
                             }
@@ -2598,8 +2605,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     && rawMessage.IndexOf("RequestCurrentStorylineHubMessage", StringComparison.Ordinal) >= 0
                                     && cachedHubStatePayload != null)
                                 {
-                                    string requestCurrentStorylineHubReadyHubId = null;
-                                    string requestCurrentStorylineHubReadyCharacterId = null;
                                     if (!IsNullOrWhiteSpace(currentHubInstanceId))
                                     {
                                         HubPresenceRegistry.Participant previousParticipant;
@@ -2715,15 +2720,14 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                         if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipantHubId))
                                         {
+                                            // Force a fresh hub-ready/replay cycle for this peer on story-hub requests.
+                                            // This is needed when the client returns from mission but hub/character IDs are unchanged.
+                                            ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
+
                                             if (shouldBroadcastAdd)
                                             {
                                                     ClearHubAnnouncementForAllPeers(currentParticipantHubId, currentParticipant.CharacterId);
-                                                ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
                                             }
-
-                                            requestCurrentStorylineHubReadyHubId = currentParticipantHubId;
-                                            requestCurrentStorylineHubReadyCharacterId = currentParticipant.CharacterId;
-                                            armHubReadyFallback(currentParticipantHubId, currentParticipant.CharacterId, "request-current-storyline-hub");
 
                                         }
 
@@ -2761,6 +2765,10 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                     var requestMsgNoBase = direct.Value.MsgNo + 110;
 
+                                    // Keep request-driven hub responses deterministic: do not suppress the first
+                                    // post-request push based on recent payload history.
+                                    ResetHubPushDedupForPeer(peer);
+
                                     if (!ShouldSuppressDuplicateHubPush(peer, false, cachedHubStatePayload))
                                     {
                                         var hubStateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 37, cachedHubStatePayload), requestMsgNoBase + 1);
@@ -2774,13 +2782,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             var creationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 38, cachedCreationInfoPayload), requestMsgNoBase + 2);
                                             SendRawFrame(stream, peer, PrefixLength(creationInfoCore), "sent MetaGameplayCommunicationObject CreationInfoChanged in response to RequestCurrentStorylineHubMessage");
                                         }
-                                    }
-
-                                    if (!IsNullOrWhiteSpace(requestCurrentStorylineHubReadyHubId)
-                                        && !IsNullOrWhiteSpace(requestCurrentStorylineHubReadyCharacterId)
-                                        && TryActivateHubReadiness(peer, requestCurrentStorylineHubReadyHubId, "request-current-storyline-hub"))
-                                    {
-                                        cancelHubReadyFallback("request-current-storyline-hub");
                                     }
 
                                 }
@@ -3070,6 +3071,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     direct.Value.MsgNo,
                                     gameworldEntityId,
                                     missionInstanceEntityId,
+                                    missionCommandEntityId,
                                     gameClientEntityId,
                                     activeIdentityHash,
                                     activeIdentityGuid,

@@ -658,6 +658,82 @@ namespace Shadowrun.LocalService.Core.Simulation
             return control.PlayerId == playerId;
         }
 
+        internal bool TryReassignDisconnectedPlayerControl(ulong disconnectedPlayerId, out ulong reassignedToPlayerId, out int reassignedAgentCount)
+        {
+            reassignedToPlayerId = 0UL;
+            reassignedAgentCount = 0;
+
+            if (disconnectedPlayerId == 0UL || _gameworld == null || _gameworld.EntitySystem == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                var controlComponents = _gameworld.EntitySystem
+                    .GetAllComponents<ControlComponent>()
+                    .Where(c => c != null && !c.IsAIControlled && c.PlayerId != 0UL)
+                    .ToList();
+
+                if (controlComponents.Count == 0)
+                {
+                    return false;
+                }
+
+                var allExistingPlayers = controlComponents
+                    .Select(c => c.PlayerId)
+                    .Distinct(AoTUlongComparer.Instance)
+                    .ToList();
+
+                allExistingPlayers.Remove(disconnectedPlayerId);
+
+                try
+                {
+                    var teamInfo = _gameworld.EntitySystem.GetComponent<TeamInfoComponent>(EnvironmentEntity.Instance);
+                    if (teamInfo != null)
+                    {
+                        foreach (var team in teamInfo)
+                        {
+                            if (team != null)
+                            {
+                                team.RemoveHumanPlayer(disconnectedPlayerId);
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                }
+
+                if (!allExistingPlayers.Any())
+                {
+                    return false;
+                }
+
+                var nextPlayerId = allExistingPlayers.First();
+                var reassigned = 0;
+                for (var i = 0; i < controlComponents.Count; i++)
+                {
+                    var control = controlComponents[i];
+                    if (control.PlayerId == disconnectedPlayerId)
+                    {
+                        control.PlayerId = nextPlayerId;
+                        reassigned++;
+                    }
+                }
+
+                reassignedToPlayerId = nextPlayerId;
+                reassignedAgentCount = reassigned;
+                return reassigned > 0;
+            }
+            catch
+            {
+                reassignedToPlayerId = 0UL;
+                reassignedAgentCount = 0;
+                return false;
+            }
+        }
+
         public void Stop()
         {
             _controller.Stop();

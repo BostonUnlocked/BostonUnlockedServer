@@ -1651,6 +1651,15 @@ namespace Shadowrun.LocalService.Core.Protocols
                     var groupAfter = CloneGroup(rec);
                     var remainingMembers = rec.MemberAccountIds != null ? rec.MemberAccountIds.ToArray() : new Guid[0];
 
+                    // Keep party membership visible to remaining participants even during active
+                    // coop mission sessions. Only disband suppression is retained below so the
+                    // group survives host-leave until mission teardown completes.
+                    var suppressCoopDisband = isSelfLeave
+                        && remainingMembers.Length > 0
+                        && !string.IsNullOrEmpty(rec.Group.GroupName)
+                        && rec.Group.GroupName.StartsWith("CoopGroup", StringComparison.OrdinalIgnoreCase)
+                        && MissionRuntimeRegistry.IsCoopMissionActive(rec.Group.GroupName);
+
                     if (isSelfLeave)
                     {
                         var leftEvt = BuildGroupMemberLeftEvent(memberId, groupAfter, "GroupManager.LeftGroup");
@@ -1663,7 +1672,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 pending.Add(new PendingAccountEvent { AccountId = a, Event = leftEvt });
                             }
                         }
-                        // Also notify the leaver (helps UI cleanup if the group object lingers briefly).
+                        // Always notify the leaver (helps UI cleanup if the group object lingers briefly).
                         pending.Add(new PendingAccountEvent { AccountId = memberId, Event = leftEvt });
                     }
                     else
@@ -1683,20 +1692,25 @@ namespace Shadowrun.LocalService.Core.Protocols
                     }
 
                     // Non-persistent groups are treated as party instances; when the owner leaves, the group is closed.
+                    // Exception: do not disband while a coop mission is still active — the remaining
+                    // participants need the group context to stay intact until the mission ends.
                     if (ownerLeft && !isPersistent)
                     {
-                        DisbandGroup_NoLock(groupId);
-
-                        var deletedEvt = BuildGroupsListChangedEvent(groupAfter, 0);
-                        for (var i = 0; i < remainingMembers.Length; i++)
+                        if (!suppressCoopDisband)
                         {
-                            var a = remainingMembers[i];
-                            if (a != Guid.Empty)
+                            DisbandGroup_NoLock(groupId);
+
+                            var deletedEvt = BuildGroupsListChangedEvent(groupAfter, 0);
+                            for (var i = 0; i < remainingMembers.Length; i++)
                             {
-                                pending.Add(new PendingAccountEvent { AccountId = a, Event = deletedEvt });
+                                var a = remainingMembers[i];
+                                if (a != Guid.Empty)
+                                {
+                                    pending.Add(new PendingAccountEvent { AccountId = a, Event = deletedEvt });
+                                }
                             }
+                            pending.Add(new PendingAccountEvent { AccountId = memberId, Event = deletedEvt });
                         }
-                        pending.Add(new PendingAccountEvent { AccountId = memberId, Event = deletedEvt });
 
                         result = "Ok";
                     }

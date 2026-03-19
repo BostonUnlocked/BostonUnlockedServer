@@ -9,6 +9,16 @@ namespace Shadowrun.LocalService.Core.Protocols
         private static readonly HashSet<string> ActiveSoloPeers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<string, HashSet<string>> ActiveCoopGroups = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
 
+        private static string NormalizeCoopMissionKey(string coopGroupName)
+        {
+            if (string.IsNullOrEmpty(coopGroupName))
+            {
+                return string.Empty;
+            }
+
+            return CoopGroupHostRegistry.NormalizeGroupName(coopGroupName);
+        }
+
         private static void SweepDisconnectedMissions_NoLock()
         {
             ActiveSoloPeers.RemoveWhere(delegate (string peer)
@@ -76,23 +86,25 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         public static void MarkCoopMissionStarted(string coopGroupName)
         {
-            if (string.IsNullOrEmpty(coopGroupName))
+            var coopKey = NormalizeCoopMissionKey(coopGroupName);
+            if (string.IsNullOrEmpty(coopKey))
             {
                 return;
             }
 
             lock (SyncRoot)
             {
-                if (!ActiveCoopGroups.ContainsKey(coopGroupName))
+                if (!ActiveCoopGroups.ContainsKey(coopKey))
                 {
-                    ActiveCoopGroups[coopGroupName] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    ActiveCoopGroups[coopKey] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 }
             }
         }
 
         public static void MarkCoopMissionParticipantJoined(string coopGroupName, string peer)
         {
-            if (string.IsNullOrEmpty(coopGroupName) || string.IsNullOrEmpty(peer))
+            var coopKey = NormalizeCoopMissionKey(coopGroupName);
+            if (string.IsNullOrEmpty(coopKey) || string.IsNullOrEmpty(peer))
             {
                 return;
             }
@@ -100,10 +112,10 @@ namespace Shadowrun.LocalService.Core.Protocols
             lock (SyncRoot)
             {
                 HashSet<string> peers;
-                if (!ActiveCoopGroups.TryGetValue(coopGroupName, out peers) || peers == null)
+                if (!ActiveCoopGroups.TryGetValue(coopKey, out peers) || peers == null)
                 {
                     peers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    ActiveCoopGroups[coopGroupName] = peers;
+                    ActiveCoopGroups[coopKey] = peers;
                 }
 
                 peers.Add(peer);
@@ -112,7 +124,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         public static void MarkCoopMissionParticipantLeft(string coopGroupName, string peer)
         {
-            if (string.IsNullOrEmpty(coopGroupName) || string.IsNullOrEmpty(peer))
+            var coopKey = NormalizeCoopMissionKey(coopGroupName);
+            if (string.IsNullOrEmpty(coopKey) || string.IsNullOrEmpty(peer))
             {
                 return;
             }
@@ -120,7 +133,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             lock (SyncRoot)
             {
                 HashSet<string> peers;
-                if (!ActiveCoopGroups.TryGetValue(coopGroupName, out peers) || peers == null)
+                if (!ActiveCoopGroups.TryGetValue(coopKey, out peers) || peers == null)
                 {
                     return;
                 }
@@ -128,21 +141,36 @@ namespace Shadowrun.LocalService.Core.Protocols
                 peers.Remove(peer);
                 if (peers.Count == 0)
                 {
-                    ActiveCoopGroups.Remove(coopGroupName);
+                    ActiveCoopGroups.Remove(coopKey);
                 }
             }
         }
 
         public static void MarkCoopMissionEnded(string coopGroupName)
         {
-            if (string.IsNullOrEmpty(coopGroupName))
+            var coopKey = NormalizeCoopMissionKey(coopGroupName);
+            if (string.IsNullOrEmpty(coopKey))
             {
                 return;
             }
 
             lock (SyncRoot)
             {
-                ActiveCoopGroups.Remove(coopGroupName);
+                ActiveCoopGroups.Remove(coopKey);
+            }
+        }
+
+        public static bool IsCoopMissionActive(string coopGroupName)
+        {
+            var coopKey = NormalizeCoopMissionKey(coopGroupName);
+            if (string.IsNullOrEmpty(coopKey))
+            {
+                return false;
+            }
+
+            lock (SyncRoot)
+            {
+                return ActiveCoopGroups.ContainsKey(coopKey);
             }
         }
 

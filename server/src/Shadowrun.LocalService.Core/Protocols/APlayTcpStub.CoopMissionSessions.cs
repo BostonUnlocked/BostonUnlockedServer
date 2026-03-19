@@ -908,6 +908,55 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                         var departingIdentityGuid = list[i] != null ? list[i].IdentityGuid : Guid.Empty;
 
+                        if (session != null && session.Simulation != null && departingIdentityGuid != Guid.Empty)
+                        {
+                            try
+                            {
+                                ulong departingPlayerId;
+                                if (TryGetGameClientEntityIdForIdentity(departingIdentityGuid, out departingPlayerId) && departingPlayerId != 0UL)
+                                {
+                                    ulong reassignedToPlayerId;
+                                    int reassignedAgentCount;
+                                    bool reassigned;
+
+                                    lock (session.SyncRoot)
+                                    {
+                                        reassigned = session.Simulation.TryReassignDisconnectedPlayerControl(
+                                            departingPlayerId,
+                                            out reassignedToPlayerId,
+                                            out reassignedAgentCount);
+                                    }
+
+                                    _logger.Log(new
+                                    {
+                                        ts = RequestLogger.UtcNowIso(),
+                                        type = "coop-disconnect-control-reassign",
+                                        coopGroupName = coopGroupName,
+                                        peer = peer,
+                                        leavingPlayerId = departingPlayerId,
+                                        reassigned = reassigned,
+                                        reassignedToPlayerId = reassignedToPlayerId,
+                                        reassignedAgentCount = reassignedAgentCount,
+                                    });
+                                }
+                                else
+                                {
+                                    _logger.Log(new
+                                    {
+                                        ts = RequestLogger.UtcNowIso(),
+                                        type = "coop-disconnect-control-reassign",
+                                        coopGroupName = coopGroupName,
+                                        peer = peer,
+                                        status = "missing-player-id",
+                                        departingIdentityGuid = departingIdentityGuid,
+                                    });
+                                }
+                            }
+                            catch
+                            {
+                            }
+                        }
+
                         Dictionary<Guid, List<ParsedHenchmanSelection>> byIdentity;
                         if (_coopMissionHenchSelections.TryGetValue(coopGroupName, out byIdentity) && byIdentity != null && departingIdentityGuid != Guid.Empty)
                         {
