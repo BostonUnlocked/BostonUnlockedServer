@@ -2128,19 +2128,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         catch
                                         {
                                         }
-
-                                        // Also push an updated metagameplay snapshot so reload flows stay consistent.
-                                        try
-                                        {
-                                            var msgNoBase = direct.Value.MsgNo + 30;
-                                            var zipped = _careerInfoGenerator.GetZippedCareerInfo(activeIdentityGuid, slotIndex, slot);
-                                            var metaSnapshotPayload = BuildUtf16StringPayload(zipped);
-                                            var metaSnapshotCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 26, metaSnapshotPayload), msgNoBase + 1);
-                                            SendRawFrame(stream, peer, PrefixLength(metaSnapshotCore), "sent MetaGameplayCommunicationObject SendMetagameplayDataSnapshotToClient after ChangeItemPosessions");
-                                        }
-                                        catch
-                                        {
-                                        }
                                     }
                                 }
                             }
@@ -2255,17 +2242,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 16, updatePayload), msgNoBase);
                                             SendRawFrame(stream, peer, PrefixLength(updateCore), "sent AccountCommunicationObject UpdateCareerSummaries after CharacterChangeCollection");
 
-                                            try
-                                            {
-                                                var zipped = _careerInfoGenerator.GetZippedCareerInfo(activeIdentityGuid, slotIndex, slot);
-                                                var metaSnapshotPayload = BuildUtf16StringPayload(zipped);
-                                                var metaSnapshotCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 26, metaSnapshotPayload), msgNoBase + 1);
-                                                SendRawFrame(stream, peer, PrefixLength(metaSnapshotCore), "sent MetaGameplayCommunicationObject SendMetagameplayDataSnapshotToClient after CharacterChangeCollection");
-                                            }
-                                            catch
-                                            {
-                                            }
-
                                             // After character creation/customization commits (pending-creation becomes false), the client
                                             // expects updated creation-info + hub handoff; otherwise it can stall before starting the prologue.
                                             if (!slot.PendingPersistenceCreation && cachedHubStatePayload != null)
@@ -2274,15 +2250,12 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 {
                                                     var pendingJson = "{\"PendingPersistenceCreation\":" + (slot.PendingPersistenceCreation ? "true" : "false") + ",\"DataVersionChanged\":false}";
                                                     cachedCreationInfoPayload = BuildUtf16StringPayload(pendingJson);
-                                                    var creationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 38, cachedCreationInfoPayload), msgNoBase + 3);
-                                                    SendRawFrame(stream, peer, PrefixLength(creationInfoCore), "sent MetaGameplayCommunicationObject CreationInfoChanged after CharacterChangeCollection");
                                                 }
                                                 catch
                                                 {
                                                 }
 
-                                                // Some client flows also expect a dedicated CharacterChanged event after ChangeCharacter,
-                                                // not only a full metagame snapshot.
+                                                // Keep ChangeCharacter response parity with SRO.Server by emitting CharacterChanged only.
                                                 try
                                                 {
                                                     var characterIdentifier = !IsNullOrWhiteSpace(slot.CharacterIdentifier)
@@ -2291,7 +2264,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                     var pcs = BuildPlayerCharacterSnapshotForSlot(characterIdentifier, slot.CharacterName, slot);
                                                     var serializedPcs = PCSSerializer.SerializePlayerCharacterSnapshot(pcs);
                                                     var pcsPayload = BuildUtf16StringPayload(serializedPcs);
-                                                    var pcsCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 33, pcsPayload), msgNoBase + 4);
+                                                    var pcsCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 33, pcsPayload), msgNoBase + 1);
                                                     SendRawFrame(stream, peer, PrefixLength(pcsCore), "sent MetaGameplayCommunicationObject CharacterChanged after CharacterChangeCollection");
                                                 }
                                                 catch
@@ -2934,18 +2907,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 var updatePayload = BuildUtf16StringPayload(summaryJson);
                                                 var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 16, updatePayload), msgNoBase);
                                                 SendRawFrame(stream, peer, PrefixLength(updateCore), "sent AccountCommunicationObject UpdateCareerSummaries after CharacterChangeCollection");
-
-                                                // Send an updated metagame snapshot so the client doesn't revert to earlier defaults.
-                                                try
-                                                {
-                                                    var zipped = _careerInfoGenerator.GetZippedCareerInfo(activeIdentityGuid, slotIndex, slot);
-                                                    var metaSnapshotPayload = BuildUtf16StringPayload(zipped);
-                                                    var metaSnapshotCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 26, metaSnapshotPayload), msgNoBase + 1);
-                                                    SendRawFrame(stream, peer, PrefixLength(metaSnapshotCore), "sent MetaGameplayCommunicationObject SendMetagameplayDataSnapshotToClient after CharacterChangeCollection");
-                                                }
-                                                catch
-                                                {
-                                                }
                                             }
                                         }
                                     }

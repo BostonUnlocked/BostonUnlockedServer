@@ -91,7 +91,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                             {
                                 try
                                 {
-                                    _userStore.UpsertCareer(slotForStoryRewards);
+                                    if (!IsNullOrWhiteSpace(activeIdentityHash))
+                                    {
+                                        _userStore.UpsertCareer(activeIdentityHash, slotForStoryRewards);
+                                    }
+                                    else
+                                    {
+                                        _userStore.UpsertCareer(slotForStoryRewards);
+                                    }
                                 }
                                 catch
                                 {
