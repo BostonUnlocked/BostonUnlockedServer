@@ -25,8 +25,8 @@ namespace Shadowrun.LocalService.Host
 				// Ignore.
 			}
 			var logger = options.DisableFileLogs
-				? new RequestLogger(null, null, options.StructuredLogRotationIntervalMinutes, options.StructuredLogRetentionDays)
-				: new RequestLogger(options.EventsLogPrefix, options.DiagnosticsLogPrefix, options.StructuredLogRotationIntervalMinutes, options.StructuredLogRetentionDays);
+				? new RequestLogger(null, null, null, options.StructuredLogRotationIntervalMinutes, options.StructuredLogRetentionDays)
+				: new RequestLogger(options.EventsLogPrefix, options.DiagnosticsLogPrefix, options.PlayerBugReportsLogPrefix, options.StructuredLogRotationIntervalMinutes, options.StructuredLogRetentionDays);
 			logger.Reset();
 			logger.Log(new
 			{
@@ -56,6 +56,7 @@ namespace Shadowrun.LocalService.Host
 			{
 				Console.WriteLine("[localservice-cs] events log prefix: {0}", options.EventsLogPrefix);
 				Console.WriteLine("[localservice-cs] diagnostics log prefix: {0}", options.DiagnosticsLogPrefix);
+				Console.WriteLine("[localservice-cs] player bug log prefix: {0}", options.PlayerBugReportsLogPrefix);
 				Console.WriteLine("[localservice-cs] log rotation: {0} minutes", options.StructuredLogRotationIntervalMinutes);
 				Console.WriteLine("[localservice-cs] log retention: {0} day(s)", options.StructuredLogRetentionDays);
 			}
