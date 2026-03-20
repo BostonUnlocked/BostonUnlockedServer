@@ -49,6 +49,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 public NetworkStream Stream;
                 public object SendLock;
                 public User User;
+                public readonly HashSet<string> GlobalMessageSubscriptions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             }
 
             private sealed class GroupRecord
@@ -425,6 +426,40 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
             }
 
+            public void AddGlobalMessageSubscription(Guid connectionId, string category)
+            {
+                if (connectionId == Guid.Empty || string.IsNullOrEmpty(category))
+                {
+                    return;
+                }
+
+                lock (_lock)
+                {
+                    Peer peer;
+                    if (_peersByConnId.TryGetValue(connectionId, out peer) && peer != null)
+                    {
+                        peer.GlobalMessageSubscriptions.Add(category);
+                    }
+                }
+            }
+
+            public void RemoveGlobalMessageSubscription(Guid connectionId, string category)
+            {
+                if (connectionId == Guid.Empty || string.IsNullOrEmpty(category))
+                {
+                    return;
+                }
+
+                lock (_lock)
+                {
+                    Peer peer;
+                    if (_peersByConnId.TryGetValue(connectionId, out peer) && peer != null)
+                    {
+                        peer.GlobalMessageSubscriptions.Remove(category);
+                    }
+                }
+            }
+
             private bool ChannelHasAccountConnection_NoLock(HashSet<Guid> members, Guid accountId)
             {
                 return ChannelHasAccountConnection_NoLock(members, accountId, Guid.Empty);
@@ -647,6 +682,43 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return deliveredChannels;
             }
 
+            public int BroadcastGlobalMessage(string category, string key, string title, string body)
+            {
+                if (string.IsNullOrEmpty(category) || string.IsNullOrEmpty(title) || string.IsNullOrEmpty(body))
+                {
+                    return 0;
+                }
+
+                var payload = BuildGlobalMessageEvent(category, key, title, body);
+                List<Peer> targets;
+
+                lock (_lock)
+                {
+                    targets = new List<Peer>();
+                    foreach (var peer in _peersByConnId.Values)
+                    {
+                        if (peer == null || peer.Stream == null)
+                        {
+                            continue;
+                        }
+
+                        if (!peer.GlobalMessageSubscriptions.Contains(category))
+                        {
+                            continue;
+                        }
+
+                        targets.Add(peer);
+                    }
+                }
+
+                for (var i = 0; i < targets.Count; i++)
+                {
+                    SendEventToPeer(targets[i], payload);
+                }
+
+                return targets.Count;
+            }
+
             public void SendTextMessageToAccount(Guid toAccountId, string channelName, Guid senderAccountId, string text)
             {
                 if (toAccountId == Guid.Empty)
@@ -858,6 +930,33 @@ namespace Shadowrun.LocalService.Core.Protocols
                 };
 
                 SendEventToAccount(toAccountId, evt);
+            }
+
+            private static MessageEventParameters BuildGlobalMessageEvent(string category, string key, string title, string body)
+            {
+                var root = new Dictionary<string, object>();
+                root["$type"] = "Cliffhanger.ChatAndFriends.Client.Messaging.DTOs.GlobalMessage, Cliffhanger.ChatAndFriends.Client";
+                root["Category"] = category;
+                root["Key"] = !string.IsNullOrEmpty(key) ? key : "localservice.announce";
+                root["LocalizedTitle"] = BuildLocalizedTextMap(title);
+                root["LocalizedBody"] = BuildLocalizedTextMap(body);
+
+                return new MessageEventParameters
+                {
+                    Type = "GlobalMessage",
+                    Payload = Json.Serialize(root),
+                };
+            }
+
+            private static Dictionary<string, object> BuildLocalizedTextMap(string text)
+            {
+                var value = text ?? string.Empty;
+                return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "English", value },
+                    { "German", value },
+                    { "French", value },
+                };
             }
 
             public bool IsAccountOnline(Guid accountId)

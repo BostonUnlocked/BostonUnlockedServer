@@ -232,10 +232,36 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
 
                 case "AddGlobalMessageSubscriptionRequest":
+                {
+                    var req = DeserializeMessage<AddGlobalMessageSubscriptionRequest>(requestPayload);
+                    try
+                    {
+                        if (_chatAndFriends != null)
+                        {
+                            _chatAndFriends.AddGlobalMessageSubscription(state.ConnectionId, req != null ? req.Category : null);
+                        }
+                    }
+                    catch
+                    {
+                    }
                     return new AddGlobalMessageSubscriptionResponse();
+                }
 
                 case "RemoveGlobalMessageSubscriptionRequest":
+                {
+                    var req = DeserializeMessage<RemoveGlobalMessageSubscriptionRequest>(requestPayload);
+                    try
+                    {
+                        if (_chatAndFriends != null)
+                        {
+                            _chatAndFriends.RemoveGlobalMessageSubscription(state.ConnectionId, req != null ? req.Category : null);
+                        }
+                    }
+                    catch
+                    {
+                    }
                     return new RemoveGlobalMessageSubscriptionResponse();
+                }
 
                 case "JoinChannelRequest":
                 {
@@ -2696,6 +2722,11 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                 var formatted = "[ANNOUNCEMENT] " + message;
                 var channelCount = owner._chatAndFriends.BroadcastAnnouncement(context.SenderAccountId, formatted);
+                var popupRecipientCount = owner._chatAndFriends.BroadcastGlobalMessage(
+                    "SRO",
+                    "localservice.announce",
+                    "Server Announcement",
+                    message);
 
                 owner.LogAdminEvent(new
                 {
@@ -2704,10 +2735,16 @@ namespace Shadowrun.LocalService.Core.Protocols
                     action = "announce-broadcast",
                     senderAccountId = context.SenderAccountId,
                     channels = channelCount,
+                    popupRecipients = popupRecipientCount,
                     text = message,
                 });
 
-                return ChatCommandResult.Ok("Announcement sent to " + channelCount.ToString() + " channel(s).");
+                return ChatCommandResult.Ok(
+                    "Announcement sent to "
+                    + channelCount.ToString()
+                    + " channel(s) and "
+                    + popupRecipientCount.ToString()
+                    + " popup recipient(s).");
             }
         }
 
