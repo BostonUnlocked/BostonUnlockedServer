@@ -22,6 +22,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             ulong directMessageNumber,
             ulong gameworldEntityId,
             ulong missionInstanceEntityId,
+            ulong missionCommandEntityId,
             ulong gameClientEntityId,
             string activeIdentityHash,
             Guid activeIdentityGuid,
@@ -68,6 +69,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                         peer,
                         responseMsgNoBase,
                         gameworldEntityId,
+                        missionInstanceEntityId,
+                        missionCommandEntityId,
                         gameClientEntityId,
                         activeIdentityHash,
                         activeIdentityGuid,
@@ -800,6 +803,8 @@ namespace Shadowrun.LocalService.Core.Protocols
             string peer,
             ulong responseMsgNoBase,
             ulong gameworldEntityId,
+            ulong missionInstanceEntityId,
+            ulong missionCommandEntityId,
             ulong gameClientEntityId,
             string activeIdentityHash,
             Guid activeIdentityGuid,
@@ -850,13 +855,17 @@ namespace Shadowrun.LocalService.Core.Protocols
             var isVictory = string.Equals(missionOutcome, "Victory", StringComparison.OrdinalIgnoreCase);
             var completedMapName = !IsNullOrWhiteSpace(currentMissionMapName) ? currentMissionMapName : "1_010_Prologue";
             var isRepeatableMission = IsRepeatableMission(completedMapName);
+            var missionStateAfterLeave = !isVictory
+                ? StoryMissionstate.ReadyToPlay.ToString()
+                : (isRepeatableMission ? StoryMissionstate.ReadyToPlay.ToString() : StoryMissionstate.ReadyToReceiveRewards.ToString());
+            var missionStatePersisted = false;
 
             if (isVictory && !isRepeatableMission)
             {
                 completedStoryMissions.Add(completedMapName);
             }
 
-            if (_userStore != null)
+            if (!leavingMidMission && _userStore != null)
             {
                 try
                 {
@@ -868,10 +877,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                             progressSlot.MainCampaignMissionStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                         }
 
-                        progressSlot.MainCampaignMissionStates[completedMapName] = !isVictory
-                            ? StoryMissionstate.ReadyToPlay.ToString()
-                            : (isRepeatableMission ? StoryMissionstate.ReadyToPlay.ToString() : StoryMissionstate.ReadyToReceiveRewards.ToString());
+                        progressSlot.MainCampaignMissionStates[completedMapName] = missionStateAfterLeave;
                         _userStore.UpsertCareer(activeIdentityHash, progressSlot);
+                        missionStatePersisted = true;
 
                     }
                 }
@@ -1128,18 +1136,25 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
             }
 
+            if (!leavingMidMission && missionStatePersisted)
+            {
+                try
+                {
+                    var storyProgressChangeJson = "{\"TypeName\":\"Cliffhanger.SRO.ServerClientCommons.Metagameplay.MissionStateChange, Cliffhanger.SRO.ServerClientCommons\",\"Storyline\":\"Main Campaign\",\"Mission\":\"" + completedMapName + "\",\"NewState\":\"" + missionStateAfterLeave + "\"}";
+                    var storyProgressChangePayload = BuildUtf16StringPayload(storyProgressChangeJson);
+                    var storyProgressChangeCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 36, storyProgressChangePayload), responseMsgNoBase + 21);
+                    SendRawFrame(stream, peer, PrefixLength(storyProgressChangeCore), "sent MetaGameplayCommunicationObject StoryprogressChanged (MissionStateChange " + missionStateAfterLeave + ") after LeaveMission");
+                }
+                catch
+                {
+                }
+            }
+
             if (_userStore != null)
             {
                 try
                 {
                     var slotForSnapshot = rewardSlot ?? (!IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false) : null);
-                    var zippedCareerInfo = slotForSnapshot != null
-                        ? _careerInfoGenerator.GetZippedCareerInfo(activeIdentityGuid, activeCareerIndex, slotForSnapshot)
-                        : _careerInfoGenerator.GetZippedCareerInfo(activeIdentityGuid, activeCareerIndex, activeCharacterName, false);
-
-                    var metaSnapshotPayload = BuildUtf16StringPayload(zippedCareerInfo);
-                    var metaSnapshotCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 26, metaSnapshotPayload), responseMsgNoBase + 10);
-                    SendRawFrame(stream, peer, PrefixLength(metaSnapshotCore), "sent MetaGameplayCommunicationObject SendMetagameplayDataSnapshotToClient after LeaveMission (reward sync)");
 
                     if (slotForSnapshot != null)
                     {
@@ -1168,9 +1183,23 @@ namespace Shadowrun.LocalService.Core.Protocols
             var leavePayload = BitConverter.GetBytes(participantId);
             var leaveCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameworldEntityId, 3, leavePayload), responseMsgNoBase + 13);
             SendRawFrame(stream, peer, PrefixLength(leaveCore), "sent GameworldCommunicationObject LeaveMission (participantId=" + participantId + ")");
+            if (!IsNullOrWhiteSpace(currentCoopGroupName))
+            {
+                // Mirror SRO mission-side leave signaling so remaining coop clients get onLeaveMission for the departed participant.
+                BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(leaveCore), "sent GameworldCommunicationObject LeaveMission (coop bcast, participantId=" + participantId + ")");
+            }
 
             var stopCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameworldEntityId, 0, new byte[0]), responseMsgNoBase + 14);
             SendRawFrame(stream, peer, PrefixLength(stopCore), "sent GameworldCommunicationObject Stop after LeaveMission");
+
+            var missionCommandUnsubscribeCore = BuildCoreDirectSystem(1, BuildApUnsubscribeRecursive(missionCommandEntityId), responseMsgNoBase + 15);
+            SendRawFrame(stream, peer, PrefixLength(missionCommandUnsubscribeCore), "sent unsubscribe-recursive for mission command communication object");
+
+            var missionInstanceUnsubscribeCore = BuildCoreDirectSystem(1, BuildApUnsubscribeRecursive(missionInstanceEntityId), responseMsgNoBase + 16);
+            SendRawFrame(stream, peer, PrefixLength(missionInstanceUnsubscribeCore), "sent unsubscribe-recursive for mission instance communication object");
+
+            var gameworldUnsubscribeCore = BuildCoreDirectSystem(1, BuildApUnsubscribeRecursive(gameworldEntityId), responseMsgNoBase + 17);
+            SendRawFrame(stream, peer, PrefixLength(gameworldUnsubscribeCore), "sent unsubscribe-recursive for gameworld communication object");
 
             if (simulationSession == null)
             {

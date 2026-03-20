@@ -134,6 +134,7 @@ public sealed class LocalServiceOptions
 
     public string EventsLogPrefix { get { return Path.Combine(LogDir, "events"); } }
     public string DiagnosticsLogPrefix { get { return Path.Combine(LogDir, "diagnostics"); } }
+    public string PlayerBugReportsLogPrefix { get { return Path.Combine(LogDir, "player-bugs"); } }
 
     private string TryGetPortableSubdir(string name)
     {

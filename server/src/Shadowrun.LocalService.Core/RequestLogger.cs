@@ -14,6 +14,7 @@ public sealed class RequestLogger
 {
     private const string EventsStream = "events";
     private const string DiagnosticsStream = "diagnostics";
+    private const string PlayerBugsStream = "player-bugs";
     private const string SchemaVersion = "1";
 
     private static readonly JavaScriptSerializer Json = CreateSerializer();
@@ -21,6 +22,7 @@ public sealed class RequestLogger
 
     private readonly string _eventsPrefix;
     private readonly string _diagnosticsPrefix;
+    private readonly string _playerBugsPrefix;
     private readonly bool _fileLoggingEnabled;
     private readonly object _writeLock = new object();
     private readonly object _contextLock = new object();
@@ -32,16 +34,22 @@ public sealed class RequestLogger
     private DateTimeOffset _lastCleanupUtc;
 
     public RequestLogger(string eventsPrefix, string diagnosticsPrefix)
-        : this(eventsPrefix, diagnosticsPrefix, 5, 1)
+        : this(eventsPrefix, diagnosticsPrefix, null, 5, 1)
     {
     }
 
     public RequestLogger(string eventsPrefix, string diagnosticsPrefix, int rotationIntervalMinutes, int retentionDays)
+        : this(eventsPrefix, diagnosticsPrefix, null, rotationIntervalMinutes, retentionDays)
+    {
+    }
+
+    public RequestLogger(string eventsPrefix, string diagnosticsPrefix, string playerBugsPrefix, int rotationIntervalMinutes, int retentionDays)
     {
         if (IsNullOrWhiteSpace(eventsPrefix))
         {
             _eventsPrefix = null;
             _diagnosticsPrefix = null;
+            _playerBugsPrefix = null;
             _fileLoggingEnabled = false;
             _rotationInterval = TimeSpan.FromMinutes(5);
             _retentionPeriod = TimeSpan.FromDays(1);
@@ -50,6 +58,7 @@ public sealed class RequestLogger
 
         _eventsPrefix = eventsPrefix;
         _diagnosticsPrefix = IsNullOrWhiteSpace(diagnosticsPrefix) ? null : diagnosticsPrefix;
+        _playerBugsPrefix = IsNullOrWhiteSpace(playerBugsPrefix) ? null : playerBugsPrefix;
         _fileLoggingEnabled = true;
         _rotationInterval = TimeSpan.FromMinutes(rotationIntervalMinutes > 0 ? rotationIntervalMinutes : 5);
         _retentionPeriod = TimeSpan.FromDays(retentionDays > 0 ? retentionDays : 1);
@@ -58,6 +67,10 @@ public sealed class RequestLogger
         if (_diagnosticsPrefix != null)
         {
             EnsureParentDirectory(_diagnosticsPrefix);
+        }
+        if (_playerBugsPrefix != null)
+        {
+            EnsureParentDirectory(_playerBugsPrefix);
         }
     }
 
@@ -84,6 +97,11 @@ public sealed class RequestLogger
     public void LogAdmin(object payload)
     {
         WriteStructured(EventsStream, "info", payload);
+    }
+
+    public void LogPlayerBug(object payload)
+    {
+        WriteStructured(PlayerBugsStream, "info", payload);
     }
 
     public static string UtcNowIso()
@@ -496,6 +514,11 @@ public sealed class RequestLogger
         if (string.Equals(streamName, DiagnosticsStream, StringComparison.OrdinalIgnoreCase) && !IsNullOrWhiteSpace(_diagnosticsPrefix))
         {
             return _diagnosticsPrefix;
+        }
+
+        if (string.Equals(streamName, PlayerBugsStream, StringComparison.OrdinalIgnoreCase) && !IsNullOrWhiteSpace(_playerBugsPrefix))
+        {
+            return _playerBugsPrefix;
         }
 
         return _eventsPrefix;

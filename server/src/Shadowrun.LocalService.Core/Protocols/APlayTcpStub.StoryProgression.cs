@@ -91,7 +91,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                             {
                                 try
                                 {
-                                    _userStore.UpsertCareer(slotForStoryRewards);
+                                    if (!IsNullOrWhiteSpace(activeIdentityHash))
+                                    {
+                                        _userStore.UpsertCareer(activeIdentityHash, slotForStoryRewards);
+                                    }
+                                    else
+                                    {
+                                        _userStore.UpsertCareer(slotForStoryRewards);
+                                    }
                                 }
                                 catch
                                 {
@@ -148,13 +155,6 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                     var shouldSendMissionReward = storyRewardApplication.ShouldNotifyClient && slotForStoryRewards != null;
 
-                    // Keep the accepted story-state burst aligned with retail ordering:
-                    // chapter advancement already emits a StoryprogressChanged(ChapterChange),
-                    // so avoid appending an immediate field-26 snapshot in that same burst.
-                    var shouldSendMetaSnapshot = slotForStoryRewards != null
-                        && storyRewardApplication.ShouldNotifyClient
-                        && !chapterAdvanced;
-
                     var minOutMsgNo = incomingMsgNo + 1UL;
                     if (minOutMsgNo == 0UL)
                     {
@@ -163,8 +163,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                     var sendCount = 1
                         + (shouldSendMissionReward ? 1 : 0)
-                        + (chapterAdvanced ? 1 : 0)
-                        + (shouldSendMetaSnapshot ? 1 : 0);
+                        + (chapterAdvanced ? 1 : 0);
                     outMsgNo = ReserveMetaGameplayMsgNosWithFloor(minOutMsgNo, sendCount);
                     var firstOutMsgNo = outMsgNo;
 
@@ -182,7 +181,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                         sendCount = sendCount,
                         chapterAdvanced = chapterAdvanced,
                         shouldSendMissionReward = shouldSendMissionReward,
-                        shouldSendMetaSnapshot = shouldSendMetaSnapshot,
                         careerIndex = activeCareerIndex,
                     });
 
@@ -216,32 +214,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                         }
                     }
 
-                    if (shouldSendMetaSnapshot)
-                    {
-                        try
-                        {
-                            var zipped = _careerInfoGenerator.GetZippedCareerInfo(activeIdentityGuid, activeCareerIndex, slotForStoryRewards);
-                            _logger.Log(new
-                            {
-                                ts = RequestLogger.UtcNowIso(),
-                                type = "field26-snapshot-send",
-                                trigger = "set-story-mission-state",
-                                mission = missionName,
-                                targetState = parsedTarget.ToString(),
-                                chapterAdvanced = chapterAdvanced,
-                                shouldNotifyClient = storyRewardApplication.ShouldNotifyClient,
-                                careerIndex = activeCareerIndex,
-                                blobLength = !IsNullOrWhiteSpace(zipped) ? zipped.Length : 0,
-                                slotMainCampaignCurrentChapter = slotForStoryRewards.MainCampaignCurrentChapter,
-                            });
-                            var metaSnapshotPayload = BuildUtf16StringPayload(zipped);
-                            var metaSnapshotCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 26, metaSnapshotPayload), outMsgNo++);
-                            SendRawFrame(stream, peer, PrefixLength(metaSnapshotCore), "sent MetaGameplayCommunicationObject SendMetagameplayDataSnapshotToClient after SetStoryMissionStateMessage");
-                        }
-                        catch
-                        {
-                        }
-                    }
                 }
             }
 

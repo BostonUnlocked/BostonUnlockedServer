@@ -102,6 +102,11 @@ namespace Shadowrun.LocalService.Core.Protocols
             return Concat(new byte[] { 7 }, BitConverter.GetBytes(entityId), BitConverter.GetBytes(typeId));
         }
 
+        private static byte[] BuildApUnsubscribeRecursive(ulong entityId)
+        {
+            return Concat(new byte[] { 2 }, BitConverter.GetBytes(entityId));
+        }
+
         private static byte[] BuildGameClientWelcomePayload(ulong accountRefId, string careerSummary)
         {
             return Concat(BitConverter.GetBytes(accountRefId), BuildUtf16StringPayload(careerSummary));

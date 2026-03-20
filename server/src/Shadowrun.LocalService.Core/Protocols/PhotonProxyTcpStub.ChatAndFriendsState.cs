@@ -49,6 +49,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 public NetworkStream Stream;
                 public object SendLock;
                 public User User;
+                public readonly HashSet<string> GlobalMessageSubscriptions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             }
 
             private sealed class GroupRecord
@@ -425,6 +426,40 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
             }
 
+            public void AddGlobalMessageSubscription(Guid connectionId, string category)
+            {
+                if (connectionId == Guid.Empty || string.IsNullOrEmpty(category))
+                {
+                    return;
+                }
+
+                lock (_lock)
+                {
+                    Peer peer;
+                    if (_peersByConnId.TryGetValue(connectionId, out peer) && peer != null)
+                    {
+                        peer.GlobalMessageSubscriptions.Add(category);
+                    }
+                }
+            }
+
+            public void RemoveGlobalMessageSubscription(Guid connectionId, string category)
+            {
+                if (connectionId == Guid.Empty || string.IsNullOrEmpty(category))
+                {
+                    return;
+                }
+
+                lock (_lock)
+                {
+                    Peer peer;
+                    if (_peersByConnId.TryGetValue(connectionId, out peer) && peer != null)
+                    {
+                        peer.GlobalMessageSubscriptions.Remove(category);
+                    }
+                }
+            }
+
             private bool ChannelHasAccountConnection_NoLock(HashSet<Guid> members, Guid accountId)
             {
                 return ChannelHasAccountConnection_NoLock(members, accountId, Guid.Empty);
@@ -647,6 +682,43 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return deliveredChannels;
             }
 
+            public int BroadcastGlobalMessage(string category, string key, string title, string body)
+            {
+                if (string.IsNullOrEmpty(category) || string.IsNullOrEmpty(title) || string.IsNullOrEmpty(body))
+                {
+                    return 0;
+                }
+
+                var payload = BuildGlobalMessageEvent(category, key, title, body);
+                List<Peer> targets;
+
+                lock (_lock)
+                {
+                    targets = new List<Peer>();
+                    foreach (var peer in _peersByConnId.Values)
+                    {
+                        if (peer == null || peer.Stream == null)
+                        {
+                            continue;
+                        }
+
+                        if (!peer.GlobalMessageSubscriptions.Contains(category))
+                        {
+                            continue;
+                        }
+
+                        targets.Add(peer);
+                    }
+                }
+
+                for (var i = 0; i < targets.Count; i++)
+                {
+                    SendEventToPeer(targets[i], payload);
+                }
+
+                return targets.Count;
+            }
+
             public void SendTextMessageToAccount(Guid toAccountId, string channelName, Guid senderAccountId, string text)
             {
                 if (toAccountId == Guid.Empty)
@@ -858,6 +930,33 @@ namespace Shadowrun.LocalService.Core.Protocols
                 };
 
                 SendEventToAccount(toAccountId, evt);
+            }
+
+            private static MessageEventParameters BuildGlobalMessageEvent(string category, string key, string title, string body)
+            {
+                var root = new Dictionary<string, object>();
+                root["$type"] = "Cliffhanger.ChatAndFriends.Client.Messaging.DTOs.GlobalMessage, Cliffhanger.ChatAndFriends.Client";
+                root["Category"] = category;
+                root["Key"] = !string.IsNullOrEmpty(key) ? key : "localservice.announce";
+                root["LocalizedTitle"] = BuildLocalizedTextMap(title);
+                root["LocalizedBody"] = BuildLocalizedTextMap(body);
+
+                return new MessageEventParameters
+                {
+                    Type = "GlobalMessage",
+                    Payload = Json.Serialize(root),
+                };
+            }
+
+            private static Dictionary<string, object> BuildLocalizedTextMap(string text)
+            {
+                var value = text ?? string.Empty;
+                return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "English", value },
+                    { "German", value },
+                    { "French", value },
+                };
             }
 
             public bool IsAccountOnline(Guid accountId)
@@ -1651,6 +1750,15 @@ namespace Shadowrun.LocalService.Core.Protocols
                     var groupAfter = CloneGroup(rec);
                     var remainingMembers = rec.MemberAccountIds != null ? rec.MemberAccountIds.ToArray() : new Guid[0];
 
+                    // Keep party membership visible to remaining participants even during active
+                    // coop mission sessions. Only disband suppression is retained below so the
+                    // group survives host-leave until mission teardown completes.
+                    var suppressCoopDisband = isSelfLeave
+                        && remainingMembers.Length > 0
+                        && !string.IsNullOrEmpty(rec.Group.GroupName)
+                        && rec.Group.GroupName.StartsWith("CoopGroup", StringComparison.OrdinalIgnoreCase)
+                        && MissionRuntimeRegistry.IsCoopMissionActive(rec.Group.GroupName);
+
                     if (isSelfLeave)
                     {
                         var leftEvt = BuildGroupMemberLeftEvent(memberId, groupAfter, "GroupManager.LeftGroup");
@@ -1663,7 +1771,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 pending.Add(new PendingAccountEvent { AccountId = a, Event = leftEvt });
                             }
                         }
-                        // Also notify the leaver (helps UI cleanup if the group object lingers briefly).
+                        // Always notify the leaver (helps UI cleanup if the group object lingers briefly).
                         pending.Add(new PendingAccountEvent { AccountId = memberId, Event = leftEvt });
                     }
                     else
@@ -1683,20 +1791,25 @@ namespace Shadowrun.LocalService.Core.Protocols
                     }
 
                     // Non-persistent groups are treated as party instances; when the owner leaves, the group is closed.
+                    // Exception: do not disband while a coop mission is still active — the remaining
+                    // participants need the group context to stay intact until the mission ends.
                     if (ownerLeft && !isPersistent)
                     {
-                        DisbandGroup_NoLock(groupId);
-
-                        var deletedEvt = BuildGroupsListChangedEvent(groupAfter, 0);
-                        for (var i = 0; i < remainingMembers.Length; i++)
+                        if (!suppressCoopDisband)
                         {
-                            var a = remainingMembers[i];
-                            if (a != Guid.Empty)
+                            DisbandGroup_NoLock(groupId);
+
+                            var deletedEvt = BuildGroupsListChangedEvent(groupAfter, 0);
+                            for (var i = 0; i < remainingMembers.Length; i++)
                             {
-                                pending.Add(new PendingAccountEvent { AccountId = a, Event = deletedEvt });
+                                var a = remainingMembers[i];
+                                if (a != Guid.Empty)
+                                {
+                                    pending.Add(new PendingAccountEvent { AccountId = a, Event = deletedEvt });
+                                }
                             }
+                            pending.Add(new PendingAccountEvent { AccountId = memberId, Event = deletedEvt });
                         }
-                        pending.Add(new PendingAccountEvent { AccountId = memberId, Event = deletedEvt });
 
                         result = "Ok";
                     }

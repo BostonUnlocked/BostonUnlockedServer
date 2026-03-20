@@ -232,10 +232,36 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
 
                 case "AddGlobalMessageSubscriptionRequest":
+                {
+                    var req = DeserializeMessage<AddGlobalMessageSubscriptionRequest>(requestPayload);
+                    try
+                    {
+                        if (_chatAndFriends != null)
+                        {
+                            _chatAndFriends.AddGlobalMessageSubscription(state.ConnectionId, req != null ? req.Category : null);
+                        }
+                    }
+                    catch
+                    {
+                    }
                     return new AddGlobalMessageSubscriptionResponse();
+                }
 
                 case "RemoveGlobalMessageSubscriptionRequest":
+                {
+                    var req = DeserializeMessage<RemoveGlobalMessageSubscriptionRequest>(requestPayload);
+                    try
+                    {
+                        if (_chatAndFriends != null)
+                        {
+                            _chatAndFriends.RemoveGlobalMessageSubscription(state.ConnectionId, req != null ? req.Category : null);
+                        }
+                    }
+                    catch
+                    {
+                    }
                     return new RemoveGlobalMessageSubscriptionResponse();
+                }
 
                 case "JoinChannelRequest":
                 {
@@ -624,20 +650,23 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             if (!IsGlobalChannelName(req.ChannelName))
             {
-                if (_chatAndFriends != null)
+                if (!IsBugCommandText(trimmed))
                 {
-                    _chatAndFriends.SendTextMessageToAccount(state.AccountId, req.ChannelName, Guid.Empty, "[server] Slash commands are only available in Global chat.");
+                    if (_chatAndFriends != null)
+                    {
+                        _chatAndFriends.SendTextMessageToAccount(state.AccountId, req.ChannelName, Guid.Empty, "[server] Slash commands are only available in Global chat.");
+                    }
+                    LogAdminEvent(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "chat-command",
+                        action = "rejected-non-global-channel",
+                        senderAccountId = state.AccountId,
+                        channel = req.ChannelName ?? string.Empty,
+                        text = trimmed,
+                    });
+                    return true;
                 }
-                LogAdminEvent(new
-                {
-                    ts = RequestLogger.UtcNowIso(),
-                    type = "chat-command",
-                    action = "rejected-non-global-channel",
-                    senderAccountId = state.AccountId,
-                    channel = req.ChannelName ?? string.Empty,
-                    text = trimmed,
-                });
-                return true;
             }
 
             var context = BuildChatCommandContext(state, req.ChannelName, trimmed);
@@ -822,6 +851,27 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             return string.Equals(channelName, "Global", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(channelName, "SRO_Default", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsBugCommandText(string trimmedText)
+        {
+            if (string.IsNullOrEmpty(trimmedText))
+            {
+                return false;
+            }
+
+            if (!trimmedText.StartsWith("/bug", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (trimmedText.Length == 4)
+            {
+                return true;
+            }
+
+            var next = trimmedText[4];
+            return next == ' ' || next == '\t' || next == '\r' || next == '\n';
         }
 
         private static IEnumerable<string> EnumerateFeedbackMessages(ChatCommandResult result)
@@ -1309,6 +1359,7 @@ namespace Shadowrun.LocalService.Core.Protocols
         {
             var map = new Dictionary<string, IChatCommand>(StringComparer.OrdinalIgnoreCase);
             RegisterChatCommand(map, new HelpChatCommand());
+            RegisterChatCommand(map, new BugReportChatCommand());
             RegisterChatCommand(map, new AnnounceChatCommand());
             RegisterChatCommand(map, new ActiveMissionsChatCommand());
             RegisterChatCommand(map, new OnlinePlayersChatCommand());
@@ -2563,6 +2614,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     var lines = new List<string>
                     {
                         "/help",
+                        "/bug {message}",
                         "/announce {message}",
                         "/activemissions",
                         "/onlineplayers",
@@ -2582,7 +2634,61 @@ namespace Shadowrun.LocalService.Core.Protocols
                     return ChatCommandResult.OkMany(BuildPagedFeedbackMessages("Admin commands:", lines));
                 }
 
-                return ChatCommandResult.Ok("Commands: /help");
+                return ChatCommandResult.Ok("Commands: /help, /bug {message}");
+            }
+        }
+
+        private sealed class BugReportChatCommand : IChatCommand
+        {
+            public string Name { get { return "bug"; } }
+            public bool RequiresAdmin { get { return false; } }
+
+            public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
+            {
+                if (owner == null || context == null)
+                {
+                    return ChatCommandResult.Fail("Invalid command context.");
+                }
+
+                var message = args != null && args.Length > 0
+                    ? string.Join(" ", args).Trim()
+                    : string.Empty;
+                if (IsNullOrEmpty(message))
+                {
+                    return ChatCommandResult.Fail("Usage: /bug {message}");
+                }
+
+                ChatCommandTarget target;
+                string targetError;
+                var resolvedTarget = owner.TryResolveSenderCommandTarget(context, out target, out targetError) && target != null;
+
+                var characterName = resolvedTarget && !IsNullOrEmpty(target.CharacterName)
+                    ? target.CharacterName
+                    : owner.ResolveChatCommandCharacterName(context.SenderAccountId, null, context.ActiveCareerSlot);
+                var playerId = context.SenderAccountId != Guid.Empty
+                    ? context.SenderAccountId.ToString("D")
+                    : (resolvedTarget && target.AccountId != Guid.Empty ? target.AccountId.ToString("D") : string.Empty);
+
+                var payload = new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "player-bug-report",
+                    action = "reported",
+                    playerId = playerId,
+                    accountId = playerId,
+                    characterName = !IsNullOrEmpty(characterName) ? characterName : "UnknownCharacter",
+                    channel = context.ChannelName ?? string.Empty,
+                    message = message,
+                };
+
+                if (owner._logger != null)
+                {
+                    owner._logger.Log(payload);
+                    owner._logger.LogLow(payload);
+                    owner._logger.LogPlayerBug(payload);
+                }
+
+                return ChatCommandResult.Ok("Thanks. Your bug report has been logged.");
             }
         }
 
@@ -2616,6 +2722,11 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                 var formatted = "[ANNOUNCEMENT] " + message;
                 var channelCount = owner._chatAndFriends.BroadcastAnnouncement(context.SenderAccountId, formatted);
+                var popupRecipientCount = owner._chatAndFriends.BroadcastGlobalMessage(
+                    "SRO",
+                    "localservice.announce",
+                    "Server Announcement",
+                    message);
 
                 owner.LogAdminEvent(new
                 {
@@ -2624,10 +2735,16 @@ namespace Shadowrun.LocalService.Core.Protocols
                     action = "announce-broadcast",
                     senderAccountId = context.SenderAccountId,
                     channels = channelCount,
+                    popupRecipients = popupRecipientCount,
                     text = message,
                 });
 
-                return ChatCommandResult.Ok("Announcement sent to " + channelCount.ToString() + " channel(s).");
+                return ChatCommandResult.Ok(
+                    "Announcement sent to "
+                    + channelCount.ToString()
+                    + " channel(s) and "
+                    + popupRecipientCount.ToString()
+                    + " popup recipient(s).");
             }
         }
 
