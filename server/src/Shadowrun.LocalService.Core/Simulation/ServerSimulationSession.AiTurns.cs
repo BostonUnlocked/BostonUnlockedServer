@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using Cliffhanger.SRO.ServerClientCommons.ArtificialIntelligence;
 using Cliffhanger.SRO.ServerClientCommons.GameLogic.Components;
 using Cliffhanger.SRO.ServerClientCommons.Gameworld;
@@ -17,6 +18,16 @@ namespace Shadowrun.LocalService.Core.Simulation
 {
     public sealed partial class ServerSimulationSession
     {
+        private static long _aiDecisionSequence;
+
+        private sealed class AiDecisionLinkState
+        {
+            public long Sequence;
+            public string CommandName;
+        }
+
+        private readonly Dictionary<int, AiDecisionLinkState> _aiDecisionLinkByAgentId = new Dictionary<int, AiDecisionLinkState>();
+
         public IList<AiTurnAction> SkipAiTurnsIfNeeded()
         {
             var actions = new List<AiTurnAction>();
@@ -204,6 +215,23 @@ namespace Shadowrun.LocalService.Core.Simulation
             diagnostics.InactiveSpawnManagerTag = inactiveSpawnManagerTag;
             diagnostics.ForceEndTurnForInactiveGroup = forceEndTurnForInactiveGroup;
 
+            var decisionSequence = Interlocked.Increment(ref _aiDecisionSequence);
+            long? parentSequence = null;
+            string decisionPhase = plan.IsMove ? "move-plan" : (plan.IsEndTurn ? "direct-end-turn" : "attack-plan");
+            AiDecisionLinkState priorState;
+            if (plan.Agent != null
+                && _aiDecisionLinkByAgentId.TryGetValue(plan.Agent.Id, out priorState)
+                && priorState != null
+                && string.Equals(priorState.CommandName, "AI.Move", System.StringComparison.Ordinal))
+            {
+                parentSequence = priorState.Sequence;
+                decisionPhase = plan.IsMove ? "post-move-replan-move" : (plan.IsEndTurn ? "post-move-replan-end-turn" : "post-move-replan-attack");
+            }
+
+            diagnostics.DebugDecisionSequence = decisionSequence;
+            diagnostics.DebugDecisionParentSequence = parentSequence;
+            diagnostics.DebugDecisionPhase = decisionPhase;
+
             if (_enableAiLogic)
             {
                 try
@@ -220,6 +248,9 @@ namespace Shadowrun.LocalService.Core.Simulation
                         decisionSkillId = plan.SkillId,
                         decisionWeaponIndex = plan.WeaponIndex,
                         decisionSkillIndex = plan.SkillIndex,
+                        debugDecisionSequence = diagnostics.DebugDecisionSequence,
+                        debugDecisionParentSequence = diagnostics.DebugDecisionParentSequence,
+                        debugDecisionPhase = diagnostics.DebugDecisionPhase,
                         decisionNote = diagnostics.DecisionNote,
                         debugStage = diagnostics.DebugStage,
                         debugRotationType = diagnostics.DebugRotationType,
@@ -248,9 +279,15 @@ namespace Shadowrun.LocalService.Core.Simulation
                         debugAttackEvaluatedTargetCount = diagnostics.DebugAttackEvaluatedTargetCount,
                         debugAttackUsedSelfTarget = diagnostics.DebugAttackUsedSelfTarget,
                         debugAttackFailureReason = diagnostics.DebugAttackFailureReason,
+                        debugAttackDetailCount = diagnostics.DebugAttackDetailCount,
+                        debugAttackRejectionCounts = diagnostics.DebugAttackRejectionCounts,
+                        debugAttackTargetDetails = diagnostics.DebugAttackTargetDetails,
                         debugReachableCellCount = diagnostics.DebugReachableCellCount,
                         debugReducingCellCount = diagnostics.DebugReducingCellCount,
                         debugAvoidedImmediateBacktrack = diagnostics.DebugAvoidedImmediateBacktrack,
+                        debugMoveSourceX = diagnostics.DebugMoveSourceX,
+                        debugMoveSourceY = diagnostics.DebugMoveSourceY,
+                        debugMoveBaselineScore = diagnostics.DebugMoveBaselineScore,
                         debugCurrentDistToEnemy = diagnostics.DebugCurrentDistToEnemy,
                         debugChosenMoveDistToEnemy = diagnostics.DebugChosenMoveDistToEnemy,
                         debugChosenMoveDefensiveCover = diagnostics.DebugChosenMoveDefensiveCover,
@@ -329,6 +366,15 @@ namespace Shadowrun.LocalService.Core.Simulation
             {
                 var fallbackSeeds = _random.CreateSeedPackage();
                 var fallbackPos = TryGetAgentGridPositionOrDefault(executedPlan.Agent);
+                var fallbackDiagnostics = executedPlan.Diagnostics != null
+                    ? CloneAiDiagnostics(executedPlan.Diagnostics)
+                    : new AiPlanningDiagnostics();
+                fallbackDiagnostics.DecisionNote = "fallback-end-turn";
+                fallbackDiagnostics.DebugStage = "fallback-end-turn";
+                if (string.IsNullOrEmpty(fallbackDiagnostics.DebugAttackFailureReason))
+                {
+                    fallbackDiagnostics.DebugAttackFailureReason = "command-execution-fallback";
+                }
                 var fallbackCmd = new ActivatePositionTargetedActiveSkillCommand(
                     0,
                     0,
@@ -345,6 +391,11 @@ namespace Shadowrun.LocalService.Core.Simulation
                     return false;
                 }
 
+                if (executedPlan.Agent != null)
+                {
+                    _aiDecisionLinkByAgentId.Remove(executedPlan.Agent.Id);
+                }
+
                 action = new AiTurnAction(
                     AiTurnActionKind.ActivateActiveSkill,
                     executedPlan.Agent.Id,
@@ -359,6 +410,15 @@ namespace Shadowrun.LocalService.Core.Simulation
 
             if (executedPlan.IsMove)
             {
+                if (executedPlan.Agent != null)
+                {
+                    _aiDecisionLinkByAgentId[executedPlan.Agent.Id] = new AiDecisionLinkState
+                    {
+                        Sequence = decisionSequence,
+                        CommandName = executedPlan.CommandName,
+                    };
+                }
+
                 action = new AiTurnAction(
                     AiTurnActionKind.FollowPath,
                     executedPlan.Agent.Id,
@@ -369,6 +429,11 @@ namespace Shadowrun.LocalService.Core.Simulation
                     0,
                     new SeedPackage(0u, 0u, 0u, 0u));
                 return true;
+            }
+
+            if (executedPlan.Agent != null)
+            {
+                _aiDecisionLinkByAgentId.Remove(executedPlan.Agent.Id);
             }
 
             action = new AiTurnAction(
@@ -484,6 +549,70 @@ namespace Shadowrun.LocalService.Core.Simulation
             }
 
             return false;
+        }
+
+        private static AiPlanningDiagnostics CloneAiDiagnostics(AiPlanningDiagnostics source)
+        {
+            if (source == null)
+            {
+                return new AiPlanningDiagnostics();
+            }
+
+            return new AiPlanningDiagnostics
+            {
+                DecisionNote = source.DecisionNote,
+                DebugStage = source.DebugStage,
+                DebugDecisionSequence = source.DebugDecisionSequence,
+                DebugDecisionParentSequence = source.DebugDecisionParentSequence,
+                DebugDecisionPhase = source.DebugDecisionPhase,
+                DebugRotationType = source.DebugRotationType,
+                DebugRotationCount = source.DebugRotationCount,
+                DebugRawSelection = source.DebugRawSelection,
+                DebugResolvedActivityId = source.DebugResolvedActivityId,
+                DebugHasAiConfig = source.DebugHasAiConfig,
+                DebugHasLoadout = source.DebugHasLoadout,
+                DebugSelectedWeaponIndex = source.DebugSelectedWeaponIndex,
+                DebugSelectedWeaponSkillCount = source.DebugSelectedWeaponSkillCount,
+                DebugPreferredEnemyId = source.DebugPreferredEnemyId,
+                DebugChosenEnemyId = source.DebugChosenEnemyId,
+                DebugChosenEnemyTeamId = source.DebugChosenEnemyTeamId,
+                DebugChosenEnemyTeamAi = source.DebugChosenEnemyTeamAi,
+                DebugChosenEnemyControlPlayerId = source.DebugChosenEnemyControlPlayerId,
+                DebugChosenEnemyControlAi = source.DebugChosenEnemyControlAi,
+                DebugChosenEnemyIsPlayersPlayerCharacter = source.DebugChosenEnemyIsPlayersPlayerCharacter,
+                DebugChosenEnemyInteractiveObject = source.DebugChosenEnemyInteractiveObject,
+                DebugChosenTargetRelationship = source.DebugChosenTargetRelationship,
+                DebugEnemyPick = source.DebugEnemyPick,
+                DebugEnemyReason = source.DebugEnemyReason,
+                DebugEnemyX = source.DebugEnemyX,
+                DebugEnemyY = source.DebugEnemyY,
+                DebugEnemyCandidateCount = source.DebugEnemyCandidateCount,
+                DebugAttackCandidateCount = source.DebugAttackCandidateCount,
+                DebugAttackEvaluatedTargetCount = source.DebugAttackEvaluatedTargetCount,
+                DebugAttackUsedSelfTarget = source.DebugAttackUsedSelfTarget,
+                DebugAttackFailureReason = source.DebugAttackFailureReason,
+                DebugAttackDetailCount = source.DebugAttackDetailCount,
+                DebugAttackRejectionCounts = source.DebugAttackRejectionCounts,
+                DebugAttackTargetDetails = source.DebugAttackTargetDetails,
+                DebugReachableCellCount = source.DebugReachableCellCount,
+                DebugReducingCellCount = source.DebugReducingCellCount,
+                DebugAvoidedImmediateBacktrack = source.DebugAvoidedImmediateBacktrack,
+                DebugMoveSourceX = source.DebugMoveSourceX,
+                DebugMoveSourceY = source.DebugMoveSourceY,
+                DebugMoveBaselineScore = source.DebugMoveBaselineScore,
+                DebugCurrentDistToEnemy = source.DebugCurrentDistToEnemy,
+                DebugChosenMoveDistToEnemy = source.DebugChosenMoveDistToEnemy,
+                DebugChosenMoveDefensiveCover = source.DebugChosenMoveDefensiveCover,
+                DebugChosenMoveTargetCover = source.DebugChosenMoveTargetCover,
+                DebugChosenMoveScore = source.DebugChosenMoveScore,
+                DebugChosenMoveChanceToHit = source.DebugChosenMoveChanceToHit,
+                DebugChosenMoveWithinWalkRange = source.DebugChosenMoveWithinWalkRange,
+                DebugProfileRange = source.DebugProfileRange,
+                DebugShotDistanceToTarget = source.DebugShotDistanceToTarget,
+                DebugShotChanceToHit = source.DebugShotChanceToHit,
+                InactiveSpawnManagerTag = source.InactiveSpawnManagerTag,
+                ForceEndTurnForInactiveGroup = source.ForceEndTurnForInactiveGroup,
+            };
         }
 
         private static string BuildAiDecisionReasoning(PlannedAiAction action)

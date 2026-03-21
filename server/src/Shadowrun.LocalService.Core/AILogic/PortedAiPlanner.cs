@@ -56,6 +56,8 @@ namespace Shadowrun.LocalService.Core.AILogic
                 orderedMembers = new[] { fallbackAgent };
             }
 
+            AiPlanningDiagnostics lastAttemptDiagnostics = null;
+
             for (var i = 0; i < orderedMembers.Length; i++)
             {
                 var candidate = orderedMembers[i];
@@ -73,7 +75,7 @@ namespace Shadowrun.LocalService.Core.AILogic
                     var movementPlanner = new PortedAIMovementPlanner(_gameworld, candidate, _valuationFactory);
                     IntVector2D moveTarget;
                     float moveScore;
-                    if (movementPlanner.TryPlanMove(config, out moveTarget, out moveScore))
+                    if (movementPlanner.TryPlanMove(config, diagnostics, out moveTarget, out moveScore))
                     {
                         diagnostics.DecisionNote = "ported-move";
                         diagnostics.DebugStage = "ported-move";
@@ -109,15 +111,23 @@ namespace Shadowrun.LocalService.Core.AILogic
                         return attackPlan;
                     }
 
+                    lastAttemptDiagnostics = CloneDiagnostics(diagnostics);
+
                     if (selectedSkillId != selector.DefaultSkill
                         && TryCreateAttackPlan(candidate, attackPlanner, selector.DefaultSkill, "ported-attack-fallback", diagnostics, out attackPlan))
                     {
                         return attackPlan;
                     }
+
+                    lastAttemptDiagnostics = CloneDiagnostics(diagnostics);
+                }
+                else
+                {
+                    lastAttemptDiagnostics = CloneDiagnostics(diagnostics);
                 }
             }
 
-            return PlannedAiAction.CreateEndTurn(fallbackAgent, AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, fallbackAgent), "no-action", "no-target", Simulation.ServerSimulationSession.EndActorTurnSkillId);
+            return PlannedAiAction.CreateEndTurn(fallbackAgent, AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, fallbackAgent), "no-action", "no-target", Simulation.ServerSimulationSession.EndActorTurnSkillId, lastAttemptDiagnostics);
         }
 
         private bool TryCreateAttackPlan(Entity candidate, PortedAIAttackPlanner attackPlanner, ulong skillId, string note, AiPlanningDiagnostics baseDiagnostics, out PlannedAiAction plan)
@@ -324,9 +334,15 @@ namespace Shadowrun.LocalService.Core.AILogic
                 DebugAttackEvaluatedTargetCount = source.DebugAttackEvaluatedTargetCount,
                 DebugAttackUsedSelfTarget = source.DebugAttackUsedSelfTarget,
                 DebugAttackFailureReason = source.DebugAttackFailureReason,
+                DebugAttackDetailCount = source.DebugAttackDetailCount,
+                DebugAttackRejectionCounts = source.DebugAttackRejectionCounts,
+                DebugAttackTargetDetails = source.DebugAttackTargetDetails,
                 DebugReachableCellCount = source.DebugReachableCellCount,
                 DebugReducingCellCount = source.DebugReducingCellCount,
                 DebugAvoidedImmediateBacktrack = source.DebugAvoidedImmediateBacktrack,
+                DebugMoveSourceX = source.DebugMoveSourceX,
+                DebugMoveSourceY = source.DebugMoveSourceY,
+                DebugMoveBaselineScore = source.DebugMoveBaselineScore,
                 DebugCurrentDistToEnemy = source.DebugCurrentDistToEnemy,
                 DebugChosenMoveDistToEnemy = source.DebugChosenMoveDistToEnemy,
                 DebugChosenMoveDefensiveCover = source.DebugChosenMoveDefensiveCover,
@@ -337,6 +353,9 @@ namespace Shadowrun.LocalService.Core.AILogic
                 DebugProfileRange = source.DebugProfileRange,
                 DebugShotDistanceToTarget = source.DebugShotDistanceToTarget,
                 DebugShotChanceToHit = source.DebugShotChanceToHit,
+                DebugDecisionSequence = source.DebugDecisionSequence,
+                DebugDecisionParentSequence = source.DebugDecisionParentSequence,
+                DebugDecisionPhase = source.DebugDecisionPhase,
                 InactiveSpawnManagerTag = source.InactiveSpawnManagerTag,
                 ForceEndTurnForInactiveGroup = source.ForceEndTurnForInactiveGroup,
             };

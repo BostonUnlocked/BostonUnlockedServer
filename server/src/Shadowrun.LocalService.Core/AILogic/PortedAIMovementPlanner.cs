@@ -22,7 +22,7 @@ namespace Shadowrun.LocalService.Core.AILogic
             _movementScorer = new AiMovementScorer(valuationFactory);
         }
 
-        public bool TryPlanMove(AIBehaviourConfigurationComponent config, out IntVector2D targetPosition, out float score)
+        public bool TryPlanMove(AIBehaviourConfigurationComponent config, AiPlanningDiagnostics diagnostics, out IntVector2D targetPosition, out float score)
         {
             targetPosition = IntVector2D.Zero;
             score = 0f;
@@ -43,6 +43,7 @@ namespace Shadowrun.LocalService.Core.AILogic
 
             var currentPosition = AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, _agent);
             var baseline = _movementScorer.ScorePosition(context, config.MovementAssessments, _agent, currentPosition);
+            PopulateMovementDiagnostics(diagnostics, context, currentPosition, baseline);
 
             var ranges = default(ReachableRanges);
             try
@@ -57,6 +58,11 @@ namespace Shadowrun.LocalService.Core.AILogic
             if (ranges == null || ranges.SprintRange == null || ranges.SprintRange.ReachableCells == null)
             {
                 return false;
+            }
+
+            if (diagnostics != null)
+            {
+                diagnostics.DebugReachableCellCount = ranges.SprintRange.ReachableCells.Count();
             }
 
             var found = false;
@@ -87,6 +93,7 @@ namespace Shadowrun.LocalService.Core.AILogic
                     found = true;
                     score = candidateScore;
                     targetPosition = cell;
+                    PopulateChosenMoveDiagnostics(diagnostics, context, currentPosition, cell);
                 }
             }
 
@@ -104,6 +111,73 @@ namespace Shadowrun.LocalService.Core.AILogic
             }
 
             return true;
+        }
+
+        private static void PopulateMovementDiagnostics(AiPlanningDiagnostics diagnostics, BasicValuationContext context, IntVector2D currentPosition, float baseline)
+        {
+            if (diagnostics == null)
+            {
+                return;
+            }
+
+            diagnostics.DebugMoveSourceX = currentPosition.X;
+            diagnostics.DebugMoveSourceY = currentPosition.Y;
+            diagnostics.DebugMoveBaselineScore = baseline;
+
+            IAgentSnapshot preferredEnemy = SelectPreferredEnemy(context, currentPosition);
+            if (preferredEnemy == null || preferredEnemy.Entity == null)
+            {
+                return;
+            }
+
+            diagnostics.DebugPreferredEnemyId = preferredEnemy.Entity.Id;
+            diagnostics.DebugEnemyX = preferredEnemy.Position.X;
+            diagnostics.DebugEnemyY = preferredEnemy.Position.Y;
+            diagnostics.DebugCurrentDistToEnemy = (int)IntVector2DExtensions.CalculateCustomDistance(currentPosition, preferredEnemy.Position);
+            diagnostics.DebugEnemyReason = "movement-preferred-hostile";
+        }
+
+        private static void PopulateChosenMoveDiagnostics(AiPlanningDiagnostics diagnostics, BasicValuationContext context, IntVector2D currentPosition, IntVector2D targetPosition)
+        {
+            if (diagnostics == null)
+            {
+                return;
+            }
+
+            IAgentSnapshot preferredEnemy = SelectPreferredEnemy(context, currentPosition);
+            if (preferredEnemy == null)
+            {
+                return;
+            }
+
+            diagnostics.DebugChosenMoveDistToEnemy = (int)IntVector2DExtensions.CalculateCustomDistance(targetPosition, preferredEnemy.Position);
+        }
+
+        private static IAgentSnapshot SelectPreferredEnemy(BasicValuationContext context, IntVector2D currentPosition)
+        {
+            if (context == null || context.EnemySnapshots == null)
+            {
+                return null;
+            }
+
+            IAgentSnapshot best = null;
+            float bestDistance = float.MaxValue;
+            foreach (var enemy in context.EnemySnapshots)
+            {
+                if (enemy == null || enemy.Entity == null)
+                {
+                    continue;
+                }
+
+                var distance = IntVector2DExtensions.CalculateCustomDistance(currentPosition, enemy.Position);
+                if (best == null || distance < bestDistance)
+                {
+                    best = enemy;
+                    bestDistance = distance;
+                }
+            }
+
+            return best;
         }
 
         private static float SumPositiveWeights(System.Collections.Generic.IEnumerable<AWeightedAssessmentDefinition> assessments)
