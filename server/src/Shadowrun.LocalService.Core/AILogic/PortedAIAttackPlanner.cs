@@ -11,6 +11,8 @@ namespace Shadowrun.LocalService.Core.AILogic
 {
     internal sealed class PortedAIAttackPlanner
     {
+        private const int MaxAttackTargetDetails = 64;
+
         private readonly IGameworldInstance _gameworld;
         private readonly Entity _agent;
 
@@ -65,14 +67,31 @@ namespace Shadowrun.LocalService.Core.AILogic
             var found = false;
             var candidateCount = 0;
             var evaluatedCount = 0;
+            var detailCount = 0;
             string firstFailure = null;
+            string firstEvaluatedFailure = null;
+            var rejectionCounts = new System.Collections.Generic.Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var targetDetails = new System.Collections.Generic.List<AiAttackTargetScanEntry>();
 
             foreach (var entity in _gameworld.EntitySystem.GetAllEntities())
             {
+                AiAttackTargetScanEntry targetDetail = CreateTargetDetail(entity, attackerPosition);
+                if (targetDetail != null)
+                {
+                    detailCount++;
+                }
+
                 IRelationship relationship;
                 string rejectionReason;
                 if (!IsValidTarget(entity, attackerPosition, myTeam.TeamID, teamInfo, out relationship, out rejectionReason))
                 {
+                    if (targetDetail != null)
+                    {
+                        targetDetail.Relationship = DescribeRelationship(entity, relationship);
+                        targetDetail.RejectionReason = rejectionReason;
+                        AppendTargetDetail(targetDetails, targetDetail);
+                    }
+                    IncrementReason(rejectionCounts, rejectionReason);
                     if (firstFailure == null && !string.IsNullOrEmpty(rejectionReason))
                     {
                         firstFailure = rejectionReason;
@@ -81,15 +100,31 @@ namespace Shadowrun.LocalService.Core.AILogic
                 }
 
                 candidateCount++;
-
-                var candidatePosition = ResolveBestTargetPosition(entity, attackerPosition);
-                if (candidatePosition.Equals(IntVector2D.Zero) && AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, entity).Equals(IntVector2D.Zero))
+                if (targetDetail != null)
                 {
+                    targetDetail.Relationship = DescribeRelationship(entity, relationship);
+                }
+
+                IntVector2D candidatePosition;
+                if (!TryResolveBestBlockedTargetPosition(entity, attackerPosition, out candidatePosition))
+                {
+                    if (targetDetail != null)
+                    {
+                        targetDetail.RejectionReason = "no-blocked-position";
+                        AppendTargetDetail(targetDetails, targetDetail);
+                    }
+                    IncrementReason(rejectionCounts, "no-blocked-position");
                     if (firstFailure == null)
                     {
-                        firstFailure = "target-position-unresolved";
+                        firstFailure = "no-blocked-position";
                     }
                     continue;
+                }
+
+                if (targetDetail != null)
+                {
+                    targetDetail.CandidateX = candidatePosition.X;
+                    targetDetail.CandidateY = candidatePosition.Y;
                 }
 
                 evaluatedCount++;
@@ -97,10 +132,18 @@ namespace Shadowrun.LocalService.Core.AILogic
                 ActivityEvaluationResult evaluation;
                 try
                 {
-                    evaluation = dryRunner.DryRunActivity(weaponIndex, skillIndex, skillId, _agent, candidatePosition);
+                    evaluation = dryRunner.DryRunActivity(0, 0, skillId, _agent, candidatePosition);
                 }
                 catch
                 {
+                    if (targetDetail != null)
+                    {
+                        targetDetail.RejectionReason = "dry-run-exception";
+                        targetDetail.DryRunSkillSuccessful = false;
+                        targetDetail.DryRunTargetWorkspaceCount = 0;
+                        AppendTargetDetail(targetDetails, targetDetail);
+                    }
+                    IncrementReason(rejectionCounts, "dry-run-exception");
                     if (firstFailure == null)
                     {
                         firstFailure = "dry-run-exception";
@@ -110,32 +153,68 @@ namespace Shadowrun.LocalService.Core.AILogic
 
                 if (evaluation == null || !evaluation.SkillWasSuccessful || evaluation.TargetWorkspaces == null || !evaluation.TargetWorkspaces.Any())
                 {
+                    var dryRunFailure = DescribeDryRunFailure(evaluation);
+                    if (firstEvaluatedFailure == null)
+                    {
+                        firstEvaluatedFailure = dryRunFailure;
+                    }
+                    if (targetDetail != null)
+                    {
+                        targetDetail.RejectionReason = dryRunFailure;
+                        targetDetail.DryRunSkillSuccessful = evaluation != null ? (bool?)evaluation.SkillWasSuccessful : null;
+                        targetDetail.DryRunTargetWorkspaceCount = evaluation != null && evaluation.TargetWorkspaces != null ? (int?)evaluation.TargetWorkspaces.Count() : null;
+                        AppendTargetDetail(targetDetails, targetDetail);
+                    }
+                    IncrementReason(rejectionCounts, dryRunFailure);
                     if (firstFailure == null)
                     {
-                        firstFailure = DescribeDryRunFailure(evaluation);
+                        firstFailure = dryRunFailure;
                     }
                     continue;
                 }
 
                 var candidateScore = EffectiveChanceToHitTargets(evaluation);
+                if (targetDetail != null)
+                {
+                    targetDetail.RejectionReason = "viable";
+                    targetDetail.DryRunSkillSuccessful = true;
+                    targetDetail.DryRunTargetWorkspaceCount = evaluation.TargetWorkspaces.Count();
+                }
+                IncrementReason(rejectionCounts, "viable");
                 if (!found || candidateScore > score)
                 {
                     found = true;
                     score = candidateScore;
                     targetPosition = candidatePosition;
                     PopulateChosenTargetDiagnostics(diagnostics, entity, relationship, candidatePosition);
+                    if (targetDetail != null)
+                    {
+                        targetDetail.ChosenTarget = true;
+                    }
+                }
+
+                if (targetDetail != null)
+                {
+                    AppendTargetDetail(targetDetails, targetDetail);
                 }
             }
 
             if (diagnostics != null)
             {
+                diagnostics.DebugEnemyCandidateCount = detailCount;
                 diagnostics.DebugAttackCandidateCount = candidateCount;
                 diagnostics.DebugAttackEvaluatedTargetCount = evaluatedCount;
+                diagnostics.DebugAttackDetailCount = detailCount;
+                diagnostics.DebugAttackRejectionCounts = rejectionCounts
+                    .OrderBy(pair => pair.Key)
+                    .Select(pair => new AiReasonCount { Reason = pair.Key, Count = pair.Value })
+                    .ToArray();
+                diagnostics.DebugAttackTargetDetails = targetDetails.ToArray();
             }
 
             if (!found)
             {
-                SetAttackFailure(diagnostics, firstFailure ?? (candidateCount == 0 ? "no-valid-targets" : "no-viable-dry-run-target"));
+                SetAttackFailure(diagnostics, ResolveTerminalFailureReason(evaluatedCount, rejectionCounts, firstEvaluatedFailure, firstFailure, candidateCount));
             }
 
             return found;
@@ -194,7 +273,7 @@ namespace Shadowrun.LocalService.Core.AILogic
             }
 
             var targetPosition = AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, entity);
-            if (CalculateDistance(attackerPosition, targetPosition) > detection.Range)
+            if (IntVector2DExtensions.CalculateCustomDistance(attackerPosition, targetPosition) > detection.Range)
             {
                 rejectionReason = "out-of-detection-range";
                 return false;
@@ -217,13 +296,6 @@ namespace Shadowrun.LocalService.Core.AILogic
             if (relationship == null || relationship.Id == Relationship.Ignored.Id)
             {
                 rejectionReason = "ignored-relationship";
-                return false;
-            }
-
-            GameplayPropertiesComponent gameplayProperties;
-            if (_gameworld.EntitySystem.TryGetComponent<GameplayPropertiesComponent>(entity, out gameplayProperties) && gameplayProperties != null && gameplayProperties.InteractiveObject)
-            {
-                rejectionReason = "interactive-object";
                 return false;
             }
 
@@ -327,6 +399,9 @@ namespace Shadowrun.LocalService.Core.AILogic
             diagnostics.DebugAttackEvaluatedTargetCount = null;
             diagnostics.DebugAttackUsedSelfTarget = null;
             diagnostics.DebugChosenTargetRelationship = null;
+            diagnostics.DebugAttackDetailCount = null;
+            diagnostics.DebugAttackRejectionCounts = null;
+            diagnostics.DebugAttackTargetDetails = null;
         }
 
         private static void SetAttackFailure(AiPlanningDiagnostics diagnostics, string reason)
@@ -339,37 +414,30 @@ namespace Shadowrun.LocalService.Core.AILogic
             diagnostics.DebugAttackFailureReason = reason;
         }
 
-        private IntVector2D ResolveBestTargetPosition(Entity entity, IntVector2D attackerPosition)
+        private bool TryResolveBestBlockedTargetPosition(Entity entity, IntVector2D attackerPosition, out IntVector2D bestPosition)
         {
+            bestPosition = IntVector2D.Zero;
+
             IPositionComponent position;
-            if (_gameworld.EntitySystem.TryGetComponent<IPositionComponent>(entity, out position) && position != null)
+            if (!_gameworld.EntitySystem.TryGetComponent<IPositionComponent>(entity, out position) || position == null || position.BlockedGridPositions == null)
             {
-                if (position.BlockedGridPositions != null)
-                {
-                    var bestDistance = int.MaxValue;
-                    var bestPosition = IntVector2D.Zero;
-                    var found = false;
-                    foreach (var blocked in position.BlockedGridPositions)
-                    {
-                        var distance = CalculateDistance(attackerPosition, blocked);
-                        if (!found || distance < bestDistance)
-                        {
-                            found = true;
-                            bestDistance = distance;
-                            bestPosition = blocked;
-                        }
-                    }
-
-                    if (found)
-                    {
-                        return bestPosition;
-                    }
-                }
-
-                return position.GridPosition;
+                return false;
             }
 
-            return AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, entity);
+            var found = false;
+            var bestDistance = float.MaxValue;
+            foreach (var blocked in position.BlockedGridPositions)
+            {
+                var distance = IntVector2DExtensions.CalculateCustomDistance(attackerPosition, blocked);
+                if (!found || distance < bestDistance)
+                {
+                    found = true;
+                    bestDistance = distance;
+                    bestPosition = blocked;
+                }
+            }
+
+            return found;
         }
 
         private static float EffectiveChanceToHitTargets(ActivityEvaluationResult evaluation)
@@ -387,9 +455,127 @@ namespace Shadowrun.LocalService.Core.AILogic
             return bestChance + aoeBonus;
         }
 
-        private static int CalculateDistance(IntVector2D a, IntVector2D b)
+        private static string ResolveTerminalFailureReason(
+            int evaluatedCount,
+            System.Collections.Generic.IDictionary<string, int> rejectionCounts,
+            string firstEvaluatedFailure,
+            string firstFailure,
+            int candidateCount)
         {
-            return Math.Abs(a.X - b.X) + Math.Abs(a.Y - b.Y);
+            if (evaluatedCount > 0)
+            {
+                if (HasReason(rejectionCounts, "dry-run-unsuccessful"))
+                {
+                    return "dry-run-unsuccessful";
+                }
+
+                if (HasReason(rejectionCounts, "dry-run-no-workspaces"))
+                {
+                    return "dry-run-no-workspaces";
+                }
+
+                if (HasReason(rejectionCounts, "dry-run-null"))
+                {
+                    return "dry-run-null";
+                }
+
+                if (HasReason(rejectionCounts, "dry-run-exception"))
+                {
+                    return "dry-run-exception";
+                }
+
+                if (!string.IsNullOrEmpty(firstEvaluatedFailure))
+                {
+                    return firstEvaluatedFailure;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(firstFailure))
+            {
+                return firstFailure;
+            }
+
+            return candidateCount == 0 ? "no-valid-targets" : "no-viable-dry-run-target";
+        }
+
+        private static bool HasReason(System.Collections.Generic.IDictionary<string, int> rejectionCounts, string reason)
+        {
+            if (rejectionCounts == null || string.IsNullOrEmpty(reason))
+            {
+                return false;
+            }
+
+            int count;
+            return rejectionCounts.TryGetValue(reason, out count) && count > 0;
+        }
+
+        private static void IncrementReason(System.Collections.Generic.IDictionary<string, int> counts, string reason)
+        {
+            if (counts == null || string.IsNullOrEmpty(reason))
+            {
+                return;
+            }
+
+            int count;
+            if (!counts.TryGetValue(reason, out count))
+            {
+                count = 0;
+            }
+
+            counts[reason] = count + 1;
+        }
+
+        private static void AppendTargetDetail(System.Collections.Generic.ICollection<AiAttackTargetScanEntry> details, AiAttackTargetScanEntry detail)
+        {
+            if (details == null || detail == null)
+            {
+                return;
+            }
+
+            if (details.Count >= MaxAttackTargetDetails)
+            {
+                return;
+            }
+
+            details.Add(detail);
+        }
+
+        private AiAttackTargetScanEntry CreateTargetDetail(Entity entity, IntVector2D attackerPosition)
+        {
+            if (entity == null || entity == _agent || _gameworld == null || _gameworld.EntitySystem == null)
+            {
+                return null;
+            }
+
+            var detail = new AiAttackTargetScanEntry
+            {
+                EntityId = entity.Id,
+            };
+
+            TeamComponent team;
+            if (_gameworld.EntitySystem.TryGetComponent<TeamComponent>(entity, out team) && team != null)
+            {
+                detail.TeamId = team.TeamID;
+            }
+
+            var position = AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, entity);
+            detail.X = position.X;
+            detail.Y = position.Y;
+            detail.DistanceToAttacker = IntVector2DExtensions.CalculateCustomDistance(attackerPosition, position);
+
+            DetectionComponent detection;
+            detail.HasDetection = _gameworld.EntitySystem.TryGetComponent<DetectionComponent>(entity, out detection) && detection != null;
+
+            GameplayPropertiesComponent gameplayProperties;
+            if (_gameworld.EntitySystem.TryGetComponent<GameplayPropertiesComponent>(entity, out gameplayProperties) && gameplayProperties != null)
+            {
+                detail.InteractiveObject = gameplayProperties.InteractiveObject;
+                detail.IsPlayersPlayerCharacter = gameplayProperties.IsPlayersPlayerCharacter;
+            }
+
+            detail.HasStatus = _gameworld.EntitySystem.HasComponent<AttributeBackedStatusValueContainer>(entity);
+            detail.IsDeadOrDespawned = _gameworld.EntitySystem.IsAgentDeadOrDespawned(entity);
+            return detail;
         }
     }
 }

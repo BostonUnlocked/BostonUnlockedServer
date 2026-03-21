@@ -64,6 +64,15 @@ namespace Shadowrun.LocalService.Core.AILogic
 
         public static PlannedAiAction CreateEndTurn(Entity agent, IntVector2D targetPosition, string decisionNote, string debugStage, int endTurnSkillId)
         {
+            return CreateEndTurn(agent, targetPosition, decisionNote, debugStage, endTurnSkillId, null);
+        }
+
+        public static PlannedAiAction CreateEndTurn(Entity agent, IntVector2D targetPosition, string decisionNote, string debugStage, int endTurnSkillId, AiPlanningDiagnostics diagnostics)
+        {
+            var effectiveDiagnostics = diagnostics ?? new AiPlanningDiagnostics();
+            effectiveDiagnostics.DecisionNote = decisionNote;
+            effectiveDiagnostics.DebugStage = debugStage;
+
             return new PlannedAiAction(
                 agent,
                 "AI.EndTeamTurn",
@@ -71,11 +80,7 @@ namespace Shadowrun.LocalService.Core.AILogic
                 0,
                 0,
                 endTurnSkillId,
-                new AiPlanningDiagnostics
-                {
-                    DecisionNote = decisionNote,
-                    DebugStage = debugStage,
-                });
+                effectiveDiagnostics);
         }
     }
 }
