@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LauncherConfig>
+  <SkipVerification>false</SkipVerification>
+  <DisablePatching>true</DisablePatching>
+  <NewsAssetBundlePath></NewsAssetBundlePath>
+  <AuthenticationProvider>Cliffhanger</AuthenticationProvider>
+  <SteamAppId>267750</SteamAppId>
+  <DisplayNamePlayerInfoKey>LauncherDisplayName</DisplayNamePlayerInfoKey>
+  <Services>
+    <AccountSystemAppKey>E4F9BE8D-E9BA-48EE-A89C-C0030417DCCF</AccountSystemAppKey>
+    <GamePackageTechnicalName>SRO-GAME-KEY</GamePackageTechnicalName>
+    <GameName>SRO</GameName>
+  </Services>
+</LauncherConfig>
