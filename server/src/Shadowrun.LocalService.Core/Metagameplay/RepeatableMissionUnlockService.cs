@@ -6,6 +6,11 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 {
     internal sealed class RepeatableMissionUnlockService
     {
+        private const string SequenceRMission12 = "RMission1|RMission2";
+        private const string SequenceRMission34 = "RMission3|RMission4";
+        private const string SequenceERMission21 = "ERMission2|ERMission1";
+        private const string SequenceERMission43 = "ERMission4|ERMission3";
+
         private readonly LocalServiceOptions _options;
 
         public RepeatableMissionUnlockService(LocalServiceOptions options)
@@ -28,6 +33,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             }
 
             EnsureSequenceState(slot);
+            ApplyDailyRepeatableSequencePositions(slot, sequences);
 
             for (var i = 0; i < sequences.Count; i++)
             {
@@ -93,6 +99,12 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                         continue;
                     }
 
+                    if (IsDailyRepeatableSequenceKey(sequence.Key))
+                    {
+                        // Daily sequences are selected from UTC day and should not be advanced by mission consumption.
+                        continue;
+                    }
+
                     var consumedIndex = FindUnlockIndex(sequence.Unlocks, consumedUnlock);
                     if (consumedIndex < 0)
                     {
@@ -125,6 +137,84 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             {
                 slot.RepeatableUnlockSequencePositions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             }
+        }
+
+        private static void ApplyDailyRepeatableSequencePositions(CareerSlot slot, List<MetagameplayStaticDataIndex.UnlockSequenceInfo> sequences)
+        {
+            if (slot == null || sequences == null || sequences.Count == 0)
+            {
+                return;
+            }
+
+            var utcDay = DateTime.UtcNow.Date;
+            var utcDayTicks = utcDay.Ticks;
+            var dayChanged = slot.LastRepeatableMissionResetUtcTicks != utcDayTicks;
+            if (dayChanged)
+            {
+                slot.LastRepeatableMissionResetUtcTicks = utcDayTicks;
+            }
+
+            var dayNumber = (int)(utcDayTicks / TimeSpan.TicksPerDay);
+            // Flip mission variants every UTC day; pair 2 is phase-shifted for variety.
+            var pairOneIndex = dayNumber & 1;
+            var pairTwoIndex = (dayNumber + 1) & 1;
+
+            for (var i = 0; i < sequences.Count; i++)
+            {
+                var sequence = sequences[i];
+                if (sequence == null || IsNullOrWhiteSpace(sequence.Key) || sequence.Unlocks == null || sequence.Unlocks.Count <= 1)
+                {
+                    continue;
+                }
+
+                var forcedIndex = GetDailyIndexForSequence(sequence.Key, pairOneIndex, pairTwoIndex);
+                if (!forcedIndex.HasValue)
+                {
+                    continue;
+                }
+
+                var normalizedIndex = forcedIndex.Value;
+                if (normalizedIndex < 0 || normalizedIndex >= sequence.Unlocks.Count)
+                {
+                    normalizedIndex = 0;
+                }
+
+                int currentIndex;
+                if (!slot.RepeatableUnlockSequencePositions.TryGetValue(sequence.Key, out currentIndex) || currentIndex != normalizedIndex || dayChanged)
+                {
+                    slot.RepeatableUnlockSequencePositions[sequence.Key] = normalizedIndex;
+                }
+            }
+        }
+
+        private static int? GetDailyIndexForSequence(string sequenceKey, int pairOneIndex, int pairTwoIndex)
+        {
+            if (string.Equals(sequenceKey, SequenceRMission12, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sequenceKey, SequenceERMission21, StringComparison.OrdinalIgnoreCase))
+            {
+                return pairOneIndex;
+            }
+
+            if (string.Equals(sequenceKey, SequenceRMission34, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sequenceKey, SequenceERMission43, StringComparison.OrdinalIgnoreCase))
+            {
+                return pairTwoIndex;
+            }
+
+            return null;
+        }
+
+        private static bool IsDailyRepeatableSequenceKey(string sequenceKey)
+        {
+            if (IsNullOrWhiteSpace(sequenceKey))
+            {
+                return false;
+            }
+
+            return string.Equals(sequenceKey, SequenceRMission12, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sequenceKey, SequenceRMission34, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sequenceKey, SequenceERMission21, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sequenceKey, SequenceERMission43, StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool ShouldActivateSequence(MetagameplayStaticDataIndex.UnlockSequenceInfo sequence, ICollection<string> effectiveUnlocks)
