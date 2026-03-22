@@ -96,12 +96,25 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
         public bool NormalizeRepeatableMissionStates(CareerSlot slot)
         {
-            if (slot == null || slot.MainCampaignMissionStates == null || slot.MainCampaignMissionStates.Count == 0)
+            if (slot == null)
             {
                 return false;
             }
 
             var changed = false;
+            var utcDayTicks = DateTime.UtcNow.Date.Ticks;
+            var isNewDay = slot.LastRepeatableMissionResetUtcTicks != utcDayTicks;
+            if (isNewDay)
+            {
+                slot.LastRepeatableMissionResetUtcTicks = utcDayTicks;
+                changed = true;
+            }
+
+            if (slot.MainCampaignMissionStates == null || slot.MainCampaignMissionStates.Count == 0)
+            {
+                return changed;
+            }
+
             var missionNames = new List<string>(slot.MainCampaignMissionStates.Keys);
             for (var i = 0; i < missionNames.Count; i++)
             {
@@ -118,6 +131,16 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 }
 
                 var parsedState = ParseStoryMissionStateOrDefault(rawState, StoryMissionstate.Available);
+                if (isNewDay)
+                {
+                    if (parsedState != StoryMissionstate.ReadyToPlay)
+                    {
+                        slot.MainCampaignMissionStates[missionName] = StoryMissionstate.ReadyToPlay.ToString();
+                        changed = true;
+                    }
+                    continue;
+                }
+
                 if (parsedState >= StoryMissionstate.ReadyToReceiveRewards)
                 {
                     slot.MainCampaignMissionStates[missionName] = StoryMissionstate.ReadyToPlay.ToString();

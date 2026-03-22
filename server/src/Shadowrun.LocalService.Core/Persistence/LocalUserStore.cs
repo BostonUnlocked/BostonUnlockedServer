@@ -624,6 +624,18 @@ namespace Shadowrun.LocalService.Core.Persistence
                         a.Slot != null ? a.Slot.CharacterIdentifier ?? string.Empty : string.Empty,
                         b.Slot != null ? b.Slot.CharacterIdentifier ?? string.Empty : string.Empty);
                 });
+
+            // Stable, deterministic daily shuffle so the same day yields the same roster order.
+            var utcDay = DateTime.UtcNow.Date;
+            var daySeed = unchecked((int)((utcDay.Ticks / TimeSpan.TicksPerDay) & 0x7FFFFFFF)) ^ 0x3A5F2D17;
+            var random = new Random(daySeed);
+            for (var i = values.Count - 1; i > 0; i--)
+            {
+                var swapIndex = random.Next(i + 1);
+                var temp = values[i];
+                values[i] = values[swapIndex];
+                values[swapIndex] = temp;
+            }
         }
 
         private bool ApplyCouponItemPackagesToCareerNoLock(string identityHash, CareerSlot slot)
@@ -724,6 +736,10 @@ namespace Shadowrun.LocalService.Core.Persistence
         public List<string> MainCampaignInteractedNpcs;
         public List<string> ActiveUnlocks;
         public Dictionary<string, int> RepeatableUnlockSequencePositions;
+        // UTC date ticks for last repeatable-day normalization.
+        public long LastRepeatableMissionResetUtcTicks;
+        // UTC date ticks for last player-derived henchman rotation.
+        public long LastHenchmanRotationUtcTicks;
 
         // Minimal persistent inventory for hub shops (items bought/sold).
         // Key format: "{ItemId}|{Quality}|{Flavour}" (quality/flavour default to 0/-1).
@@ -764,6 +780,8 @@ namespace Shadowrun.LocalService.Core.Persistence
             dict["MainCampaignInteractedNpcs"] = MainCampaignInteractedNpcs ?? new List<string>();
             dict["ActiveUnlocks"] = ActiveUnlocks ?? new List<string>();
             dict["RepeatableUnlockSequencePositions"] = RepeatableUnlockSequencePositions ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            dict["LastRepeatableMissionResetUtcTicks"] = LastRepeatableMissionResetUtcTicks;
+            dict["LastHenchmanRotationUtcTicks"] = LastHenchmanRotationUtcTicks;
             dict["ItemPossessions"] = ItemPossessions ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             dict["AppliedCouponItemPackages"] = AppliedCouponItemPackages ?? new List<string>();
             return dict;
@@ -849,8 +867,35 @@ namespace Shadowrun.LocalService.Core.Persistence
             {
                 slot.EquippedItems = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             }
+
+            try
+            {
+                if (dict.Contains("LastRepeatableMissionResetUtcTicks") && dict["LastRepeatableMissionResetUtcTicks"] != null)
+                {
+                    slot.LastRepeatableMissionResetUtcTicks = Convert.ToInt64(dict["LastRepeatableMissionResetUtcTicks"], CultureInfo.InvariantCulture);
+                }
+            }
+            catch
+            {
+                slot.LastRepeatableMissionResetUtcTicks = 0L;
+            }
+
+            try
+            {
+                if (dict.Contains("LastHenchmanRotationUtcTicks") && dict["LastHenchmanRotationUtcTicks"] != null)
+                {
+                    slot.LastHenchmanRotationUtcTicks = Convert.ToInt64(dict["LastHenchmanRotationUtcTicks"], CultureInfo.InvariantCulture);
+                }
+            }
+            catch
+            {
+                slot.LastHenchmanRotationUtcTicks = 0L;
+            }
+
             slot.CharacterIdentifier = dict.Contains("CharacterIdentifier") ? (dict["CharacterIdentifier"] as string) : null;
 
+            if (slot.LastRepeatableMissionResetUtcTicks < 0L) slot.LastRepeatableMissionResetUtcTicks = 0L;
+            if (slot.LastHenchmanRotationUtcTicks < 0L) slot.LastHenchmanRotationUtcTicks = 0L;
             try
             {
                 if (dict.Contains("Karma") && dict["Karma"] != null) slot.Karma = Convert.ToInt32(dict["Karma"]);
