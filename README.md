@@ -16,4 +16,4 @@ In short, you can run your own server to play the game and optionally set it up 
 
 ## [Read the full documentation at our website](https://bostonunlocked.github.io/BostonUnlockedDocs/)
 
-**Note:** This is the repository for the BostonUnlocked server source code. For the website code and content, go to: [https://github.com/BostonUnlocked/BostonUnlockedDocs)
+**Note:** This is the repository for the BostonUnlocked server source code. For the website code and content, go to [BostonUnlockedDocs](https://github.com/BostonUnlocked/BostonUnlockedDocs)
