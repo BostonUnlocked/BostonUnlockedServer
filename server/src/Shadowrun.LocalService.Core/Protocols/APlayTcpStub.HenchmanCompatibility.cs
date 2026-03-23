@@ -16,6 +16,7 @@ namespace Shadowrun.LocalService.Core.Protocols
     public sealed partial class APlayTcpStub
     {
         private const int HenchmanCollectionHistoryLength = 64;
+        private const string PlaceholderCareerName = "NewRunner";
 
         private sealed class HenchmanCollectionCacheEntry
         {
@@ -215,6 +216,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                 {
                     var candidate = candidates[i];
                     if (candidate == null || candidate.Slot == null || IsNullOrWhiteSpace(candidate.IdentityHash))
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(candidate.Slot.CharacterName, PlaceholderCareerName, StringComparison.OrdinalIgnoreCase))
                     {
                         continue;
                     }
