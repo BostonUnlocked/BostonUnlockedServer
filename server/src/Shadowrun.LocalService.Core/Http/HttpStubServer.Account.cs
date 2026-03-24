@@ -581,7 +581,7 @@ namespace Shadowrun.LocalService.Core.Http
             return results;
         }
 
-        private static object[] BuildPlayerInfoResponse(Dictionary<string, string> stored, List<string> requestedKeys, string identityHash)
+        private object[] BuildPlayerInfoResponse(Dictionary<string, string> stored, List<string> requestedKeys, string identityHash)
         {
             if (stored == null)
             {
@@ -637,14 +637,14 @@ namespace Shadowrun.LocalService.Core.Http
             return items.ToArray();
         }
 
-        private static void SanitizePlayerInfoUpdates(string identityHash, Dictionary<string, string> updates)
+        private void SanitizePlayerInfoUpdates(string identityHash, Dictionary<string, string> updates)
         {
             if (updates == null)
             {
                 return;
             }
 
-            var stableDisplayName = BuildStableDisplayName(identityHash);
+            var stableDisplayName = ResolvePreferredAccountDisplayName(identityHash);
             string displayName;
             if (updates.TryGetValue("DisplayName", out displayName) && !IsNullOrWhiteSpace(displayName))
             {
@@ -660,14 +660,14 @@ namespace Shadowrun.LocalService.Core.Http
             }
         }
 
-        private static void SanitizeStoredDisplayNames(string identityHash, Dictionary<string, string> stored)
+        private void SanitizeStoredDisplayNames(string identityHash, Dictionary<string, string> stored)
         {
             if (stored == null)
             {
                 return;
             }
 
-            var stableDisplayName = BuildStableDisplayName(identityHash);
+            var stableDisplayName = ResolvePreferredAccountDisplayName(identityHash);
             string launcherDisplayName;
             if (stored.TryGetValue("LauncherDisplayName", out launcherDisplayName) && !IsNullOrWhiteSpace(launcherDisplayName))
             {
@@ -681,6 +681,26 @@ namespace Shadowrun.LocalService.Core.Http
                 var characterPart = semi >= 0 && semi + 1 < displayName.Length ? displayName.Substring(semi + 1) : null;
                 stored["DisplayName"] = semi >= 0 ? (stableDisplayName + ";" + (characterPart ?? string.Empty)) : stableDisplayName;
             }
+        }
+
+        private string ResolvePreferredAccountDisplayName(string identityHash)
+        {
+            if (_userStore != null)
+            {
+                try
+                {
+                    var resolved = _userStore.GetDisplayName(identityHash);
+                    if (!IsNullOrWhiteSpace(resolved))
+                    {
+                        return resolved;
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            return BuildStableDisplayName(identityHash);
         }
 
         private static string BuildStableDisplayName(string identityHash)

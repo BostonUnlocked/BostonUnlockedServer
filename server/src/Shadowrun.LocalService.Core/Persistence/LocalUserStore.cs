@@ -375,6 +375,20 @@ namespace Shadowrun.LocalService.Core.Persistence
             return _accountStore != null ? _accountStore.GetDisplayName(identityHash) : null;
         }
 
+        public bool TrySetDisplayName(string identityHash, string requestedDisplayName, out string normalizedDisplayName, out string errorMessage)
+        {
+            normalizedDisplayName = null;
+            errorMessage = null;
+
+            if (_accountStore == null)
+            {
+                errorMessage = "Account store is unavailable.";
+                return false;
+            }
+
+            return _accountStore.TrySetDisplayName(identityHash, requestedDisplayName, out normalizedDisplayName, out errorMessage);
+        }
+
         public int GetLastCareerIndex()
         {
             return GetLastCareerIndex(GetOrCreateIdentityHash());

@@ -22,6 +22,7 @@ namespace Shadowrun.LocalService.Core.Persistence
         private const string AccountStoreSteamId64Key = "SteamId64";
         private const string AccountStoreLegacyIdentityHashKey = "IdentityHash";
         private const string AccountStoreCredentialIdentitiesKey = "CredentialIdentities";
+        private const string AccountStoreHasCustomDisplayNameKey = "HasCustomDisplayName";
 
         private const string AccountCredentialEmailKey = "CredentialEmail";
         private const string AccountCredentialPasswordHashKey = "CredentialPasswordHash";
@@ -386,6 +387,53 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        public bool TrySetDisplayName(string identityHash, string requestedDisplayName, out string normalizedDisplayName, out string errorMessage)
+        {
+            normalizedDisplayName = null;
+            errorMessage = null;
+
+            if (!IsGuidish(identityHash))
+            {
+                errorMessage = "Unable to resolve account identity.";
+                return false;
+            }
+
+            var normalizedIdentity = NormalizeGuidish(identityHash);
+            var normalizedRequested = NormalizeRequestedDisplayName(requestedDisplayName);
+            if (IsNullOrWhiteSpace(normalizedRequested))
+            {
+                errorMessage = "Usage: /setaccountname <name>";
+                return false;
+            }
+
+            if (normalizedRequested.Length > 32)
+            {
+                errorMessage = "Account display name must be 32 characters or fewer.";
+                return false;
+            }
+
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.TrySetAccountDisplayName(normalizedIdentity, normalizedRequested, out normalizedDisplayName, out errorMessage);
+            }
+
+            lock (_syncRoot)
+            {
+                var account = LoadAccountForIdentityNoThrow(normalizedIdentity, true) ?? LoadAccountNoThrow();
+                if (account == null)
+                {
+                    errorMessage = "Unable to load account data.";
+                    return false;
+                }
+
+                account["DisplayName"] = normalizedRequested;
+                account[AccountStoreHasCustomDisplayNameKey] = true;
+                SaveAccountNoThrow(account);
+                normalizedDisplayName = normalizedRequested;
+                return true;
+            }
+        }
+
         public int GetLastCareerIndex(string identityHash)
         {
             if (_sqliteStore != null && _sqliteStore.IsEnabled)
@@ -520,6 +568,11 @@ namespace Shadowrun.LocalService.Core.Persistence
                 return false;
             }
 
+            if (GetBool(account, AccountStoreHasCustomDisplayNameKey, false))
+            {
+                return false;
+            }
+
             var normalizedIdentity = IsGuidish(identityHash) ? NormalizeGuidish(identityHash) : GetString(account, AccountStoreLegacyIdentityHashKey);
             if (IsGuidish(normalizedIdentity))
             {
@@ -528,13 +581,41 @@ namespace Shadowrun.LocalService.Core.Persistence
 
             var expected = BuildAnonymizedDisplayName(normalizedIdentity);
             var current = GetString(account, "DisplayName");
+            if (!IsNullOrWhiteSpace(current) && !IsAnonymizedDisplayName(current))
+            {
+                account[AccountStoreHasCustomDisplayNameKey] = true;
+                return false;
+            }
             if (string.Equals(current, expected, StringComparison.Ordinal))
             {
                 return false;
             }
 
             account["DisplayName"] = expected;
+            account[AccountStoreHasCustomDisplayNameKey] = false;
             return true;
+        }
+
+        private static string NormalizeRequestedDisplayName(string value)
+        {
+            return IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
+
+        private static bool GetBool(IDictionary dict, string key, bool fallback)
+        {
+            if (dict == null || IsNullOrWhiteSpace(key) || !dict.Contains(key) || dict[key] == null)
+            {
+                return fallback;
+            }
+
+            try
+            {
+                return Convert.ToBoolean(dict[key], CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                return fallback;
+            }
         }
 
         private static void CreatePasswordDigest(string password, int iterations, out string hashBase64, out string saltBase64)
@@ -598,6 +679,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             var fresh = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
             fresh[AccountStoreLegacyIdentityHashKey] = IsGuidish(identityHash) ? NormalizeGuidish(identityHash) : null;
             fresh["DisplayName"] = BuildAnonymizedDisplayName(identityHash);
+            fresh[AccountStoreHasCustomDisplayNameKey] = false;
             fresh["Careers"] = null;
             fresh["LastCareerIndex"] = 0;
             return fresh;
