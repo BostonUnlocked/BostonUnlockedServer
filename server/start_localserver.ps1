@@ -4,7 +4,9 @@ param(
     [int]$APlayPort = 5055,
     [int]$PhotonPort = 4530,
     [switch]$NoFileLogs,
+    [switch]$FixedSeed,
     [switch]$UseSqlite,
+    [switch]$UseJson,
     [switch]$MigrateJsonToSqlite,
     [string]$SQLiteDbPath
 )
@@ -75,7 +77,13 @@ if ($missingDlls.Count -gt 0 -or $missingStatic.Count -gt 0 -or -not (Test-Path 
     throw "Run: $extractor -GameRoot '<path-to-ShadowrunChronicles-install>'"
 }
 
-if ($UseSqlite) {
+if ($UseSqlite -and $UseJson) {
+    Write-Warning "[server] both -UseSqlite and -UseJson were provided; using legacy JSON mode."
+}
+
+$effectiveUseSqlite = -not $UseJson
+
+if ($effectiveUseSqlite) {
     $sqliteDlls = @(
         'Mono.Data.Sqlite.dll',
         'sqlite3.dll'
@@ -144,8 +152,15 @@ if ($NoFileLogs) {
     $argsList += '--no-file-logs'
 }
 
-if ($UseSqlite) {
+if ($FixedSeed) {
+    $argsList += '--fixed-seed'
+}
+
+if ($effectiveUseSqlite) {
     $argsList += '--use-sqlite'
+}
+else {
+    $argsList += '--use-json'
 }
 
 if ($MigrateJsonToSqlite) {

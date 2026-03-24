@@ -507,10 +507,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
-            var seed0 = 0x11111111u;
-            var seed1 = 0x22222222u;
-            var seed2 = 0x33333333u;
-            var seed3 = 0x44444444u;
+            var fallbackSeeds = AllocateMissionSeeds("mission-command-fallback", peer, null, currentCoopGroupName);
+            var seed0 = fallbackSeeds.Seed0;
+            var seed1 = fallbackSeeds.Seed1;
+            var seed2 = fallbackSeeds.Seed2;
+            var seed3 = fallbackSeeds.Seed3;
             var seedPackage = new Cliffhanger.SRO.ServerClientCommons.Gameworld.Communication.SeedPackage(seed0, seed1, seed2, seed3);
             var shouldBroadcast = true;
             IList<ServerSimulationSession.AiTurnAction> aiActions = null;

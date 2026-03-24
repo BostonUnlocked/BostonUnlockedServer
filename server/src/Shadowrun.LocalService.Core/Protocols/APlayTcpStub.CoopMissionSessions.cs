@@ -706,6 +706,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                     seed3 = coopSession.Seed3;
                     compressedMatchConfiguration = coopSession.CompressedMatchConfiguration;
 
+                    LogMissionSeedEvent(
+                        "reused",
+                        "coop",
+                        peer,
+                        mapName,
+                        coopGroupName,
+                        new MissionSeedSet(seed0, seed1, seed2, seed3));
+
                     _logger.Log(new
                     {
                         ts = RequestLogger.UtcNowIso(),
@@ -744,6 +752,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                     coopSession.Seed2 = seed2;
                     coopSession.Seed3 = seed3;
                     coopSession.CompressedMatchConfiguration = compressedMatchConfiguration;
+
+                    LogMissionSeedEvent(
+                        "bound",
+                        "coop",
+                        peer,
+                        mapName,
+                        coopGroupName,
+                        new MissionSeedSet(seed0, seed1, seed2, seed3));
                     if (coopSession.LootAppliedToParticipants == null)
                     {
                         coopSession.LootAppliedToParticipants = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);

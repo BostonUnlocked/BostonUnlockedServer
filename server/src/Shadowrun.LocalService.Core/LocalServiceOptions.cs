@@ -17,11 +17,12 @@ public sealed class LocalServiceOptions
         APlayPort = 5055;
         PhotonPort = 4530;
         WorkspaceRoot = Directory.GetCurrentDirectory();
-        UseSqlite = false;
+        UseSqlite = true;
         MigrateJsonToSqlite = false;
         SqliteBusyTimeoutMs = 15000;
         StructuredLogRotationIntervalMinutes = 5;
         StructuredLogRetentionDays = 1;
+        UseFixedMissionSeeds = false;
 
         EnableAiLogic = DefaultEnableAiLogic;
 
@@ -62,6 +63,7 @@ public sealed class LocalServiceOptions
     public bool DisableFileLogs { get; set; }
     public int StructuredLogRotationIntervalMinutes { get; set; }
     public int StructuredLogRetentionDays { get; set; }
+    public bool UseFixedMissionSeeds { get; set; }
     public bool UseSqlite { get; set; }
     public bool MigrateJsonToSqlite { get; set; }
     public string SqliteDatabasePath { get; set; }
