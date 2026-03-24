@@ -42,6 +42,7 @@ namespace Shadowrun.LocalService.Host
 				sqliteDatabasePath = options.UseSqlite ? options.SqliteDatabasePath : null,
 				rotationIntervalMinutes = options.StructuredLogRotationIntervalMinutes,
 				retentionDays = options.StructuredLogRetentionDays,
+				missionSeedMode = options.UseFixedMissionSeeds ? "fixed" : "random",
 				runtime = ".NET Framework 4.8",
 			});
 
@@ -61,6 +62,7 @@ namespace Shadowrun.LocalService.Host
 				Console.WriteLine("[localservice-cs] log retention: {0} day(s)", options.StructuredLogRetentionDays);
 			}
 			Console.WriteLine("[localservice-cs] chat admin config: {0}", options.ChatAdminConfigPath);
+			Console.WriteLine("[localservice-cs] mission seed mode: {0}", options.UseFixedMissionSeeds ? "fixed" : "random");
 
 			var stopEvent = new ManualResetEvent(false);
 			Console.CancelKeyPress += delegate (object sender, ConsoleCancelEventArgs eventArgs)
@@ -215,7 +217,8 @@ namespace Shadowrun.LocalService.Host
 			var aplayPort = 5055;
 			var photonPort = 4530;
 			var noFileLogs = false;
-			var useSqlite = false;
+			var useFixedMissionSeeds = false;
+			var useSqlite = true;
 			var migrateJsonToSqlite = false;
 			string sqliteDbPath = null;
 
@@ -230,6 +233,16 @@ namespace Shadowrun.LocalService.Host
 				if (string.Equals(arg, "--use-sqlite", StringComparison.OrdinalIgnoreCase))
 				{
 					useSqlite = true;
+					continue;
+				}
+				if (string.Equals(arg, "--use-json", StringComparison.OrdinalIgnoreCase))
+				{
+					useSqlite = false;
+					continue;
+				}
+				if (string.Equals(arg, "--fixed-seed", StringComparison.OrdinalIgnoreCase))
+				{
+					useFixedMissionSeeds = true;
 					continue;
 				}
 				if (string.Equals(arg, "--migrate-json-to-sqlite", StringComparison.OrdinalIgnoreCase))
@@ -288,6 +301,7 @@ namespace Shadowrun.LocalService.Host
 			options.APlayPort = aplayPort;
 			options.PhotonPort = photonPort;
 			options.DisableFileLogs = noFileLogs;
+			options.UseFixedMissionSeeds = useFixedMissionSeeds;
 			options.UseSqlite = useSqlite;
 			options.MigrateJsonToSqlite = migrateJsonToSqlite;
 			if (!string.IsNullOrEmpty(sqliteDbPath))

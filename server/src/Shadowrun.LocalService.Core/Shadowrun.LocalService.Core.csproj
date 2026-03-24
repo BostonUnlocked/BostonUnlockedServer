@@ -178,6 +178,7 @@
     <Compile Include="Protocols\APlayTcpStub.HubReadyFallback.cs" />
     <Compile Include="Protocols\APlayTcpStub.HubTransport.cs" />
     <Compile Include="Protocols\APlayTcpStub.MissionCleanup.cs" />
+    <Compile Include="Protocols\APlayTcpStub.MissionSeeds.cs" />
     <Compile Include="Protocols\APlayTcpStub.MissionLaunch.cs" />
     <Compile Include="Protocols\APlayTcpStub.MissionCommands.cs" />
     <Compile Include="Protocols\APlayTcpStub.ProtocolCodec.cs" />

@@ -1937,10 +1937,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     missionCommandCommunicationObjectTypeId,
                                     ref sentMissionEntityIntros);
 
-                                var seed0 = 0x11111111u;
-                                var seed1 = 0x22222222u;
-                                var seed2 = 0x33333333u;
-                                var seed3 = 0x44444444u;
+                                var coopMissionSeeds = AllocateMissionSeeds("coop", peer, mapName, coopGroupName);
+                                var seed0 = coopMissionSeeds.Seed0;
+                                var seed1 = coopMissionSeeds.Seed1;
+                                var seed2 = coopMissionSeeds.Seed2;
+                                var seed3 = coopMissionSeeds.Seed3;
 
                                 var memberListRaw = hasPrepareMatchPayload
                                     ? prepareMatchPlayers
@@ -3013,10 +3014,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         missionCommandCommunicationObjectTypeId,
                                         ref sentMissionEntityIntros);
 
-                                    var seed0 = 0x11111111u;
-                                    var seed1 = 0x22222222u;
-                                    var seed2 = 0x33333333u;
-                                    var seed3 = 0x44444444u;
+                                    var soloMissionSeeds = AllocateMissionSeeds("solo", peer, mapName, null);
+                                    var seed0 = soloMissionSeeds.Seed0;
+                                    var seed1 = soloMissionSeeds.Seed1;
+                                    var seed2 = soloMissionSeeds.Seed2;
+                                    var seed3 = soloMissionSeeds.Seed3;
 
                                     var selectedHenchmen = ResolveSelectedHenchmenForSoloMission(peer, mapName, parsedSelections, activeIdentityGuid, activeIdentityHash, activeCareerIndex);
                                     var compressedMatchConfiguration = BuildSoloMissionMatchConfiguration(mapName, activeIdentityGuid, activeIdentityHash, activeCareerIndex, activeCharacterName, gameClientEntityId, selectedHenchmen);
@@ -3027,7 +3029,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                         if (simulationSession != null)
                                         {
-                                            RegisterSoloMissionSession(peer, simulationSession);
+                                            RegisterSoloMissionSession(peer, mapName, seed0, seed1, seed2, seed3, simulationSession);
                                         }
                                     }
                                     catch (Exception ex)

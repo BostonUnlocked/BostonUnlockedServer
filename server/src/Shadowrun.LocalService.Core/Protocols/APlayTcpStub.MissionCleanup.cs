@@ -7,36 +7,63 @@ namespace Shadowrun.LocalService.Core.Protocols
 {
     public sealed partial class APlayTcpStub
     {
+        private sealed class SoloMissionSessionState
+        {
+            public SoloMissionSessionState(string peer, string mapName, uint seed0, uint seed1, uint seed2, uint seed3, ServerSimulationSession simulation)
+            {
+                Peer = peer;
+                MapName = mapName;
+                Seed0 = seed0;
+                Seed1 = seed1;
+                Seed2 = seed2;
+                Seed3 = seed3;
+                Simulation = simulation;
+                CreatedUtc = DateTime.UtcNow;
+            }
+
+            public readonly string Peer;
+            public readonly string MapName;
+            public readonly uint Seed0;
+            public readonly uint Seed1;
+            public readonly uint Seed2;
+            public readonly uint Seed3;
+            public readonly DateTime CreatedUtc;
+            public readonly ServerSimulationSession Simulation;
+        }
+
         private static readonly TimeSpan MissionCleanupInterval = TimeSpan.FromSeconds(30);
 
         private readonly object _soloMissionLock = new object();
-        private readonly Dictionary<string, ServerSimulationSession> _soloMissionSessions = new Dictionary<string, ServerSimulationSession>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, SoloMissionSessionState> _soloMissionSessions = new Dictionary<string, SoloMissionSessionState>(StringComparer.OrdinalIgnoreCase);
         private readonly Timer _missionCleanupTimer;
         private int _missionCleanupInProgress;
 
-        private void RegisterSoloMissionSession(string peer, ServerSimulationSession simulationSession)
+        private void RegisterSoloMissionSession(string peer, string mapName, uint seed0, uint seed1, uint seed2, uint seed3, ServerSimulationSession simulationSession)
         {
             if (IsNullOrWhiteSpace(peer) || simulationSession == null)
             {
                 return;
             }
 
-            ServerSimulationSession previous = null;
+            var current = new SoloMissionSessionState(peer, mapName, seed0, seed1, seed2, seed3, simulationSession);
+            SoloMissionSessionState previous = null;
             lock (_soloMissionLock)
             {
-                if (_soloMissionSessions.TryGetValue(peer, out previous) && object.ReferenceEquals(previous, simulationSession))
+                if (_soloMissionSessions.TryGetValue(peer, out previous)
+                    && previous != null
+                    && object.ReferenceEquals(previous.Simulation, simulationSession))
                 {
                     previous = null;
                 }
 
-                _soloMissionSessions[peer] = simulationSession;
+                _soloMissionSessions[peer] = current;
             }
 
-            if (previous != null)
+            if (previous != null && previous.Simulation != null)
             {
                 try
                 {
-                    previous.Stop();
+                    previous.Simulation.Stop();
                 }
                 catch
                 {
@@ -51,19 +78,20 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
-            ServerSimulationSession simulationSession = null;
+            SoloMissionSessionState sessionState = null;
             lock (_soloMissionLock)
             {
-                if (_soloMissionSessions.TryGetValue(peer, out simulationSession) && simulationSession != null)
+                if (_soloMissionSessions.TryGetValue(peer, out sessionState) && sessionState != null)
                 {
                     _soloMissionSessions.Remove(peer);
                 }
                 else
                 {
-                    simulationSession = null;
+                    sessionState = null;
                 }
             }
 
+            var simulationSession = sessionState != null ? sessionState.Simulation : null;
             if (simulationSession != null)
             {
                 try
