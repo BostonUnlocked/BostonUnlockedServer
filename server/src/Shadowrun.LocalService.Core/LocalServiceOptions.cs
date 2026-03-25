@@ -23,6 +23,7 @@ public sealed class LocalServiceOptions
         StructuredLogRotationIntervalMinutes = 5;
         StructuredLogRetentionDays = 1;
         UseFixedMissionSeeds = false;
+        PhotonStrictAuthDisconnectOnBlockedMutation = ReadBoolFromEnvironment("SRO_PHOTON_STRICT_AUTH", false);
 
         EnableAiLogic = DefaultEnableAiLogic;
 
@@ -64,6 +65,7 @@ public sealed class LocalServiceOptions
     public int StructuredLogRotationIntervalMinutes { get; set; }
     public int StructuredLogRetentionDays { get; set; }
     public bool UseFixedMissionSeeds { get; set; }
+    public bool PhotonStrictAuthDisconnectOnBlockedMutation { get; set; }
     public bool UseSqlite { get; set; }
     public bool MigrateJsonToSqlite { get; set; }
     public string SqliteDatabasePath { get; set; }
@@ -212,6 +214,44 @@ public sealed class LocalServiceOptions
     private static bool IsNullOrWhiteSpace(string value)
     {
         return value == null || value.Trim().Length == 0;
+    }
+
+    private static bool ReadBoolFromEnvironment(string variableName, bool fallback)
+    {
+        try
+        {
+            var raw = Environment.GetEnvironmentVariable(variableName);
+            if (IsNullOrWhiteSpace(raw))
+            {
+                return fallback;
+            }
+
+            var trimmed = raw.Trim();
+            bool parsed;
+            if (bool.TryParse(trimmed, out parsed))
+            {
+                return parsed;
+            }
+
+            if (string.Equals(trimmed, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(trimmed, "yes", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(trimmed, "on", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (string.Equals(trimmed, "0", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(trimmed, "no", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(trimmed, "off", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+        catch
+        {
+        }
+
+        return fallback;
     }
 }
 
