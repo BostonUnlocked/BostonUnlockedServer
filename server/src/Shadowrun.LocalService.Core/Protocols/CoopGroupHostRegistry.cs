@@ -88,5 +88,24 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return leaderAccountId != Guid.Empty;
             }
         }
+
+        public static void RemoveLeader(string coopGroupName)
+        {
+            if (string.IsNullOrEmpty(coopGroupName))
+            {
+                return;
+            }
+
+            var key = NormalizeGroupName(coopGroupName);
+            if (string.IsNullOrEmpty(key))
+            {
+                return;
+            }
+
+            lock (LockObj)
+            {
+                LeaderByGroupName.Remove(key);
+            }
+        }
     }
 }

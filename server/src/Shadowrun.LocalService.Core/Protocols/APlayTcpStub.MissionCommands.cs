@@ -819,6 +819,17 @@ namespace Shadowrun.LocalService.Core.Protocols
             ref byte[] cachedHubStatePayload,
             byte[] cachedCreationInfoPayload)
         {
+            _logger.Log(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "mission-party-transition-start",
+                peer = peer,
+                coopGroupName = currentCoopGroupName,
+                participantId = gameClientEntityId,
+                missionMapName = currentMissionMapName,
+                hasSimulationSession = simulationSession != null,
+            });
+
             var participantId = gameClientEntityId;
             var leavingMidMission = false;
             if (simulationSession != null)
@@ -900,6 +911,12 @@ namespace Shadowrun.LocalService.Core.Protocols
                 {
                     rewardSlot = null;
                 }
+            }
+
+            var coopGroupNameForLeave = currentCoopGroupName;
+            if (!IsNullOrWhiteSpace(coopGroupNameForLeave))
+            {
+                UnregisterCoopMissionParticipant(coopGroupNameForLeave, peer, false);
             }
 
             int lootNuyenReward = 0;
@@ -1184,10 +1201,10 @@ namespace Shadowrun.LocalService.Core.Protocols
             var leavePayload = BitConverter.GetBytes(participantId);
             var leaveCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameworldEntityId, 3, leavePayload), responseMsgNoBase + 13);
             SendRawFrame(stream, peer, PrefixLength(leaveCore), "sent GameworldCommunicationObject LeaveMission (participantId=" + participantId + ")");
-            if (!IsNullOrWhiteSpace(currentCoopGroupName))
+            if (!IsNullOrWhiteSpace(coopGroupNameForLeave))
             {
                 // Mirror SRO mission-side leave signaling so remaining coop clients get onLeaveMission for the departed participant.
-                BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(leaveCore), "sent GameworldCommunicationObject LeaveMission (coop bcast, participantId=" + participantId + ")");
+                BroadcastToCoopMissionPeers(coopGroupNameForLeave, peer, PrefixLength(leaveCore), "sent GameworldCommunicationObject LeaveMission (coop bcast, participantId=" + participantId + ")");
             }
 
             var stopCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameworldEntityId, 0, new byte[0]), responseMsgNoBase + 14);
@@ -1207,9 +1224,18 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
-            if (!IsNullOrWhiteSpace(currentCoopGroupName))
+            if (!IsNullOrWhiteSpace(coopGroupNameForLeave))
             {
-                UnregisterCoopMissionParticipant(currentCoopGroupName, peer);
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "mission-party-transition-end",
+                    peer = peer,
+                    coopGroupName = coopGroupNameForLeave,
+                    participantId = participantId,
+                    lifecycle = "coop-unregister",
+                });
+
                 currentCoopGroupName = null;
                 simulationSession = null;
                 simulationSessionSync = null;
@@ -1226,6 +1252,16 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             simulationSession = null;
             simulationSessionSync = null;
+
+            _logger.Log(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "mission-party-transition-end",
+                peer = peer,
+                coopGroupName = currentCoopGroupName,
+                participantId = participantId,
+                lifecycle = "solo-stop",
+            });
         }
     }
 }

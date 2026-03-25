@@ -143,7 +143,8 @@ namespace Shadowrun.LocalService.Core.Protocols
             long keepAliveMsgNo,
             ref ulong gameClientEntityId,
             ref string activeIdentityHash,
-            ref Guid activeIdentityGuid)
+            ref Guid activeIdentityGuid,
+            ref Guid aplayTransportAccountId)
         {
             var serverMsgNoBase = direct.MsgNo;
 
@@ -185,6 +186,49 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             activeIdentityHash = mappedIdentityHash;
             activeIdentityGuid = mappedIdentityGuid;
+
+            if (aplayTransportAccountId != activeIdentityGuid)
+            {
+                if (aplayTransportAccountId != Guid.Empty)
+                {
+                    AccountTransportLivenessRegistry.MarkDisconnected(aplayTransportAccountId, AccountTransportLivenessRegistry.TransportAPlay);
+                }
+
+                AccountTransportLivenessRegistry.MarkConnected(activeIdentityGuid, AccountTransportLivenessRegistry.TransportAPlay);
+                aplayTransportAccountId = activeIdentityGuid;
+
+                try
+                {
+                    var snapshot = AccountTransportLivenessRegistry.Evaluate(activeIdentityGuid);
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "transport-connected",
+                        protocol = "aplay",
+                        accountId = activeIdentityGuid,
+                        peer = peer,
+                        connectionHash = (string)null,
+                        photonConnections = snapshot.PhotonConnections,
+                        aplayConnections = snapshot.APlayConnections,
+                    });
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "account-liveness-evaluated",
+                        protocol = "aplay",
+                        accountId = activeIdentityGuid,
+                        isSocialOnline = snapshot.IsSocialOnline,
+                        isHardOffline = snapshot.IsHardOffline,
+                        photonConnections = snapshot.PhotonConnections,
+                        aplayConnections = snapshot.APlayConnections,
+                        reason = "regular-connect",
+                    });
+                }
+                catch
+                {
+                }
+            }
+
             _logger.UpdateConnectionAccountId("aplay", peer, null, activeIdentityGuid);
             RegisterGameClientEntityIdForIdentity(activeIdentityGuid, gameClientEntityId, peer);
 

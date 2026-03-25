@@ -54,8 +54,19 @@ public sealed partial class PhotonProxyTcpStub
 
         _friendsStore = new FriendsStore(options, logger);
         _chatAndFriends = new ChatAndFriendsState(this);
+        AccountTransportLivenessRegistry.RegisterHardOfflineObserver(HandleAccountHardOffline);
         _chatAdminAccountIds = LoadChatAdminAccountIds(options);
         _chatCommands = BuildChatCommandMap();
+    }
+
+    private void HandleAccountHardOffline(Guid accountId)
+    {
+        if (accountId == Guid.Empty || _chatAndFriends == null)
+        {
+            return;
+        }
+
+        _chatAndFriends.HandleHardOfflineAccount(accountId);
     }
 
     public void Run(ManualResetEvent stopEvent)
@@ -327,6 +338,8 @@ public sealed partial class PhotonProxyTcpStub
                             }
                             else
                             {
+                                TryBindAccountFromLegacyAuthOperation(state, payload, opCode);
+
                                 operationResponsePayload = new byte[]
                                 {
                                     0xF3,
@@ -344,6 +357,11 @@ public sealed partial class PhotonProxyTcpStub
                             {
                                 return;
                             }
+
+                            if (state != null && state.RequestedDisconnect)
+                            {
+                                return;
+                            }
                         }
                     }
                 }
@@ -352,6 +370,36 @@ public sealed partial class PhotonProxyTcpStub
             // Best-effort: unregister this peer from shared state.
             try
             {
+                if (state != null && state.AccountId != Guid.Empty)
+                {
+                    AccountTransportLivenessRegistry.MarkDisconnected(state.AccountId, AccountTransportLivenessRegistry.TransportPhoton);
+
+                    var snapshot = AccountTransportLivenessRegistry.Evaluate(state.AccountId);
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "transport-disconnected",
+                        protocol = "photon",
+                        accountId = state.AccountId,
+                        connectionHash = state.ConnectionHash,
+                        peer = state.Endpoint,
+                        photonConnections = snapshot.PhotonConnections,
+                        aplayConnections = snapshot.APlayConnections,
+                    });
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "account-liveness-evaluated",
+                        protocol = "photon",
+                        accountId = state.AccountId,
+                        isSocialOnline = snapshot.IsSocialOnline,
+                        isHardOffline = snapshot.IsHardOffline,
+                        photonConnections = snapshot.PhotonConnections,
+                        aplayConnections = snapshot.APlayConnections,
+                        reason = "disconnect",
+                    });
+                }
+
                 _chatAndFriends.Unregister(state.ConnectionId);
             }
             catch
@@ -361,7 +409,26 @@ public sealed partial class PhotonProxyTcpStub
             // If this disconnect caused the account to go offline (no remaining Photon connections), notify friends.
             try
             {
-                if (state != null && state.AccountId != Guid.Empty && (_chatAndFriends == null || !_chatAndFriends.IsAccountOnline(state.AccountId)))
+                var shouldNotifyOffline = state != null
+                    && state.AccountId != Guid.Empty
+                    && !AccountTransportLivenessRegistry.IsOnline(state.AccountId)
+                    && (_chatAndFriends == null || !_chatAndFriends.IsAccountOnline(state.AccountId));
+
+                if (state != null && state.AccountId != Guid.Empty)
+                {
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = shouldNotifyOffline ? "group-offline-action-applied" : "group-offline-action-skipped",
+                        protocol = "photon",
+                        accountId = state.AccountId,
+                        connectionHash = state.ConnectionHash,
+                        peer = state.Endpoint,
+                        reason = shouldNotifyOffline ? "social-offline-transition" : "account-still-online-or-social-state-active",
+                    });
+                }
+
+                if (shouldNotifyOffline)
                 {
                     NotifyFriendsPresenceChanged(state.AccountId, false);
                 }

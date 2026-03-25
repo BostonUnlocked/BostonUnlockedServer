@@ -831,6 +831,11 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         private void RegisterCoopMissionParticipant(string coopGroupName, string peer, NetworkStream stream, string identityHash, Guid identityGuid, int careerIndex)
         {
+            RegisterCoopMissionParticipant(coopGroupName, peer, stream, identityHash, identityGuid, careerIndex, 0UL);
+        }
+
+        private void RegisterCoopMissionParticipant(string coopGroupName, string peer, NetworkStream stream, string identityHash, Guid identityGuid, int careerIndex, ulong gameClientEntityId)
+        {
             if (IsNullOrWhiteSpace(coopGroupName) || stream == null)
             {
                 return;
@@ -861,7 +866,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     }
                 }
 
-                list.Add(new CoopMissionParticipant(peer, stream, identityHash, identityGuid, careerIndex));
+                list.Add(new CoopMissionParticipant(peer, stream, identityHash, identityGuid, careerIndex, gameClientEntityId));
 
                 CoopMissionSessionState sessionToSignal;
                 if (_coopMissionSessions.TryGetValue(coopGroupName, out sessionToSignal) && sessionToSignal != null && sessionToSignal.SelectionUpdatedEvent != null)
@@ -894,12 +899,19 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         private void UnregisterCoopMissionParticipant(string coopGroupName, string peer)
         {
+            UnregisterCoopMissionParticipant(coopGroupName, peer, true);
+        }
+
+        private void UnregisterCoopMissionParticipant(string coopGroupName, string peer, bool notifyPeersOfLeaveMission)
+        {
             if (IsNullOrWhiteSpace(coopGroupName) || IsNullOrWhiteSpace(peer))
             {
                 return;
             }
 
             MissionRuntimeRegistry.MarkCoopMissionParticipantLeft(coopGroupName, peer);
+
+            ulong departingPlayerIdForLeaveNotify = 0UL;
 
             lock (_coopMissionLock)
             {
@@ -928,9 +940,19 @@ namespace Shadowrun.LocalService.Core.Protocols
                         {
                             try
                             {
-                                ulong departingPlayerId;
-                                if (TryGetGameClientEntityIdForIdentity(departingIdentityGuid, out departingPlayerId) && departingPlayerId != 0UL)
+                                var departingPlayerId = list[i] != null ? list[i].GameClientEntityId : 0UL;
+                                if (departingPlayerId == 0UL)
                                 {
+                                    TryGetGameClientEntityIdForIdentity(departingIdentityGuid, out departingPlayerId);
+                                }
+
+                                if (departingPlayerId != 0UL)
+                                {
+                                    if (notifyPeersOfLeaveMission)
+                                    {
+                                        departingPlayerIdForLeaveNotify = departingPlayerId;
+                                    }
+
                                     ulong reassignedToPlayerId;
                                     int reassignedAgentCount;
                                     bool reassigned;
@@ -1004,7 +1026,37 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
             }
 
+            if (notifyPeersOfLeaveMission && departingPlayerIdForLeaveNotify != 0UL)
+            {
+                TryBroadcastCoopParticipantLeaveMission(coopGroupName, peer, departingPlayerIdForLeaveNotify);
+            }
+
             TryStopEmptyCoopMissionGroup(coopGroupName, "participant-empty");
+        }
+
+        private void TryBroadcastCoopParticipantLeaveMission(string coopGroupName, string departingPeer, ulong participantId)
+        {
+            if (IsNullOrWhiteSpace(coopGroupName) || IsNullOrWhiteSpace(departingPeer) || participantId == 0UL)
+            {
+                return;
+            }
+
+            try
+            {
+                const ulong gameworldEntityId = 5UL;
+                var msgNo = ReserveMetaGameplayMsgNos(1);
+                var leavePayload = BitConverter.GetBytes(participantId);
+                var leaveCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameworldEntityId, 3, leavePayload), msgNo);
+
+                BroadcastToCoopMissionPeers(
+                    coopGroupName,
+                    departingPeer,
+                    PrefixLength(leaveCore),
+                    "sent GameworldCommunicationObject LeaveMission (disconnect coop bcast, participantId=" + participantId + ")");
+            }
+            catch
+            {
+            }
         }
 
         private bool TryMarkCoopMissionReadyAndCheckAllReady(string coopGroupName, string peer, out CoopMissionSessionState session, out int readyCount, out int expectedCount, out int participantCount)

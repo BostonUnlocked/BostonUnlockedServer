@@ -934,6 +934,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 var peer = client.Client.RemoteEndPoint != null ? client.Client.RemoteEndPoint.ToString() : "unknown";
                 var connectionHash = RequestLogger.CreateConnectionHash("aplay", peer);
                 _logger.RegisterConnectionContext("aplay", peer, connectionHash);
+                Guid aplayTransportAccountId = Guid.Empty;
                 try
                 {
                     using (var stream = client.GetStream())
@@ -1714,7 +1715,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     keepAliveMsgNo,
                                     ref gameClientEntityId,
                                     ref activeIdentityHash,
-                                    ref activeIdentityGuid))
+                                    ref activeIdentityGuid,
+                                    ref aplayTransportAccountId))
                                 {
                                     return;
                                 }
@@ -1900,7 +1902,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                 currentCoopGroupName = coopGroupName;
                                 ApplyCoopHostContext("aplay", peer, connectionHash, currentCoopGroupName, activeIdentityGuid);
-                                RegisterCoopMissionParticipant(coopGroupName, peer, stream, activeIdentityHash, activeIdentityGuid, activeCareerIndex);
+                                RegisterCoopMissionParticipant(coopGroupName, peer, stream, activeIdentityHash, activeIdentityGuid, activeCareerIndex, gameClientEntityId);
                                 UpdateCoopMissionHenchSelections(coopGroupName, activeIdentityGuid, coopParsedSelections);
 
                                 CoopMissionSessionState coopSession;
@@ -3104,14 +3106,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                             cancelHubReadyFallback("socket-closed");
                             cancelPostCreateWatchdog("socket-closed");
                             connectionClosed.Set();
-                            HubPresenceRegistry.Participant disconnectedParticipant;
-                            _hubPresenceRegistry.TryGetParticipantForPeer(peer, out disconnectedParticipant);
-                            if (currentHubInstance != null && disconnectedParticipant != null && !IsNullOrWhiteSpace(disconnectedParticipant.CharacterId))
-                            {
-                                _portedHubInstanceManager.RemoveCharacterFromHub(currentHubInstance, disconnectedParticipant.CharacterId);
-                                currentHubInstance = null;
-                            }
-                            RemoveHubPresenceWithBroadcast(peer);
                             _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "aplay-conn", peer = peer, note = "socket closed" });
                             break;
                         }
@@ -3143,6 +3137,47 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
                 finally
                 {
+                    if (aplayTransportAccountId != Guid.Empty)
+                    {
+                        AccountTransportLivenessRegistry.MarkDisconnected(aplayTransportAccountId, AccountTransportLivenessRegistry.TransportAPlay);
+
+                        try
+                        {
+                            var snapshot = AccountTransportLivenessRegistry.Evaluate(aplayTransportAccountId);
+                            _logger.Log(new
+                            {
+                                ts = RequestLogger.UtcNowIso(),
+                                type = "transport-disconnected",
+                                protocol = "aplay",
+                                accountId = aplayTransportAccountId,
+                                peer = peer,
+                                connectionHash = connectionHash,
+                                photonConnections = snapshot.PhotonConnections,
+                                aplayConnections = snapshot.APlayConnections,
+                            });
+                            _logger.Log(new
+                            {
+                                ts = RequestLogger.UtcNowIso(),
+                                type = "account-liveness-evaluated",
+                                protocol = "aplay",
+                                accountId = aplayTransportAccountId,
+                                isSocialOnline = snapshot.IsSocialOnline,
+                                isHardOffline = snapshot.IsHardOffline,
+                                photonConnections = snapshot.PhotonConnections,
+                                aplayConnections = snapshot.APlayConnections,
+                                reason = "connection-finally",
+                            });
+
+                            if (snapshot.IsHardOffline)
+                            {
+                                AccountTransportLivenessRegistry.NotifyHardOffline(aplayTransportAccountId);
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+
                     _logger.ClearConnectionContext("aplay", peer, connectionHash);
                 }
             }

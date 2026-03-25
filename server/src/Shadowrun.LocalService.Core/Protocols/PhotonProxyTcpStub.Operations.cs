@@ -164,6 +164,12 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         private byte[] BuildSerializedServiceResponse(ConnectionState state, int operationId, string operationName, byte[] requestPayload)
         {
+            byte[] blockedResponse;
+            if (TryBuildBlockedUnauthenticatedOperationResponse(state, operationId, operationName, out blockedResponse))
+            {
+                return blockedResponse;
+            }
+
             var payload = BuildPayload(state, operationName, requestPayload);
 
             var response = new ServiceResponse
@@ -174,6 +180,117 @@ namespace Shadowrun.LocalService.Core.Protocols
             };
 
             return SerializeMessage(response);
+        }
+
+        private bool TryBuildBlockedUnauthenticatedOperationResponse(ConnectionState state, int operationId, string operationName, out byte[] serializedResponse)
+        {
+            serializedResponse = null;
+
+            if (!RequiresAuthenticatedAccount(operationName) || (state != null && state.AccountId != Guid.Empty))
+            {
+                return false;
+            }
+
+            try
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "photon-op-auth-blocked",
+                    operationId = operationId,
+                    operationName = operationName ?? string.Empty,
+                    accountId = state != null ? state.AccountId : Guid.Empty,
+                    connectionHash = state != null ? state.ConnectionHash : null,
+                    endpoint = state != null ? state.Endpoint : null,
+                    mode = _options != null && _options.PhotonStrictAuthDisconnectOnBlockedMutation ? "strict-disconnect" : "soft-fail",
+                });
+            }
+            catch
+            {
+            }
+
+            var response = new ServiceResponse
+            {
+                OperationId = operationId,
+                ErrorDescription = "Unauthenticated operation blocked: " + (operationName ?? string.Empty),
+                Payload = BuildUnauthenticatedFailurePayload(operationName),
+            };
+
+            if (_options != null && _options.PhotonStrictAuthDisconnectOnBlockedMutation)
+            {
+                if (state != null)
+                {
+                    state.RequestedDisconnect = true;
+                }
+
+                try
+                {
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "photon-op-auth-disconnect",
+                        operationId = operationId,
+                        operationName = operationName ?? string.Empty,
+                        connectionHash = state != null ? state.ConnectionHash : null,
+                        endpoint = state != null ? state.Endpoint : null,
+                    });
+                }
+                catch
+                {
+                }
+            }
+
+            serializedResponse = SerializeMessage(response);
+            return true;
+        }
+
+        private static bool RequiresAuthenticatedAccount(string operationName)
+        {
+            if (string.IsNullOrEmpty(operationName)
+                || string.Equals(operationName, "ConnectRequest", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(operationName, "DisconnectRequest", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(operationName, "GetChannelParticipantsRequest", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(operationName, "ListGroupMembersRequest", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static ISerializableMessage BuildUnauthenticatedFailurePayload(string operationName)
+        {
+            if (string.Equals(operationName, "SendMessageToChannelRequest", StringComparison.OrdinalIgnoreCase))
+            {
+                return new SendMessageToChannelResponse { Success = false };
+            }
+
+            if (string.Equals(operationName, "CreateGroupRequest", StringComparison.OrdinalIgnoreCase))
+            {
+                return new CreateGroupResponse { GroupData = null };
+            }
+
+            if (string.Equals(operationName, "InviteToGroupRequest", StringComparison.OrdinalIgnoreCase))
+            {
+                return new InviteToGroupResponse { ResultCode = "YouAreNotTheGroupMember" };
+            }
+
+            if (string.Equals(operationName, "AcceptInvitationRequest", StringComparison.OrdinalIgnoreCase))
+            {
+                return new AcceptInvitationResponse { ResultCode = "InvitationNotFound", GroupData = null };
+            }
+
+            if (string.Equals(operationName, "DeclineInvitationRequest", StringComparison.OrdinalIgnoreCase))
+            {
+                return new DeclineInvitationResponse { ResultCode = "InvitationNotFound" };
+            }
+
+            if (string.Equals(operationName, "RemoveGroupMemberRequest", StringComparison.OrdinalIgnoreCase))
+            {
+                return new RemoveGroupMemberResponse { ResultCode = "YouAreNotTheGroupMember" };
+            }
+
+            return null;
         }
 
         private ISerializableMessage BuildPayload(ConnectionState state, string operationName, byte[] requestPayload)
@@ -210,23 +327,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                         return new DisconnectResponse();
                     }
 
-                    state.AccountId = accountId;
-                    _logger.UpdateConnectionAccountId("photon", state != null ? state.Endpoint : null, state != null ? state.ConnectionHash : null, accountId);
-                    state.LocalUser = CreateUser(accountId);
-
-                    try
-                    {
-                        var wasOnline = _chatAndFriends != null && _chatAndFriends.IsAccountOnline(accountId);
-                        _chatAndFriends.RegisterOrUpdatePeer(state.ConnectionId, accountId, state.Endpoint, state.Stream);
-                        var isOnline = _chatAndFriends != null && _chatAndFriends.IsAccountOnline(accountId);
-                        if (!wasOnline && isOnline)
-                        {
-                            NotifyFriendsPresenceChanged(accountId, true);
-                        }
-                    }
-                    catch
-                    {
-                    }
+                    BindAccountToConnectionState(state, accountId, "connect-request");
 
                     return new ConnectResponse { IdentityHash = accountId };
                 }
@@ -1828,6 +1929,177 @@ namespace Shadowrun.LocalService.Core.Protocols
             return Guid.Empty;
         }
 
+        private static Guid DecodeGuidNetworkOrder(byte[] bytes, int offset)
+        {
+            if (bytes == null || offset < 0 || bytes.Length < offset + 16)
+            {
+                return Guid.Empty;
+            }
+
+            var guidBytes = new byte[16];
+            Buffer.BlockCopy(bytes, offset, guidBytes, 0, 16);
+            Array.Reverse(guidBytes, 0, 4);
+            Array.Reverse(guidBytes, 4, 2);
+            Array.Reverse(guidBytes, 6, 2);
+            return new Guid(guidBytes);
+        }
+
+        private bool TryResolveAccountIdFromLegacyOpPayload(byte[] payload, out Guid sessionHash, out Guid accountId)
+        {
+            sessionHash = Guid.Empty;
+            accountId = Guid.Empty;
+
+            if (payload == null || payload.Length < 16)
+            {
+                return false;
+            }
+
+            // Legacy Photon auth frames (op 0x0A) carry one GUID in the payload.
+            // Accept both GUID byte orders used by different client/runtime builds.
+            var offset = payload.Length - 16;
+            var sessionCandidates = new Guid[2];
+
+            try
+            {
+                var guidBytes = new byte[16];
+                Buffer.BlockCopy(payload, offset, guidBytes, 0, 16);
+                sessionCandidates[0] = new Guid(guidBytes);
+            }
+            catch
+            {
+                sessionCandidates[0] = Guid.Empty;
+            }
+
+            try
+            {
+                sessionCandidates[1] = DecodeGuidNetworkOrder(payload, offset);
+            }
+            catch
+            {
+                sessionCandidates[1] = Guid.Empty;
+            }
+
+            for (var i = 0; i < sessionCandidates.Length; i++)
+            {
+                var candidateSession = sessionCandidates[i];
+                if (candidateSession == Guid.Empty)
+                {
+                    continue;
+                }
+
+                var resolvedAccountId = ResolveAccountIdFromSession(candidateSession);
+                if (resolvedAccountId != Guid.Empty)
+                {
+                    sessionHash = candidateSession;
+                    accountId = resolvedAccountId;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void BindAccountToConnectionState(ConnectionState state, Guid accountId, string source)
+        {
+            if (state == null || accountId == Guid.Empty)
+            {
+                return;
+            }
+
+            if (state.AccountId == accountId)
+            {
+                return;
+            }
+
+            state.AccountId = accountId;
+            _logger.UpdateConnectionAccountId("photon", state.Endpoint, state.ConnectionHash, accountId);
+            state.LocalUser = CreateUser(accountId);
+            AccountTransportLivenessRegistry.MarkConnected(accountId, AccountTransportLivenessRegistry.TransportPhoton);
+
+            try
+            {
+                var snapshot = AccountTransportLivenessRegistry.Evaluate(accountId);
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "transport-connected",
+                    protocol = "photon",
+                    accountId = accountId,
+                    connectionHash = state.ConnectionHash,
+                    peer = state.Endpoint,
+                    photonConnections = snapshot.PhotonConnections,
+                    aplayConnections = snapshot.APlayConnections,
+                });
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "account-liveness-evaluated",
+                    protocol = "photon",
+                    accountId = accountId,
+                    isSocialOnline = snapshot.IsSocialOnline,
+                    isHardOffline = snapshot.IsHardOffline,
+                    photonConnections = snapshot.PhotonConnections,
+                    aplayConnections = snapshot.APlayConnections,
+                    reason = "bind-account",
+                });
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                var wasOnline = _chatAndFriends != null && _chatAndFriends.IsAccountOnline(accountId);
+                _chatAndFriends.RegisterOrUpdatePeer(state.ConnectionId, accountId, state.Endpoint, state.Stream);
+                var isOnline = _chatAndFriends != null && _chatAndFriends.IsAccountOnline(accountId);
+                if (!wasOnline && isOnline)
+                {
+                    NotifyFriendsPresenceChanged(accountId, true);
+                }
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "photon-auth-bound",
+                    source = source ?? string.Empty,
+                    connectionHash = state.ConnectionHash,
+                    endpoint = state.Endpoint,
+                    accountId = accountId,
+                });
+            }
+            catch
+            {
+            }
+        }
+
+        private void TryBindAccountFromLegacyAuthOperation(ConnectionState state, byte[] payload, byte opCode)
+        {
+            if (state == null || state.AccountId != Guid.Empty)
+            {
+                return;
+            }
+
+            if (opCode != 0x0A)
+            {
+                return;
+            }
+
+            Guid sessionHash;
+            Guid accountId;
+            if (!TryResolveAccountIdFromLegacyOpPayload(payload, out sessionHash, out accountId) || accountId == Guid.Empty)
+            {
+                return;
+            }
+
+            BindAccountToConnectionState(state, accountId, "legacy-op-0x0a");
+        }
+
         private static User CreateUser(Guid accountId)
         {
             return CreateUser(accountId, true);
@@ -2507,6 +2779,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             public string ConnectionHash;
             public string Endpoint;
             public NetworkStream Stream;
+            public bool RequestedDisconnect;
 
             public Guid AccountId;
             public User LocalUser;

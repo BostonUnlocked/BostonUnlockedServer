@@ -33,6 +33,9 @@ namespace Shadowrun.LocalService.Core.Protocols
             private readonly Dictionary<Guid, List<Guid>> _connIdsByAccountId = new Dictionary<Guid, List<Guid>>();
 
             private readonly Dictionary<string, HashSet<Guid>> _channelMembers = new Dictionary<string, HashSet<Guid>>(StringComparer.Ordinal);
+            private DateTime _nextGroupReconcileUtc = DateTime.MinValue;
+            private static readonly TimeSpan GroupReconcileInterval = TimeSpan.FromSeconds(15);
+            private const int GroupReconcileMaxRepairsPerSweep = 8;
 
             private int _nextGroupId = 1;
             private readonly Dictionary<int, GroupRecord> _groupsById = new Dictionary<int, GroupRecord>();
@@ -133,14 +136,52 @@ namespace Shadowrun.LocalService.Core.Protocols
                             {
                                 connIds.Remove(connectionId);
                                 var accountWentOffline = connIds.Count == 0;
-                                if (accountWentOffline)
+                                if (accountWentOffline && !AccountTransportLivenessRegistry.IsOnline(accountId))
                                 {
                                     _connIdsByAccountId.Remove(accountId);
+                                    try
+                                    {
+                                        var snapshot = AccountTransportLivenessRegistry.Evaluate(accountId);
+                                        _owner._logger.Log(new
+                                        {
+                                            ts = RequestLogger.UtcNowIso(),
+                                            type = "group-offline-action-applied",
+                                            accountId = accountId,
+                                            reason = "all-transports-offline",
+                                            photonConnections = snapshot.PhotonConnections,
+                                            aplayConnections = snapshot.APlayConnections,
+                                            isHardOffline = snapshot.IsHardOffline,
+                                        });
+                                    }
+                                    catch
+                                    {
+                                    }
+
                                     if (pending == null)
                                     {
                                         pending = new List<PendingAccountEvent>();
                                     }
                                     HandleAccountOffline_NoLock(accountId, pending);
+                                }
+                                else if (accountWentOffline)
+                                {
+                                    try
+                                    {
+                                        var snapshot = AccountTransportLivenessRegistry.Evaluate(accountId);
+                                        _owner._logger.Log(new
+                                        {
+                                            ts = RequestLogger.UtcNowIso(),
+                                            type = "group-offline-action-skipped",
+                                            accountId = accountId,
+                                            reason = "other-transport-still-active",
+                                            photonConnections = snapshot.PhotonConnections,
+                                            aplayConnections = snapshot.APlayConnections,
+                                            isHardOffline = snapshot.IsHardOffline,
+                                        });
+                                    }
+                                    catch
+                                    {
+                                    }
                                 }
                             }
                         }
@@ -177,6 +218,48 @@ namespace Shadowrun.LocalService.Core.Protocols
                         {
                             continue;
                         }
+                        SendEventToAccount(p.AccountId, p.Event);
+                    }
+                }
+            }
+
+            public void HandleHardOfflineAccount(Guid accountId)
+            {
+                if (accountId == Guid.Empty)
+                {
+                    return;
+                }
+
+                List<PendingAccountEvent> pending = null;
+                lock (_lock)
+                {
+                    if (AccountTransportLivenessRegistry.IsOnline(accountId))
+                    {
+                        return;
+                    }
+
+                    List<Guid> connIds;
+                    if (_connIdsByAccountId.TryGetValue(accountId, out connIds) && connIds != null && connIds.Count > 0)
+                    {
+                        return;
+                    }
+
+                    _connIdsByAccountId.Remove(accountId);
+
+                    pending = new List<PendingAccountEvent>();
+                    HandleAccountOffline_NoLock(accountId, pending);
+                }
+
+                if (pending != null && pending.Count > 0)
+                {
+                    for (var i = 0; i < pending.Count; i++)
+                    {
+                        var p = pending[i];
+                        if (p.AccountId == Guid.Empty || p.Event == null)
+                        {
+                            continue;
+                        }
+
                         SendEventToAccount(p.AccountId, p.Event);
                     }
                 }
@@ -998,6 +1081,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             public Guid[] GetGroupMemberAccountIds(Guid accountId)
             {
+                TryRunGroupStateReconciliation(true);
+
                 if (accountId == Guid.Empty)
                 {
                     return new Guid[0];
@@ -1028,6 +1113,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             public Group CreateGroup(Guid creatorAccountId, string groupName, int capacity, bool isPersistent)
             {
+                TryRunGroupStateReconciliation();
+
                 if (creatorAccountId == Guid.Empty)
                 {
                     return null;
@@ -1071,6 +1158,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             public Dictionary<string, string> GetGroupDataSnapshot(int groupId)
             {
+                TryRunGroupStateReconciliation();
+
                 if (groupId <= 0)
                 {
                     return new Dictionary<string, string>(StringComparer.Ordinal);
@@ -1090,6 +1179,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             public void SetGroupData(Guid senderAccountId, int groupId, string key, string value)
             {
+                TryRunGroupStateReconciliation();
+
                 if (senderAccountId == Guid.Empty || groupId <= 0 || string.IsNullOrEmpty(key))
                 {
                     return;
@@ -1135,6 +1226,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             public void DeleteGroupData(Guid senderAccountId, int groupId, string key)
             {
+                TryRunGroupStateReconciliation();
+
                 if (senderAccountId == Guid.Empty || groupId <= 0 || string.IsNullOrEmpty(key))
                 {
                     return;
@@ -1165,6 +1258,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             public void BroadcastToGroup(Guid senderAccountId, int groupId, string data)
             {
+                TryRunGroupStateReconciliation();
+
                 if (senderAccountId == Guid.Empty || groupId <= 0 || string.IsNullOrEmpty(data))
                 {
                     return;
@@ -1374,6 +1469,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             public List<Group> ListGroupsFor(Guid accountId)
             {
+                TryRunGroupStateReconciliation(true);
+
                 lock (_lock)
                 {
                     var groups = new List<Group>();
@@ -1394,6 +1491,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             public List<User> ListGroupMembers(int groupId)
             {
+                TryRunGroupStateReconciliation(true);
+
                 lock (_lock)
                 {
                     GroupRecord rec;
@@ -1407,6 +1506,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             public string InviteToGroup(Guid inviter, int groupId, Guid invitee)
             {
+                TryRunGroupStateReconciliation(true);
+
                 if (inviter == Guid.Empty || invitee == Guid.Empty)
                 {
                     return "PlayerNotFound";
@@ -1515,6 +1616,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             public AcceptInvitationResponse AcceptInvitation(Guid inviteeAccountId, int invitationId)
             {
+                TryRunGroupStateReconciliation(true);
+
                 Group group;
                 string code;
                 Guid inviterAccountId;
@@ -1707,6 +1810,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             public string RemoveGroupMember(Guid requesterAccountId, int groupId, Guid memberId)
             {
+                TryRunGroupStateReconciliation(true);
+
                 if (groupId <= 0)
                 {
                     return "GroupNotExists";
@@ -1837,6 +1942,177 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
 
                 return result;
+            }
+
+            private void TryRunGroupStateReconciliation()
+            {
+                TryRunGroupStateReconciliation(false);
+            }
+
+            private void TryRunGroupStateReconciliation(bool force)
+            {
+                var now = DateTime.UtcNow;
+                List<string> repairs = null;
+                List<PendingAccountEvent> pendingEvents = null;
+
+                lock (_lock)
+                {
+                    if (!force && now < _nextGroupReconcileUtc)
+                    {
+                        return;
+                    }
+
+                    _nextGroupReconcileUtc = now + GroupReconcileInterval;
+                    repairs = new List<string>();
+
+                    var disbandIds = new List<int>();
+
+                    foreach (var pair in _groupsById)
+                    {
+                        if (repairs.Count >= GroupReconcileMaxRepairsPerSweep)
+                        {
+                            break;
+                        }
+
+                        var rec = pair.Value;
+                        if (rec == null || rec.Group == null)
+                        {
+                            disbandIds.Add(pair.Key);
+                            repairs.Add("remove-null-record:" + pair.Key.ToString());
+                            continue;
+                        }
+
+                        if (rec.MemberAccountIds == null || rec.MemberAccountIds.Count == 0)
+                        {
+                            disbandIds.Add(pair.Key);
+                            repairs.Add("disband-empty-group:" + pair.Key.ToString());
+                            continue;
+                        }
+
+                        // Repair stale membership when a user is hard-offline on both transports.
+                        // This closes disconnect ordering windows where Photon unregister can skip
+                        // account-offline handling while APlay still appears alive.
+                        var members = rec.MemberAccountIds.ToArray();
+                        for (var memberIndex = 0; memberIndex < members.Length && repairs.Count < GroupReconcileMaxRepairsPerSweep; memberIndex++)
+                        {
+                            var memberId = members[memberIndex];
+                            if (memberId == Guid.Empty || AccountTransportLivenessRegistry.IsOnline(memberId))
+                            {
+                                continue;
+                            }
+
+                            RemoveMemberFromGroup_NoLock(rec, memberId);
+                            repairs.Add("prune-offline-member:" + pair.Key.ToString() + ":" + memberId.ToString("D"));
+
+                            var groupSnapshotAfter = CloneGroup(rec);
+                            var leftEvt = BuildGroupMemberLeftEvent(memberId, groupSnapshotAfter, "GroupManager.LeftGroup");
+                            var notifyMembers = rec.MemberAccountIds != null ? rec.MemberAccountIds.ToArray() : new Guid[0];
+                            if (pendingEvents == null)
+                            {
+                                pendingEvents = new List<PendingAccountEvent>();
+                            }
+
+                            for (var notifyIndex = 0; notifyIndex < notifyMembers.Length; notifyIndex++)
+                            {
+                                var notifyId = notifyMembers[notifyIndex];
+                                if (notifyId == Guid.Empty)
+                                {
+                                    continue;
+                                }
+
+                                pendingEvents.Add(new PendingAccountEvent { AccountId = notifyId, Event = leftEvt });
+                            }
+                        }
+
+                        if (rec.MemberAccountIds == null || rec.MemberAccountIds.Count == 0)
+                        {
+                            disbandIds.Add(pair.Key);
+                            repairs.Add("disband-empty-group-after-prune:" + pair.Key.ToString());
+                            continue;
+                        }
+
+                        if (string.IsNullOrEmpty(rec.Group.GroupName)
+                            || !rec.Group.GroupName.StartsWith("CoopGroup", StringComparison.OrdinalIgnoreCase)
+                            || rec.Group.IsPersistent)
+                        {
+                            continue;
+                        }
+
+                        if (MissionRuntimeRegistry.IsCoopMissionActive(rec.Group.GroupName))
+                        {
+                            continue;
+                        }
+
+                        var anyOnline = false;
+                        foreach (var member in rec.MemberAccountIds)
+                        {
+                            if (member != Guid.Empty && AccountTransportLivenessRegistry.IsOnline(member))
+                            {
+                                anyOnline = true;
+                                break;
+                            }
+                        }
+
+                        if (!anyOnline)
+                        {
+                            disbandIds.Add(pair.Key);
+                            repairs.Add("disband-stale-inactive-coop:" + pair.Key.ToString());
+                            continue;
+                        }
+
+                        if (!rec.MemberAccountIds.Contains(rec.OwnerAccountId))
+                        {
+                            var newOwner = rec.MemberAccountIds.FirstOrDefault();
+                            if (newOwner != Guid.Empty)
+                            {
+                                rec.OwnerAccountId = newOwner;
+                                rec.GroupData["Leader"] = newOwner.ToString();
+                                repairs.Add("repair-owner-leader:" + pair.Key.ToString());
+                            }
+                        }
+                    }
+
+                    for (var i = 0; i < disbandIds.Count && repairs.Count <= GroupReconcileMaxRepairsPerSweep; i++)
+                    {
+                        GroupRecord rec;
+                        if (_groupsById.TryGetValue(disbandIds[i], out rec) && rec != null && rec.Group != null)
+                        {
+                            CoopGroupHostRegistry.RemoveLeader(rec.Group.GroupName);
+                        }
+                        DisbandGroup_NoLock(disbandIds[i]);
+                    }
+                }
+
+                if (pendingEvents != null && pendingEvents.Count > 0)
+                {
+                    for (var i = 0; i < pendingEvents.Count; i++)
+                    {
+                        var pending = pendingEvents[i];
+                        if (pending.AccountId == Guid.Empty || pending.Event == null)
+                        {
+                            continue;
+                        }
+
+                        SendEventToAccount(pending.AccountId, pending.Event);
+                    }
+                }
+
+                if (repairs != null && repairs.Count > 0)
+                {
+                    try
+                    {
+                        _owner._logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "reconciliation-repair",
+                            repairs = repairs.ToArray(),
+                            repairCount = repairs.Count,
+                        });
+                    }
+                    catch
+                    {
+                    }
+                }
             }
 
             private void RemoveMemberFromGroup_NoLock(GroupRecord rec, Guid memberId)
