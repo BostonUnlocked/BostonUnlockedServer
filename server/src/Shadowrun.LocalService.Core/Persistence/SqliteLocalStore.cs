@@ -310,19 +310,18 @@ namespace Shadowrun.LocalService.Core.Persistence
                 var normalizedIdentity = IsGuidish(identityHash) ? NormalizeGuidish(identityHash) : GetOrCreateIdentityHash();
                 using (var connection = OpenConnection())
                 {
-                    var displayName = ExecuteScalarString(connection, null,
-                        "SELECT display_name FROM accounts WHERE identity_hash = @identityHash;",
-                        "@identityHash", normalizedIdentity);
-                    var expected = BuildAnonymizedDisplayName(normalizedIdentity);
-                    if (!string.Equals(displayName, expected, StringComparison.Ordinal))
+                    var account = LoadAccountForIdentityNoThrow(normalizedIdentity, true);
+                    var displayName = account != null ? GetString(account, "DisplayName") : null;
+                    if (IsNullOrWhiteSpace(displayName))
                     {
-                        var account = LoadAccountForIdentityNoThrow(normalizedIdentity, true);
+                        var expected = BuildAnonymizedDisplayName(normalizedIdentity);
                         if (account != null)
                         {
                             account["DisplayName"] = expected;
+                            account["HasCustomDisplayName"] = false;
                             SaveAccountNoThrow(account);
-                            displayName = expected;
                         }
+                        displayName = expected;
                     }
 
                     LogOperation("account-display-name", sw, null);
@@ -334,6 +333,51 @@ namespace Shadowrun.LocalService.Core.Persistence
                 LogFailure("account-display-name-failed", sw, ex, new { identityHash = identityHash });
                 return null;
             }
+        }
+
+        public bool TrySetAccountDisplayName(string identityHash, string requestedDisplayName, out string normalizedDisplayName, out string errorMessage)
+        {
+            normalizedDisplayName = null;
+            errorMessage = null;
+
+            if (!IsEnabled)
+            {
+                errorMessage = "Account store is unavailable.";
+                return false;
+            }
+
+            if (!IsGuidish(identityHash))
+            {
+                errorMessage = "Unable to resolve account identity.";
+                return false;
+            }
+
+            var normalizedIdentity = NormalizeGuidish(identityHash);
+            var normalizedRequested = NormalizeRequestedDisplayName(requestedDisplayName);
+            if (IsNullOrWhiteSpace(normalizedRequested))
+            {
+                errorMessage = "Usage: /setaccountname <name>";
+                return false;
+            }
+
+            if (normalizedRequested.Length > 32)
+            {
+                errorMessage = "Account display name must be 32 characters or fewer.";
+                return false;
+            }
+
+            var account = LoadAccountForIdentityNoThrow(normalizedIdentity, true);
+            if (account == null)
+            {
+                errorMessage = "Unable to load account data.";
+                return false;
+            }
+
+            account["DisplayName"] = normalizedRequested;
+            account["HasCustomDisplayName"] = true;
+            SaveAccountNoThrow(account);
+            normalizedDisplayName = normalizedRequested;
+            return true;
         }
 
         public int GetLastCareerIndex(string identityHash)
@@ -1765,6 +1809,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             var fresh = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
             fresh["IdentityHash"] = normalizedIdentity;
             fresh["DisplayName"] = BuildAnonymizedDisplayName(normalizedIdentity);
+            fresh["HasCustomDisplayName"] = false;
             fresh["Careers"] = BuildDefaultCareers(normalizedIdentity);
             fresh["LastCareerIndex"] = 0;
             return fresh;
@@ -1863,9 +1908,31 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        private static bool GetBool(IDictionary dict, string key, bool fallback)
+        {
+            if (dict == null || IsNullOrWhiteSpace(key) || !dict.Contains(key) || dict[key] == null)
+            {
+                return fallback;
+            }
+
+            try
+            {
+                return Convert.ToBoolean(dict[key], CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                return fallback;
+            }
+        }
+
         private static bool EnsureDisplayNameIsAnonymized(IDictionary account, string identityHash)
         {
             if (account == null)
+            {
+                return false;
+            }
+
+            if (GetBool(account, "HasCustomDisplayName", false))
             {
                 return false;
             }
@@ -1878,12 +1945,43 @@ namespace Shadowrun.LocalService.Core.Persistence
 
             var expected = BuildAnonymizedDisplayName(normalizedIdentity);
             var current = GetString(account, "DisplayName");
+            if (!IsNullOrWhiteSpace(current) && !IsAnonymizedDisplayName(current))
+            {
+                account["HasCustomDisplayName"] = true;
+                return false;
+            }
             if (string.Equals(current, expected, StringComparison.Ordinal))
             {
                 return false;
             }
 
             account["DisplayName"] = expected;
+            account["HasCustomDisplayName"] = false;
+            return true;
+        }
+
+        private static string NormalizeRequestedDisplayName(string value)
+        {
+            return IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
+
+        private static bool IsAnonymizedDisplayName(string value)
+        {
+            if (IsNullOrWhiteSpace(value) || value.Length != 8)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < value.Length; i++)
+            {
+                var ch = value[i];
+                var isAlphaNum = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9');
+                if (!isAlphaNum && ch != '+' && ch != '/')
+                {
+                    return false;
+                }
+            }
+
             return true;
         }
 

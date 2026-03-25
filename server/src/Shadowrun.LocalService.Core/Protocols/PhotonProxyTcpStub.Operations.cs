@@ -1360,6 +1360,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             var map = new Dictionary<string, IChatCommand>(StringComparer.OrdinalIgnoreCase);
             RegisterChatCommand(map, new HelpChatCommand());
             RegisterChatCommand(map, new BugReportChatCommand());
+            RegisterChatCommand(map, new SetAccountNameCommand());
             RegisterChatCommand(map, new AnnounceChatCommand());
             RegisterChatCommand(map, new ActiveMissionsChatCommand());
             RegisterChatCommand(map, new OnlinePlayersChatCommand());
@@ -1376,6 +1377,28 @@ namespace Shadowrun.LocalService.Core.Protocols
             RegisterChatCommand(map, new SetBalanceCommand("othersetnuyen", false, ChatCommandTargetMode.OtherByAccountId));
             RegisterChatCommand(map, new AddItemCommand("otheradditem", ChatCommandTargetMode.OtherByAccountId));
             return map;
+        }
+
+        private bool TrySetAccountDisplayNameForSender(ChatCommandContext context, string requestedDisplayName, out string normalizedDisplayName, out string message)
+        {
+            normalizedDisplayName = null;
+            message = "Command failed.";
+
+            if (context == null || IsNullOrEmpty(context.SenderIdentityHash) || _userStore == null)
+            {
+                message = "Unable to resolve active account.";
+                return false;
+            }
+
+            string errorMessage;
+            if (!_userStore.TrySetDisplayName(context.SenderIdentityHash, requestedDisplayName, out normalizedDisplayName, out errorMessage))
+            {
+                message = IsNullOrEmpty(errorMessage) ? "Unable to update account display name." : errorMessage;
+                return false;
+            }
+
+            message = "Account display name set to '" + normalizedDisplayName + "'.";
+            return true;
         }
 
         private bool TrySetAvailableMissionForCareer(ChatCommandContext context, string missionId, StoryMissionstate targetState, out string message)
@@ -2615,6 +2638,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                         "/help",
                         "/bug {message}",
+                        "/setaccountname {name}",
                         "/announce {message}",
                         "/activemissions",
                         "/onlineplayers",
@@ -2634,7 +2658,44 @@ namespace Shadowrun.LocalService.Core.Protocols
                     return ChatCommandResult.OkMany(BuildPagedFeedbackMessages("Admin commands:", lines));
                 }
 
-                return ChatCommandResult.Ok("Commands: /help, /bug {message}");
+                return ChatCommandResult.Ok("Commands: /help, /bug {message}, /setaccountname {name}");
+            }
+        }
+
+        private sealed class SetAccountNameCommand : IChatCommand
+        {
+            public string Name { get { return "setaccountname"; } }
+            public bool RequiresAdmin { get { return false; } }
+
+            public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
+            {
+                if (owner == null || context == null)
+                {
+                    return ChatCommandResult.Fail("Invalid command context.");
+                }
+
+                var requestedDisplayName = args != null && args.Length > 0
+                    ? string.Join(" ", args).Trim()
+                    : string.Empty;
+
+                string normalizedDisplayName;
+                string message;
+                if (!owner.TrySetAccountDisplayNameForSender(context, requestedDisplayName, out normalizedDisplayName, out message))
+                {
+                    return ChatCommandResult.Fail(message);
+                }
+
+                owner.LogAdminEvent(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "chat-command",
+                    action = "set-account-display-name",
+                    senderAccountId = context.SenderAccountId,
+                    senderIdentity = context.SenderIdentityHash ?? string.Empty,
+                    displayName = normalizedDisplayName ?? string.Empty,
+                });
+
+                return ChatCommandResult.Ok(message);
             }
         }
 
