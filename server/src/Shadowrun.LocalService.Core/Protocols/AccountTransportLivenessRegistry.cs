@@ -5,6 +5,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 {
     internal static class AccountTransportLivenessRegistry
     {
+        internal delegate void HardOfflineObserver(Guid accountId);
+
         internal struct AccountLivenessSnapshot
         {
             public Guid AccountId;
@@ -30,6 +32,59 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         private static readonly object SyncRoot = new object();
         private static readonly Dictionary<Guid, AccountTransportState> StateByAccountId = new Dictionary<Guid, AccountTransportState>();
+        private static readonly List<HardOfflineObserver> HardOfflineObservers = new List<HardOfflineObserver>();
+
+        public static void RegisterHardOfflineObserver(HardOfflineObserver observer)
+        {
+            if (observer == null)
+            {
+                return;
+            }
+
+            lock (SyncRoot)
+            {
+                if (!HardOfflineObservers.Contains(observer))
+                {
+                    HardOfflineObservers.Add(observer);
+                }
+            }
+        }
+
+        public static void NotifyHardOffline(Guid accountId)
+        {
+            if (accountId == Guid.Empty)
+            {
+                return;
+            }
+
+            HardOfflineObserver[] observers;
+            lock (SyncRoot)
+            {
+                if (HardOfflineObservers.Count == 0)
+                {
+                    return;
+                }
+
+                observers = HardOfflineObservers.ToArray();
+            }
+
+            for (var i = 0; i < observers.Length; i++)
+            {
+                var observer = observers[i];
+                if (observer == null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    observer(accountId);
+                }
+                catch
+                {
+                }
+            }
+        }
 
         public static void MarkConnected(Guid accountId, string transport)
         {

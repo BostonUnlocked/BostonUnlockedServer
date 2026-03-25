@@ -1902,7 +1902,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                 currentCoopGroupName = coopGroupName;
                                 ApplyCoopHostContext("aplay", peer, connectionHash, currentCoopGroupName, activeIdentityGuid);
-                                RegisterCoopMissionParticipant(coopGroupName, peer, stream, activeIdentityHash, activeIdentityGuid, activeCareerIndex);
+                                RegisterCoopMissionParticipant(coopGroupName, peer, stream, activeIdentityHash, activeIdentityGuid, activeCareerIndex, gameClientEntityId);
                                 UpdateCoopMissionHenchSelections(coopGroupName, activeIdentityGuid, coopParsedSelections);
 
                                 CoopMissionSessionState coopSession;
@@ -3167,6 +3167,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 aplayConnections = snapshot.APlayConnections,
                                 reason = "connection-finally",
                             });
+
+                            if (snapshot.IsHardOffline)
+                            {
+                                AccountTransportLivenessRegistry.NotifyHardOffline(aplayTransportAccountId);
+                            }
                         }
                         catch
                         {

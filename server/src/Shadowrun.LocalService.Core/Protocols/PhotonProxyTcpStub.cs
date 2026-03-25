@@ -54,8 +54,19 @@ public sealed partial class PhotonProxyTcpStub
 
         _friendsStore = new FriendsStore(options, logger);
         _chatAndFriends = new ChatAndFriendsState(this);
+        AccountTransportLivenessRegistry.RegisterHardOfflineObserver(HandleAccountHardOffline);
         _chatAdminAccountIds = LoadChatAdminAccountIds(options);
         _chatCommands = BuildChatCommandMap();
+    }
+
+    private void HandleAccountHardOffline(Guid accountId)
+    {
+        if (accountId == Guid.Empty || _chatAndFriends == null)
+        {
+            return;
+        }
+
+        _chatAndFriends.HandleHardOfflineAccount(accountId);
     }
 
     public void Run(ManualResetEvent stopEvent)

@@ -896,14 +896,16 @@ namespace Shadowrun.LocalService.Core.Protocols
             public readonly string IdentityHash;
             public readonly Guid IdentityGuid;
             public readonly int CareerIndex;
+            public readonly ulong GameClientEntityId;
 
-            public CoopMissionParticipant(string peer, NetworkStream stream, string identityHash, Guid identityGuid, int careerIndex)
+            public CoopMissionParticipant(string peer, NetworkStream stream, string identityHash, Guid identityGuid, int careerIndex, ulong gameClientEntityId)
             {
                 Peer = peer;
                 Stream = stream;
                 IdentityHash = identityHash;
                 IdentityGuid = identityGuid;
                 CareerIndex = careerIndex;
+                GameClientEntityId = gameClientEntityId;
             }
         }
     }

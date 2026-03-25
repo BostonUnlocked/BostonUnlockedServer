@@ -916,7 +916,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             var coopGroupNameForLeave = currentCoopGroupName;
             if (!IsNullOrWhiteSpace(coopGroupNameForLeave))
             {
-                UnregisterCoopMissionParticipant(coopGroupNameForLeave, peer);
+                UnregisterCoopMissionParticipant(coopGroupNameForLeave, peer, false);
             }
 
             int lootNuyenReward = 0;
