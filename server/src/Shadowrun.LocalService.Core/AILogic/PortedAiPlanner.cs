@@ -119,6 +119,21 @@ namespace Shadowrun.LocalService.Core.AILogic
                         return attackPlan;
                     }
 
+                    if (config != null)
+                    {
+                        var fallbackMovementPlanner = new PortedAIMovementPlanner(_gameworld, candidate, _valuationFactory);
+                        IntVector2D fallbackMoveTarget;
+                        float fallbackMoveScore;
+                        if (fallbackMovementPlanner.TryPlanMoveTowardPreferredHostile(config, diagnostics, out fallbackMoveTarget, out fallbackMoveScore))
+                        {
+                            diagnostics.DecisionNote = "ported-move-fallback";
+                            diagnostics.DebugStage = "ported-move-fallback";
+                            diagnostics.DebugChosenMoveScore = fallbackMoveScore;
+                            diagnostics.DebugChosenMoveWithinWalkRange = IsWithinWalkRange(candidate, fallbackMoveTarget);
+                            return PlannedAiAction.CreateMove(candidate, fallbackMoveTarget, CloneDiagnostics(diagnostics));
+                        }
+                    }
+
                     lastAttemptDiagnostics = CloneDiagnostics(diagnostics);
                 }
                 else

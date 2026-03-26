@@ -2,7 +2,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using Cliffhanger.SRO.ServerClientCommons;
 using Cliffhanger.SRO.ServerClientCommons.ArtificialIntelligence;
+using Cliffhanger.SRO.ServerClientCommons.GameLogic;
 using Cliffhanger.SRO.ServerClientCommons.GameLogic.Components;
 using Cliffhanger.SRO.ServerClientCommons.Gameworld;
 using Cliffhanger.SRO.ServerClientCommons.Gameworld.CommandProcessing;
@@ -124,6 +126,10 @@ namespace Shadowrun.LocalService.Core.Simulation
         private bool TryExecuteAiTurnStep(Team team, out AiTurnAction action)
         {
             action = null;
+
+            // Keep attack-planner fidelity: make attackable interactive entities satisfy
+            // existing target-component requirements instead of loosening AI checks.
+            EnsureAttackableInteractiveEntitiesHaveDetection(team);
 
             // Choose a valid activatable member; never guess IDs.
             if (_turnObserver.CurrentActivatableMembers == null || _turnObserver.CurrentActivatableMembers.Length == 0)
@@ -470,6 +476,77 @@ namespace Shadowrun.LocalService.Core.Simulation
             }
 
             return 0;
+        }
+
+        private void EnsureAttackableInteractiveEntitiesHaveDetection(Team actingTeam)
+        {
+            if (actingTeam == null || _gameworld == null || _gameworld.EntitySystem == null)
+            {
+                return;
+            }
+
+            TeamInfoComponent teamInfo;
+            if (!_gameworld.EntitySystem.TryGetComponent<TeamInfoComponent>(EnvironmentEntity.Instance, out teamInfo) || teamInfo == null)
+            {
+                return;
+            }
+
+            foreach (var entity in _gameworld.EntitySystem.GetAllEntities())
+            {
+                if (entity == null || _gameworld.EntitySystem.HasComponent<DetectionComponent>(entity))
+                {
+                    continue;
+                }
+
+                TeamComponent team;
+                if (!_gameworld.EntitySystem.TryGetComponent<TeamComponent>(entity, out team) || team == null)
+                {
+                    continue;
+                }
+
+                GameplayPropertiesComponent gp;
+                if (!_gameworld.EntitySystem.TryGetComponent<GameplayPropertiesComponent>(entity, out gp)
+                    || gp == null
+                    || !gp.InteractiveObject
+                    || gp.ActivityRequiredForInteraction != 90006UL)
+                {
+                    continue;
+                }
+
+                if (!_gameworld.EntitySystem.HasComponent<AttributeBackedStatusValueContainer>(entity)
+                    || _gameworld.EntitySystem.IsAgentDeadOrDespawned(entity))
+                {
+                    continue;
+                }
+
+                var relation = teamInfo.GetRelationship(actingTeam.ID, team.TeamID);
+                if (relation == null || relation.Id == Relationship.Ignored.Id)
+                {
+                    continue;
+                }
+
+                var detection = new DetectionComponent();
+                _gameworld.EntitySystem.AddComponent<DetectionComponent>(entity, detection);
+
+                CharacterSpawnInfoComponent spawnInfo;
+                _gameworld.EntitySystem.TryGetComponent<CharacterSpawnInfoComponent>(entity, out spawnInfo);
+
+                _logger.LogLow(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "sim-interactive-target-normalized",
+                    peer = _peer,
+                    mapName = _missionDefinition != null ? _missionDefinition.Name : null,
+                    entityId = entity.Id,
+                    teamId = team.TeamID,
+                    relationId = relation.Id,
+                    relationHostile = relation.Hostile,
+                    interactiveObject = gp.InteractiveObject,
+                    activityRequiredForInteraction = gp.ActivityRequiredForInteraction,
+                    detectionRange = detection.Range,
+                    spawnManagerTag = spawnInfo != null ? spawnInfo.SpawnManagerTag : null,
+                });
+            }
         }
 
         private bool IsAgentEligibleForCombatAction(Entity agent, out string spawnManagerTag)

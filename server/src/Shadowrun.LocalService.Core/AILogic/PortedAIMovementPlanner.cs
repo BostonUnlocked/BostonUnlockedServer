@@ -113,6 +113,103 @@ namespace Shadowrun.LocalService.Core.AILogic
             return true;
         }
 
+        public bool TryPlanMoveTowardPreferredHostile(AIBehaviourConfigurationComponent config, AiPlanningDiagnostics diagnostics, out IntVector2D targetPosition, out float score)
+        {
+            targetPosition = IntVector2D.Zero;
+            score = 0f;
+
+            if (_gameworld == null || _gameworld.ReachableRangesCalculator == null || _agent == null)
+            {
+                return false;
+            }
+
+            var snapshot = AiAgentSnapshotFactory.Create(_gameworld, _agent);
+            if (snapshot == null)
+            {
+                return false;
+            }
+
+            var context = new BasicValuationContext(_gameworld, snapshot);
+            context.Refresh();
+
+            var currentPosition = AiAgentSnapshotFactory.TryGetGridPositionOrDefault(_gameworld, _agent);
+            var preferredEnemy = SelectPreferredEnemy(context, currentPosition);
+            if (preferredEnemy == null)
+            {
+                return false;
+            }
+
+            var assessments = config != null ? config.MovementAssessments : null;
+            var baseline = _movementScorer.ScorePosition(context, assessments, _agent, currentPosition);
+            PopulateMovementDiagnostics(diagnostics, context, currentPosition, baseline);
+
+            ReachableRanges ranges;
+            try
+            {
+                ranges = _gameworld.ReachableRangesCalculator.GetReachableRanges(_agent);
+            }
+            catch
+            {
+                return false;
+            }
+
+            if (ranges == null || ranges.SprintRange == null || ranges.SprintRange.ReachableCells == null)
+            {
+                return false;
+            }
+
+            var reachableCells = ranges.SprintRange.ReachableCells.ToArray();
+            if (diagnostics != null)
+            {
+                diagnostics.DebugReachableCellCount = reachableCells.Length;
+            }
+
+            var currentDistance = (int)IntVector2DExtensions.CalculateCustomDistance(currentPosition, preferredEnemy.Position);
+            var reducingCellCount = 0;
+            var found = false;
+            var bestDistance = int.MaxValue;
+            var bestScore = float.MinValue;
+
+            foreach (var cell in reachableCells)
+            {
+                if (cell == currentPosition)
+                {
+                    continue;
+                }
+
+                var candidateDistance = (int)IntVector2DExtensions.CalculateCustomDistance(cell, preferredEnemy.Position);
+                if (candidateDistance >= currentDistance)
+                {
+                    continue;
+                }
+
+                reducingCellCount++;
+
+                var candidateScore = _movementScorer.ScorePosition(context, assessments, _agent, cell);
+                if (!found || candidateDistance < bestDistance || (candidateDistance == bestDistance && candidateScore > bestScore))
+                {
+                    found = true;
+                    bestDistance = candidateDistance;
+                    bestScore = candidateScore;
+                    targetPosition = cell;
+                    score = candidateScore;
+                }
+            }
+
+            if (diagnostics != null)
+            {
+                diagnostics.DebugReducingCellCount = reducingCellCount;
+            }
+
+            if (!found)
+            {
+                return false;
+            }
+
+            PopulateChosenMoveDiagnostics(diagnostics, context, currentPosition, targetPosition);
+            return true;
+        }
+
         private static void PopulateMovementDiagnostics(AiPlanningDiagnostics diagnostics, BasicValuationContext context, IntVector2D currentPosition, float baseline)
         {
             if (diagnostics == null)
