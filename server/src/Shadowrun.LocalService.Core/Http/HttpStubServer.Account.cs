@@ -440,22 +440,84 @@ namespace Shadowrun.LocalService.Core.Http
                     playerInfoUpdates["LauncherDisplayName"] = launcherDisplayName;
                 }
 
-                if (_userStore != null && playerInfoUpdates.TryGetValue("DisplayName", out displayName) && !IsNullOrWhiteSpace(displayName))
+                if (playerInfoUpdates.TryGetValue("DisplayName", out displayName) && !IsNullOrWhiteSpace(displayName))
                 {
                     var semi = displayName.IndexOf(';');
                     if (semi > 0 && semi + 1 < displayName.Length)
                     {
-                        var characterName = displayName.Substring(semi + 1).Trim();
-                        if (!IsNullOrWhiteSpace(characterName))
+                        var incomingCharacterName = displayName.Substring(semi + 1).Trim();
+                        if (!IsNullOrWhiteSpace(incomingCharacterName))
                         {
-                            var slotIndex = _userStore.GetLastCareerIndex(identityHash);
-                            var slot = _userStore.GetOrCreateCareer(identityHash, slotIndex, false);
-                            if (slot != null && !string.Equals(slot.CharacterName, characterName, StringComparison.Ordinal))
+                            string authoritativeCharacterName = null;
+                            var authoritativeCareerIndex = -1;
+
+                            if (_userStore != null)
                             {
-                                slot.CharacterName = characterName;
-                                slot.IsOccupied = true;
-                                slot.PendingPersistenceCreation = false;
-                                _userStore.UpsertCareer(identityHash, slot);
+                                try
+                                {
+                                    authoritativeCareerIndex = _userStore.GetLastCareerIndex(identityHash);
+                                    var slot = _userStore.GetOrCreateCareer(identityHash, authoritativeCareerIndex, false);
+                                    if (slot != null && !IsNullOrWhiteSpace(slot.CharacterName))
+                                    {
+                                        authoritativeCharacterName = slot.CharacterName.Trim();
+                                    }
+                                }
+                                catch
+                                {
+                                }
+                            }
+
+                            if (!IsNullOrWhiteSpace(authoritativeCharacterName)
+                                && !string.Equals(authoritativeCharacterName, incomingCharacterName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                string launcherDisplayName;
+                                if (!playerInfoUpdates.TryGetValue("LauncherDisplayName", out launcherDisplayName) || IsNullOrWhiteSpace(launcherDisplayName))
+                                {
+                                    launcherDisplayName = ResolvePreferredAccountDisplayName(identityHash);
+                                    playerInfoUpdates["LauncherDisplayName"] = launcherDisplayName;
+                                }
+
+                                playerInfoUpdates["DisplayName"] = launcherDisplayName + ";" + authoritativeCharacterName;
+
+                                if (playerInfoUpdates.ContainsKey("CharacterName"))
+                                {
+                                    playerInfoUpdates["CharacterName"] = authoritativeCharacterName;
+                                }
+
+                                var removedPlayerCharacter = false;
+                                if (playerInfoUpdates.ContainsKey("PlayerCharacter"))
+                                {
+                                    playerInfoUpdates.Remove("PlayerCharacter");
+                                    removedPlayerCharacter = true;
+                                }
+
+                                _logger.LogLow(new
+                                {
+                                    ts = RequestLogger.UtcNowIso(),
+                                    type = "playerinfo-character-suffix-mismatch",
+                                    identityHash = identityHash,
+                                    gameName = gameName,
+                                    incomingCharacterName = incomingCharacterName,
+                                    authoritativeCharacterName = authoritativeCharacterName,
+                                    authoritativeCareerIndex = authoritativeCareerIndex,
+                                    removedPlayerCharacter = removedPlayerCharacter,
+                                    action = "normalized-to-authoritative-career",
+                                    reason = "setplayerinfo-displayname-non-authoritative",
+                                });
+                            }
+                            else
+                            {
+                                _logger.LogLow(new
+                                {
+                                    ts = RequestLogger.UtcNowIso(),
+                                    type = "playerinfo-character-suffix-observed",
+                                    identityHash = identityHash,
+                                    gameName = gameName,
+                                    incomingCharacterName = incomingCharacterName,
+                                    authoritativeCharacterName = authoritativeCharacterName,
+                                    authoritativeCareerIndex = authoritativeCareerIndex,
+                                    action = "no-normalization",
+                                });
                             }
                         }
                     }

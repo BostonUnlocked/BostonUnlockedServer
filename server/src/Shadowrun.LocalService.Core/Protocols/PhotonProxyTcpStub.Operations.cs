@@ -810,20 +810,75 @@ namespace Shadowrun.LocalService.Core.Protocols
                 : null;
             context.SenderIdentityHash = identityHash;
 
-            if (_userStore != null && !IsNullOrEmpty(identityHash))
+            HubPresenceRegistry.Participant participant;
+            int resolvedCareerIndex;
+            CareerSlot resolvedSlot;
+            if (TryResolveActiveCareerForAccount(context.SenderAccountId, identityHash, null, out participant, out resolvedCareerIndex, out resolvedSlot))
             {
-                try
-                {
-                    var index = _userStore.GetLastCareerIndex(identityHash);
-                    context.ActiveCareerIndex = index;
-                    context.ActiveCareerSlot = _userStore.GetOrCreateCareer(identityHash, index, false);
-                }
-                catch
-                {
-                }
+                context.ActiveCareerIndex = resolvedCareerIndex;
+                context.ActiveCareerSlot = resolvedSlot;
             }
 
             return context;
+        }
+
+        private bool TryResolveActiveCareerForAccount(
+            Guid accountId,
+            string identityHash,
+            HubPresenceRegistry.Participant preferredParticipant,
+            out HubPresenceRegistry.Participant resolvedParticipant,
+            out int resolvedCareerIndex,
+            out CareerSlot resolvedSlot)
+        {
+            resolvedParticipant = preferredParticipant;
+            resolvedCareerIndex = 0;
+            resolvedSlot = null;
+
+            if (accountId == Guid.Empty || IsNullOrEmpty(identityHash) || _userStore == null)
+            {
+                return false;
+            }
+
+            if (resolvedParticipant == null && _hubPresenceRegistry != null)
+            {
+                try
+                {
+                    _hubPresenceRegistry.TryGetParticipantForAccount(accountId, out resolvedParticipant);
+                }
+                catch
+                {
+                    resolvedParticipant = null;
+                }
+            }
+
+            if (resolvedParticipant != null)
+            {
+                try
+                {
+                    resolvedCareerIndex = resolvedParticipant.CareerIndex;
+                    resolvedSlot = _userStore.GetOrCreateCareer(identityHash, resolvedCareerIndex, false);
+                    if (resolvedSlot != null)
+                    {
+                        return true;
+                    }
+                }
+                catch
+                {
+                    resolvedSlot = null;
+                }
+            }
+
+            try
+            {
+                resolvedCareerIndex = _userStore.GetLastCareerIndex(identityHash);
+                resolvedSlot = _userStore.GetOrCreateCareer(identityHash, resolvedCareerIndex, false);
+            }
+            catch
+            {
+                resolvedSlot = null;
+            }
+
+            return resolvedSlot != null;
         }
 
         private ChatCommandResult ExecuteChatCommand(ChatCommandContext context, string trimmedCommandText)
@@ -2257,25 +2312,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                 _hubPresenceRegistry.TryGetParticipantForAccount(accountId, out participant);
             }
 
-            var careerIndex = participant != null ? participant.CareerIndex : 0;
-            if (participant == null)
-            {
-                try
-                {
-                    careerIndex = _userStore.GetLastCareerIndex(identityHash);
-                }
-                catch
-                {
-                    careerIndex = 0;
-                }
-            }
-
+            int careerIndex;
             CareerSlot slot;
-            try
-            {
-                slot = _userStore.GetOrCreateCareer(identityHash, careerIndex, false);
-            }
-            catch
+            if (!TryResolveActiveCareerForAccount(accountId, identityHash, participant, out participant, out careerIndex, out slot))
             {
                 slot = null;
             }
@@ -2559,15 +2598,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                 slot = null;
                 if (_userStore != null)
                 {
-                    try
+                    var identityHash = accountId.ToString("D");
+                    int ignoredCareerIndex;
+                    HubPresenceRegistry.Participant resolvedParticipant;
+                    CareerSlot resolvedSlot;
+                    if (TryResolveActiveCareerForAccount(accountId, identityHash, participant, out resolvedParticipant, out ignoredCareerIndex, out resolvedSlot))
                     {
-                        var identityHash = accountId.ToString("D");
-                        var careerIndex = participant != null ? participant.CareerIndex : _userStore.GetLastCareerIndex(identityHash);
-                        slot = _userStore.GetOrCreateCareer(identityHash, careerIndex, false);
-                    }
-                    catch
-                    {
-                        slot = null;
+                        participant = resolvedParticipant;
+                        slot = resolvedSlot;
                     }
                 }
 
