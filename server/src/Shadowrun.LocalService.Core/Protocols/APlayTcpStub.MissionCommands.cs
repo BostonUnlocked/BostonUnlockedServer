@@ -864,35 +864,106 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
             }
 
-            var isVictory = string.Equals(missionOutcome, "Victory", StringComparison.OrdinalIgnoreCase);
-            var completedMapName = !IsNullOrWhiteSpace(currentMissionMapName) ? currentMissionMapName : "1_010_Prologue";
-            var isRepeatableMission = IsRepeatableMission(completedMapName);
-            var missionStateAfterLeave = !isVictory
-                ? StoryMissionstate.ReadyToPlay.ToString()
-                : (isRepeatableMission ? StoryMissionstate.ReadyToPlay.ToString() : StoryMissionstate.ReadyToReceiveRewards.ToString());
-            var missionStatePersisted = false;
-
-            if (isVictory && !isRepeatableMission)
+            var coopGroupNameForLeave = currentCoopGroupName;
+            string coopSessionMapName = null;
+            if (!IsNullOrWhiteSpace(coopGroupNameForLeave))
             {
-                completedStoryMissions.Add(completedMapName);
+                try
+                {
+                    lock (_coopMissionLock)
+                    {
+                        CoopMissionSessionState coopSession;
+                        if (_coopMissionSessions.TryGetValue(coopGroupNameForLeave, out coopSession)
+                            && coopSession != null
+                            && !IsNullOrWhiteSpace(coopSession.MapName))
+                        {
+                            coopSessionMapName = coopSession.MapName;
+                        }
+                    }
+                }
+                catch
+                {
+                }
             }
 
-            if (!leavingMidMission && _userStore != null)
+            var progressionMissionMapName = currentMissionMapName;
+            if (!IsNullOrWhiteSpace(coopSessionMapName))
+            {
+                if (!IsNullOrWhiteSpace(currentMissionMapName)
+                    && !string.Equals(currentMissionMapName, coopSessionMapName, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "mission-progression-map-mismatch",
+                        peer = peer,
+                        coopGroupName = coopGroupNameForLeave,
+                        currentMissionMapName = currentMissionMapName,
+                        coopSessionMapName = coopSessionMapName,
+                    });
+                }
+
+                progressionMissionMapName = coopSessionMapName;
+            }
+
+            var isVictory = string.Equals(missionOutcome, "Victory", StringComparison.OrdinalIgnoreCase);
+            var completedMapName = !IsNullOrWhiteSpace(progressionMissionMapName) ? progressionMissionMapName : "1_010_Prologue";
+            var isRepeatableMission = IsRepeatableMission(completedMapName);
+            var missionStateAfterLeave = StoryMissionstate.ReadyToReceiveRewards.ToString();
+            var missionStatePersisted = false;
+
+            if (!leavingMidMission && isVictory && _userStore != null)
             {
                 try
                 {
                     var progressSlot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false) : null;
                     if (progressSlot != null)
                     {
-                        if (progressSlot.MainCampaignMissionStates == null)
+                        if (IsNullOrWhiteSpace(progressionMissionMapName))
                         {
-                            progressSlot.MainCampaignMissionStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                            _logger.Log(new
+                            {
+                                ts = RequestLogger.UtcNowIso(),
+                                type = "mission-progression-skipped",
+                                peer = peer,
+                                reason = "missing-mission-map",
+                                currentMissionMapName = currentMissionMapName,
+                                coopSessionMapName = coopSessionMapName,
+                                outcome = missionOutcome,
+                            });
                         }
+                        else
+                        {
+                            var storyStateUpdate = _storyProgressionService.ApplyMissionState(progressSlot, "Main Campaign", progressionMissionMapName, StoryMissionstate.ReadyToReceiveRewards);
+                            if (storyStateUpdate.Accepted)
+                            {
+                                missionStatePersisted = true;
+                                missionStateAfterLeave = storyStateUpdate.TargetState.ToString();
+                                if (!isRepeatableMission)
+                                {
+                                    completedStoryMissions.Add(progressionMissionMapName);
+                                }
 
-                        progressSlot.MainCampaignMissionStates[completedMapName] = missionStateAfterLeave;
-                        _userStore.UpsertCareer(activeIdentityHash, progressSlot);
-                        missionStatePersisted = true;
-
+                                if (storyStateUpdate.Persisted)
+                                {
+                                    _userStore.UpsertCareer(activeIdentityHash, progressSlot);
+                                }
+                            }
+                            else
+                            {
+                                _logger.Log(new
+                                {
+                                    ts = RequestLogger.UtcNowIso(),
+                                    type = "mission-progression-skipped",
+                                    peer = peer,
+                                    reason = "invalid-state-transition",
+                                    mission = progressionMissionMapName,
+                                    previousState = storyStateUpdate.PreviousState.ToString(),
+                                    targetState = storyStateUpdate.TargetState.ToString(),
+                                    outcome = missionOutcome,
+                                });
+                            }
+                        }
                     }
                 }
                 catch
@@ -913,7 +984,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
             }
 
-            var coopGroupNameForLeave = currentCoopGroupName;
             if (!IsNullOrWhiteSpace(coopGroupNameForLeave))
             {
                 UnregisterCoopMissionParticipant(coopGroupNameForLeave, peer, false);
