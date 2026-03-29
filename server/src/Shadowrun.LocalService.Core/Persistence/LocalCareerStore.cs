@@ -241,17 +241,11 @@ namespace Shadowrun.LocalService.Core.Persistence
                         }
                     }
 
-                    slot.CharacterIdentifier = LocalUserStore.NormalizeGuidish(identity) + ":" + slot.Index.ToString(CultureInfo.InvariantCulture);
-
-                    if (slot.IsOccupied)
-                    {
-                        _owner.ApplyCouponItemPackagesToCareerNoLock(identity, slot);
-                    }
-
                     var account = _owner.LoadAccountForIdentityNoThrow(identity, true) ?? _owner.LoadAccountNoThrow();
                     var careersList = GetOrCreateCareerListNoLock(account, identity, false);
 
                     IDictionary found = null;
+                    CareerSlot existingSlot = null;
                     for (var i = 0; i < careersList.Count; i++)
                     {
                         var dict = careersList[i] as IDictionary;
@@ -264,7 +258,25 @@ namespace Shadowrun.LocalService.Core.Persistence
                         if (idx == slot.Index)
                         {
                             found = dict;
+                            existingSlot = CareerSlot.FromDictionary(dict);
                             break;
+                        }
+                    }
+
+                    slot.CharacterIdentifier = LocalUserStore.NormalizeGuidish(identity) + ":" + slot.Index.ToString(CultureInfo.InvariantCulture);
+
+                    if (slot.IsOccupied)
+                    {
+                        _owner.ApplyCouponItemPackagesToCareerNoLock(identity, slot);
+
+                        // One-time creation hardening: if the server just created this career,
+                        // a stale client SetPlayerInfo can arrive without the initial coupon items.
+                        var isNewlyOccupied = existingSlot == null || !existingSlot.IsOccupied;
+                        var isPendingCreationSync = existingSlot != null && existingSlot.IsOccupied && existingSlot.PendingPersistenceCreation;
+                        if (isNewlyOccupied || isPendingCreationSync)
+                        {
+                            var entitled = _owner.GetCouponItemPackageEntitlementsForIdentityNoLock(identity);
+                            _owner.EnsureAllCouponEntitlementItemsPresentNoLock(slot, entitled);
                         }
                     }
 

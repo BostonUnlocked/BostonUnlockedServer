@@ -89,7 +89,6 @@ namespace Shadowrun.LocalService.Core.Persistence
                     }
 
                     var anyChanged = false;
-                    var entitled = GetCouponItemPackageEntitlementsForIdentityNoLock(identity);
                     for (var i = 0; i < careersList.Count; i++)
                     {
                         var dict = careersList[i] as IDictionary;
@@ -106,11 +105,6 @@ namespace Shadowrun.LocalService.Core.Persistence
 
                         var slotChanged = false;
                         if (ApplyCouponItemPackageToCareerNoLock(slot, packageTechnicalName))
-                        {
-                            slotChanged = true;
-                        }
-
-                        if (EnsureAllCouponEntitlementItemsPresentNoLock(slot, entitled))
                         {
                             slotChanged = true;
                         }
@@ -310,7 +304,7 @@ namespace Shadowrun.LocalService.Core.Persistence
 
                 if (alreadyApplied)
                 {
-                    return EnsureCouponItemPackageItemsPresentNoLock(slot, items);
+                    return false;
                 }
 
                 for (var i = 0; i < items.Count; i++)
