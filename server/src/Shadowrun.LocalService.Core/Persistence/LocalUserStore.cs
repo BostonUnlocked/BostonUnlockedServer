@@ -822,7 +822,7 @@ namespace Shadowrun.LocalService.Core.Persistence
         public List<string> MainCampaignInteractedNpcs;
         public List<string> ActiveUnlocks;
         public Dictionary<string, int> RepeatableUnlockSequencePositions;
-        // UTC date ticks for last repeatable-day normalization.
+        // UTC hour ticks for last repeatable mission normalization.
         public long LastRepeatableMissionResetUtcTicks;
         // UTC date ticks for last player-derived henchman rotation.
         public long LastHenchmanRotationUtcTicks;
