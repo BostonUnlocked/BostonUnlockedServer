@@ -33,7 +33,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             }
 
             EnsureSequenceState(slot);
-            ApplyDailyRepeatableSequencePositions(slot, sequences);
+            ApplyHourlyRepeatableSequencePositions(slot, sequences);
 
             for (var i = 0; i < sequences.Count; i++)
             {
@@ -99,9 +99,9 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                         continue;
                     }
 
-                    if (IsDailyRepeatableSequenceKey(sequence.Key))
+                    if (IsHourlyRepeatableSequenceKey(sequence.Key))
                     {
-                        // Daily sequences are selected from UTC day and should not be advanced by mission consumption.
+                        // Time-driven sequences are selected from UTC hour and should not be advanced by mission consumption.
                         continue;
                     }
 
@@ -139,25 +139,24 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             }
         }
 
-        private static void ApplyDailyRepeatableSequencePositions(CareerSlot slot, List<MetagameplayStaticDataIndex.UnlockSequenceInfo> sequences)
+        private static void ApplyHourlyRepeatableSequencePositions(CareerSlot slot, List<MetagameplayStaticDataIndex.UnlockSequenceInfo> sequences)
         {
             if (slot == null || sequences == null || sequences.Count == 0)
             {
                 return;
             }
 
-            var utcDay = DateTime.UtcNow.Date;
-            var utcDayTicks = utcDay.Ticks;
-            var dayChanged = slot.LastRepeatableMissionResetUtcTicks != utcDayTicks;
-            if (dayChanged)
+            var utcHourTicks = GetUtcHourTicks(DateTime.UtcNow);
+            var hourChanged = slot.LastRepeatableMissionResetUtcTicks != utcHourTicks;
+            if (hourChanged)
             {
-                slot.LastRepeatableMissionResetUtcTicks = utcDayTicks;
+                slot.LastRepeatableMissionResetUtcTicks = utcHourTicks;
             }
 
-            var dayNumber = (int)(utcDayTicks / TimeSpan.TicksPerDay);
-            // Flip mission variants every UTC day; pair 2 is phase-shifted for variety.
-            var pairOneIndex = dayNumber & 1;
-            var pairTwoIndex = (dayNumber + 1) & 1;
+            var hourNumber = (int)(utcHourTicks / TimeSpan.TicksPerHour);
+            // Flip mission variants every UTC hour; pair 2 is phase-shifted for variety.
+            var pairOneIndex = hourNumber & 1;
+            var pairTwoIndex = (hourNumber + 1) & 1;
 
             for (var i = 0; i < sequences.Count; i++)
             {
@@ -180,7 +179,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 }
 
                 int currentIndex;
-                if (!slot.RepeatableUnlockSequencePositions.TryGetValue(sequence.Key, out currentIndex) || currentIndex != normalizedIndex || dayChanged)
+                if (!slot.RepeatableUnlockSequencePositions.TryGetValue(sequence.Key, out currentIndex) || currentIndex != normalizedIndex || hourChanged)
                 {
                     slot.RepeatableUnlockSequencePositions[sequence.Key] = normalizedIndex;
                 }
@@ -204,7 +203,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             return null;
         }
 
-        private static bool IsDailyRepeatableSequenceKey(string sequenceKey)
+        private static bool IsHourlyRepeatableSequenceKey(string sequenceKey)
         {
             if (IsNullOrWhiteSpace(sequenceKey))
             {
@@ -215,6 +214,11 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 || string.Equals(sequenceKey, SequenceRMission34, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(sequenceKey, SequenceERMission21, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(sequenceKey, SequenceERMission43, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static long GetUtcHourTicks(DateTime utcNow)
+        {
+            return new DateTime(utcNow.Year, utcNow.Month, utcNow.Day, utcNow.Hour, 0, 0, DateTimeKind.Utc).Ticks;
         }
 
         private static bool ShouldActivateSequence(MetagameplayStaticDataIndex.UnlockSequenceInfo sequence, ICollection<string> effectiveUnlocks)

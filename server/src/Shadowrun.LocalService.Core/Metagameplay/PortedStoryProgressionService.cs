@@ -102,11 +102,11 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             }
 
             var changed = false;
-            var utcDayTicks = DateTime.UtcNow.Date.Ticks;
-            var isNewDay = slot.LastRepeatableMissionResetUtcTicks != utcDayTicks;
-            if (isNewDay)
+            var utcHourTicks = GetUtcHourTicks(DateTime.UtcNow);
+            var isNewHour = slot.LastRepeatableMissionResetUtcTicks != utcHourTicks;
+            if (isNewHour)
             {
-                slot.LastRepeatableMissionResetUtcTicks = utcDayTicks;
+                slot.LastRepeatableMissionResetUtcTicks = utcHourTicks;
                 changed = true;
             }
 
@@ -131,7 +131,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 }
 
                 var parsedState = ParseStoryMissionStateOrDefault(rawState, StoryMissionstate.Available);
-                if (isNewDay)
+                if (isNewHour)
                 {
                     if (parsedState != StoryMissionstate.ReadyToPlay)
                     {
@@ -149,6 +149,11 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             }
 
             return changed;
+        }
+
+        private static long GetUtcHourTicks(DateTime utcNow)
+        {
+            return new DateTime(utcNow.Year, utcNow.Month, utcNow.Day, utcNow.Hour, 0, 0, DateTimeKind.Utc).Ticks;
         }
 
         private static bool IsNextStateValid(StoryMissionstate previousState, StoryMissionstate nextState)

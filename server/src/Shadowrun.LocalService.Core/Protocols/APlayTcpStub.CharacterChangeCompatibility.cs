@@ -73,14 +73,27 @@ namespace Shadowrun.LocalService.Core.Protocols
             pcInv.Armor = CreateInventoryItem(armorItemId, armorKey);
             if (slot != null && slot.EquippedItems != null && slot.EquippedItems.Count > 0)
             {
-                foreach (var kvp in slot.EquippedItems)
+                var keys = new List<string>(slot.EquippedItems.Keys);
+                keys.Sort(StringComparer.Ordinal);
+
+                var nextKey = 10;
+                var usedInventoryKeys = new HashSet<int>();
+                for (var i = 0; i < keys.Count; i++)
                 {
-                    if (IsNullOrWhiteSpace(kvp.Key) || IsNullOrWhiteSpace(kvp.Value))
+                    var slotKey = keys[i];
+                    if (IsNullOrWhiteSpace(slotKey))
                     {
                         continue;
                     }
+
                     ulong slotId;
-                    if (!TryParseUInt64(kvp.Key, out slotId) || slotId == 0UL)
+                    if (!TryParseUInt64(slotKey, out slotId) || slotId == 0UL)
+                    {
+                        continue;
+                    }
+
+                    CareerSlot.EquippedSlotState state;
+                    if (!slot.EquippedItems.TryGetValue(slotKey, out state) || state == null || IsNullOrWhiteSpace(state.ItemId))
                     {
                         continue;
                     }
@@ -92,8 +105,26 @@ namespace Shadowrun.LocalService.Core.Protocols
                     def.DefaultItem = string.Empty;
 
                     var itemSlot = new ItemSlot(def);
-                    itemSlot.Item = CreateInventoryItem(kvp.Value, 10);
+                    var inventoryKey = state.InventoryKey >= 0 ? state.InventoryKey : nextKey;
+                    if (inventoryKey < 0 || usedInventoryKeys.Contains(inventoryKey))
+                    {
+                        while (usedInventoryKeys.Contains(nextKey))
+                        {
+                            nextKey++;
+                        }
+
+                        inventoryKey = nextKey++;
+                    }
+
+                    usedInventoryKeys.Add(inventoryKey);
+                    itemSlot.Item = CreateInventoryItem(state.ItemId, inventoryKey);
+                    itemSlot.Item.Quality = state.Quality;
+                    itemSlot.Item.FlavourIndex = state.Flavour;
                     pcInv.EquippedItems.Add(itemSlot);
+                    if (inventoryKey >= nextKey)
+                    {
+                        nextKey = inventoryKey + 1;
+                    }
                 }
             }
             snapshot.PlayerCharacterInventory = pcInv;
@@ -284,7 +315,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             if (slot.EquippedItems == null)
             {
-                slot.EquippedItems = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                slot.EquippedItems = new Dictionary<string, CareerSlot.EquippedSlotState>(StringComparer.OrdinalIgnoreCase);
             }
 
             var newName = parsedChange != null
@@ -447,10 +478,35 @@ namespace Shadowrun.LocalService.Core.Protocols
                     }
                     else
                     {
-                        string existing;
-                        if (!slot.EquippedItems.TryGetValue(key, out existing) || !string.Equals(existing, newItemId, StringComparison.Ordinal))
+                        var newInvKey = GetInt32Value(newItem, "InventoryKey", -1);
+                        var newQuality = GetInt32Value(newItem, "Quality", 0);
+                        var newFlavour = GetInt32Value(newItem, "FlavourIndex", -1);
+                        if (newQuality < 0)
                         {
-                            slot.EquippedItems[key] = newItemId;
+                            newQuality = 0;
+                        }
+                        if (newQuality > byte.MaxValue)
+                        {
+                            newQuality = byte.MaxValue;
+                        }
+                        if (newFlavour < short.MinValue)
+                        {
+                            newFlavour = short.MinValue;
+                        }
+                        if (newFlavour > short.MaxValue)
+                        {
+                            newFlavour = short.MaxValue;
+                        }
+
+                        CareerSlot.EquippedSlotState existing;
+                        if (!slot.EquippedItems.TryGetValue(key, out existing)
+                            || existing == null
+                            || !string.Equals(existing.ItemId, newItemId, StringComparison.Ordinal)
+                            || existing.InventoryKey != newInvKey
+                            || existing.Quality != newQuality
+                            || existing.Flavour != newFlavour)
+                        {
+                            slot.EquippedItems[key] = CareerSlot.EquippedSlotState.Create(newItemId, newInvKey, newQuality, newFlavour);
                             result.Changed = true;
                         }
                     }

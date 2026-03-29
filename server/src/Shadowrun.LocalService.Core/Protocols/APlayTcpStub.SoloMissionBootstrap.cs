@@ -177,6 +177,32 @@ namespace Shadowrun.LocalService.Core.Protocols
                     return compressedMatchConfiguration;
                 }
 
+                var activeSnapshot = BuildPlayerCharacterSnapshotForSlot(
+                    activeIdentityGuid.ToString("D") + ":" + activeCareerIndex.ToString(),
+                    activeCharacterName,
+                    activeSlot);
+                var activeInventory = activeSnapshot != null ? activeSnapshot.PlayerCharacterInventory : null;
+
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "mission-bootstrap-active-slot",
+                    mapName = mapName,
+                    activeCareerIndex = activeCareerIndex,
+                    activeIdentityGuid = activeIdentityGuid != Guid.Empty ? activeIdentityGuid.ToString("D") : string.Empty,
+                    activeIdentityHash = activeIdentityHash ?? string.Empty,
+                    activeCharacterName = activeCharacterName ?? string.Empty,
+                    equippedItemsCount = activeSlot.EquippedItems != null ? activeSlot.EquippedItems.Count : 0,
+                    itemPossessionsCount = activeSlot.ItemPossessions != null ? activeSlot.ItemPossessions.Count : 0,
+                    persistedEquippedItems = BuildPersistedEquippedItemsDiagnostics(activeSlot),
+                    persistedConsumableItemPossessions = BuildConsumableItemPossessionDiagnostics(activeSlot, 40),
+                    snapshotPrimaryWeaponItemId = activeInventory != null ? GetInventoryItemId(activeInventory.PrimaryWeapon) : string.Empty,
+                    snapshotSecondaryWeaponItemId = activeInventory != null ? GetInventoryItemId(activeInventory.SecondaryWeapon) : string.Empty,
+                    snapshotArmorItemId = activeInventory != null ? GetInventoryItemId(activeInventory.Armor) : string.Empty,
+                    snapshotEquippedItems = BuildEquippedItemsDiagnostics(activeInventory),
+                    snapshotDuplicateEquippedInventoryKeys = BuildDuplicateEquippedInventoryKeyDiagnostics(activeInventory),
+                });
+
                 return selectedHenchmen != null && selectedHenchmen.Length > 0
                     ? _matchConfigurationGenerator.GetCompressedMatchConfiguration(mapName, activeIdentityGuid, activeCareerIndex, activeSlot, selectedHenchmen, gameClientEntityId)
                     : _matchConfigurationGenerator.GetCompressedMatchConfiguration(mapName, activeIdentityGuid, activeCareerIndex, activeSlot, null, gameClientEntityId);
@@ -229,6 +255,129 @@ namespace Shadowrun.LocalService.Core.Protocols
                 storyLineForLoot,
                 chapterForLoot,
                 _options != null && _options.EnableAiLogic);
+        }
+
+        private static object[] BuildPersistedEquippedItemsDiagnostics(CareerSlot slot)
+        {
+            if (slot == null || slot.EquippedItems == null || slot.EquippedItems.Count == 0)
+            {
+                return new object[0];
+            }
+
+            var keys = new List<string>(slot.EquippedItems.Keys);
+            keys.Sort(StringComparer.Ordinal);
+            var diagnostics = new List<object>(keys.Count);
+            for (var i = 0; i < keys.Count; i++)
+            {
+                var slotKey = keys[i];
+                if (IsNullOrWhiteSpace(slotKey))
+                {
+                    continue;
+                }
+
+                CareerSlot.EquippedSlotState state;
+                if (!slot.EquippedItems.TryGetValue(slotKey, out state) || state == null)
+                {
+                    continue;
+                }
+
+                diagnostics.Add(new
+                {
+                    slotKey = slotKey,
+                    itemId = state.ItemId ?? string.Empty,
+                    inventoryKey = state.InventoryKey,
+                    quality = state.Quality,
+                    flavour = state.Flavour,
+                });
+            }
+
+            return diagnostics.ToArray();
+        }
+
+        private static object[] BuildConsumableItemPossessionDiagnostics(CareerSlot slot, int maxEntries)
+        {
+            if (slot == null || slot.ItemPossessions == null || slot.ItemPossessions.Count == 0 || maxEntries <= 0)
+            {
+                return new object[0];
+            }
+
+            var keys = new List<string>(slot.ItemPossessions.Keys);
+            keys.Sort(StringComparer.OrdinalIgnoreCase);
+            var diagnostics = new List<object>();
+            for (var i = 0; i < keys.Count; i++)
+            {
+                var packedKey = keys[i];
+                if (IsNullOrWhiteSpace(packedKey) || packedKey.IndexOf("Item_Consumable_", StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+
+                int amount;
+                if (!slot.ItemPossessions.TryGetValue(packedKey, out amount))
+                {
+                    continue;
+                }
+
+                diagnostics.Add(new
+                {
+                    possessionKey = packedKey,
+                    amount = amount,
+                });
+
+                if (diagnostics.Count >= maxEntries)
+                {
+                    break;
+                }
+            }
+
+            return diagnostics.ToArray();
+        }
+
+        private static object[] BuildDuplicateEquippedInventoryKeyDiagnostics(PlayerCharacterInventory inventory)
+        {
+            if (inventory == null || inventory.EquippedItems == null || inventory.EquippedItems.Count == 0)
+            {
+                return new object[0];
+            }
+
+            var firstByKey = new Dictionary<int, object>();
+            var duplicates = new List<object>();
+            for (var i = 0; i < inventory.EquippedItems.Count; i++)
+            {
+                var equipped = inventory.EquippedItems[i];
+                if (equipped == null || equipped.Item == null)
+                {
+                    continue;
+                }
+
+                var key = equipped.Item.InventoryKey;
+                var slotId = equipped.Definition != null ? equipped.Definition.Id : 0UL;
+                var itemId = GetInventoryItemId(equipped.Item);
+
+                object first;
+                if (!firstByKey.TryGetValue(key, out first))
+                {
+                    firstByKey[key] = new
+                    {
+                        slotId = slotId,
+                        itemId = itemId,
+                    };
+                    continue;
+                }
+
+                duplicates.Add(new
+                {
+                    inventoryKey = key,
+                    first = first,
+                    duplicate = new
+                    {
+                        slotId = slotId,
+                        itemId = itemId,
+                    },
+                });
+            }
+
+            return duplicates.ToArray();
         }
     }
 }

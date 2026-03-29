@@ -2120,6 +2120,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             nuyenBefore = appliedShopChanges.NuyenBefore,
                                             totalNuyenChange = appliedShopChanges.ShopChanges != null ? appliedShopChanges.ShopChanges.TotalNuyenChange : 0,
                                             nuyen = slot.Nuyen,
+                                            sellGuardChecks = appliedShopChanges.SellGuardChecks != null && appliedShopChanges.SellGuardChecks.Count > 0 ? appliedShopChanges.SellGuardChecks.ToArray() : null,
                                         });
 
                                         // Push authoritative inventory + wallet to the client.

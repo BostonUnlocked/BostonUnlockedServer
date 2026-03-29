@@ -12,6 +12,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
         public int NuyenBefore;
         public int NuyenAfter;
         public ShopItemChanges ShopChanges;
+        public List<object> SellGuardChecks;
     }
 
     internal sealed class PortedShopInventoryService
@@ -29,6 +30,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
         {
             var result = new ShopTransactionApplicationResult();
             result.ShopChanges = new ShopItemChanges();
+            result.SellGuardChecks = new List<object>();
 
             if (slot == null || requestedChanges == null)
             {
@@ -84,7 +86,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 }
                 else if (change.Delta == -1)
                 {
-                    if (!TryApplySell(index, tempInventory, change, applied, ref totalNuyenChange))
+                    if (!TryApplySell(index, slot, tempInventory, change, applied, ref totalNuyenChange, result.SellGuardChecks))
                     {
                         result.ShopChanges = Fail(allRequested);
                         return result;
@@ -171,11 +173,48 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             return true;
         }
 
-        private static bool TryApplySell(MetagameplayStaticDataIndex index, Dictionary<string, int> tempInventory, ItemChange requestedChange, List<ItemChange> applied, ref int totalNuyenChange)
+        private static bool TryApplySell(MetagameplayStaticDataIndex index, CareerSlot slot, Dictionary<string, int> tempInventory, ItemChange requestedChange, List<ItemChange> applied, ref int totalNuyenChange, List<object> sellGuardChecks)
         {
             var possessionKey = BuildPossessionKey(requestedChange.ItemDefintionId, requestedChange.Quality, requestedChange.Flavour);
             int existingAmount;
             if (!tempInventory.TryGetValue(possessionKey, out existingAmount) || existingAmount <= 0)
+            {
+                return false;
+            }
+
+            int richCount;
+            int primaryCount;
+            int secondaryCount;
+            int armorCount;
+            var equippedCount = CountEquippedMatchingItem(slot, requestedChange, out richCount, out primaryCount, out secondaryCount, out armorCount);
+            var blockedByEquipped = existingAmount - 1 < equippedCount;
+
+            if (sellGuardChecks != null)
+            {
+                sellGuardChecks.Add(new
+                {
+                    itemId = requestedChange.ItemDefintionId,
+                    quality = requestedChange.Quality,
+                    flavour = requestedChange.Flavour,
+                    possessionKey = possessionKey,
+                    existingAmount = existingAmount,
+                    equippedCount = equippedCount,
+                    richEquippedCount = richCount,
+                    primarySlotCount = primaryCount,
+                    secondarySlotCount = secondaryCount,
+                    armorSlotCount = armorCount,
+                    blockedByEquippedRule = blockedByEquipped,
+                    primaryWeaponItemId = slot != null ? slot.PrimaryWeaponItemId : null,
+                    primaryWeaponInventoryKey = slot != null ? slot.PrimaryWeaponInventoryKey : -1,
+                    secondaryWeaponItemId = slot != null ? slot.SecondaryWeaponItemId : null,
+                    secondaryWeaponInventoryKey = slot != null ? slot.SecondaryWeaponInventoryKey : -1,
+                    armorItemId = slot != null ? slot.ArmorItemId : null,
+                    armorInventoryKey = slot != null ? slot.ArmorInventoryKey : -1,
+                    richEquippedEntries = slot != null && slot.EquippedItems != null ? slot.EquippedItems.Count : 0,
+                });
+            }
+
+            if (blockedByEquipped)
             {
                 return false;
             }
@@ -198,6 +237,107 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             applied.Add(CloneItemChange(requestedChange));
             totalNuyenChange += itemDefinition.SellPrice;
             return true;
+        }
+
+        private static int CountEquippedMatchingItem(CareerSlot slot, ItemChange requestedChange, out int richCount, out int primaryCount, out int secondaryCount, out int armorCount)
+        {
+            richCount = 0;
+            primaryCount = 0;
+            secondaryCount = 0;
+            armorCount = 0;
+
+            if (slot == null || requestedChange == null || string.IsNullOrEmpty(requestedChange.ItemDefintionId))
+            {
+                return 0;
+            }
+
+            var itemId = requestedChange.ItemDefintionId;
+
+            if (slot.EquippedItems != null && slot.EquippedItems.Count > 0)
+            {
+                foreach (var equipped in slot.EquippedItems.Values)
+                {
+                    if (equipped == null || !string.Equals(equipped.ItemId, itemId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (IsEquippedTupleMatch(equipped, requestedChange))
+                    {
+                        richCount++;
+                    }
+                }
+            }
+
+            if (string.Equals(slot.PrimaryWeaponItemId, itemId, StringComparison.OrdinalIgnoreCase)
+                && !HasRichEquippedIdentity(slot.EquippedItems, itemId, slot.PrimaryWeaponInventoryKey))
+            {
+                primaryCount = 1;
+            }
+
+            if (string.Equals(slot.SecondaryWeaponItemId, itemId, StringComparison.OrdinalIgnoreCase)
+                && !HasRichEquippedIdentity(slot.EquippedItems, itemId, slot.SecondaryWeaponInventoryKey))
+            {
+                secondaryCount = 1;
+            }
+
+            if (string.Equals(slot.ArmorItemId, itemId, StringComparison.OrdinalIgnoreCase)
+                && !HasRichEquippedIdentity(slot.EquippedItems, itemId, slot.ArmorInventoryKey))
+            {
+                armorCount = 1;
+            }
+
+            return richCount + primaryCount + secondaryCount + armorCount;
+        }
+
+        private static bool HasRichEquippedIdentity(Dictionary<string, CareerSlot.EquippedSlotState> equippedItems, string itemId, int inventoryKey)
+        {
+            if (equippedItems == null || equippedItems.Count == 0 || string.IsNullOrEmpty(itemId))
+            {
+                return false;
+            }
+
+            foreach (var equipped in equippedItems.Values)
+            {
+                if (equipped == null)
+                {
+                    continue;
+                }
+
+                if (!string.Equals(equipped.ItemId, itemId, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (equipped.InventoryKey == inventoryKey)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsEquippedTupleMatch(CareerSlot.EquippedSlotState equipped, ItemChange requestedChange)
+        {
+            if (equipped == null || requestedChange == null)
+            {
+                return false;
+            }
+
+            if (equipped.Quality == requestedChange.Quality && equipped.Flavour == requestedChange.Flavour)
+            {
+                return true;
+            }
+
+            // Legacy equipped entries were stored without tuple identity.
+            // Treat them as unknown variants of the equipped item and block all sells for that item id.
+            if (equipped.InventoryKey < 0 && equipped.Quality == 0 && equipped.Flavour == -1)
+            {
+                return true;
+            }
+
+            return false;
         }
 
         private static ItemChange CloneItemChange(ItemChange requestedChange)
