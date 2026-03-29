@@ -774,6 +774,7 @@ namespace Shadowrun.LocalService.Core.Career
             keys.Sort(StringComparer.Ordinal);
 
             var nextKey = 10;
+            var usedInventoryKeys = new HashSet<int>();
             for (var i = 0; i < keys.Count; i++)
             {
                 var slotKey = keys[i];
@@ -802,6 +803,17 @@ namespace Shadowrun.LocalService.Core.Career
 
                 var slot = new ItemSlot(def);
                 var inventoryKey = state.InventoryKey >= 0 ? state.InventoryKey : nextKey;
+                if (inventoryKey < 0 || usedInventoryKeys.Contains(inventoryKey))
+                {
+                    while (usedInventoryKeys.Contains(nextKey))
+                    {
+                        nextKey++;
+                    }
+
+                    inventoryKey = nextKey++;
+                }
+
+                usedInventoryKeys.Add(inventoryKey);
                 slot.Item = CreateItemWithId(state.ItemId, inventoryKey, state.Quality, state.Flavour);
                 inventory.EquippedItems.Add(slot);
                 if (inventoryKey >= nextKey)

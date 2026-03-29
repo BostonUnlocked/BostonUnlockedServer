@@ -296,7 +296,7 @@ namespace Shadowrun.LocalService.Core.Career
 
                 if (slot != null && slot.EquippedItems != null && slot.EquippedItems.Count > 0)
                 {
-                    ApplyEquippedItems(pcInv, slot.EquippedItems);
+                    ApplyEquippedItems(pcInv, slot.EquippedItems, slot.ItemPossessions);
                 }
 
                 var humanPlayer = new HumanPlayer();
@@ -578,7 +578,7 @@ namespace Shadowrun.LocalService.Core.Career
 
             if (slot != null && slot.EquippedItems != null && slot.EquippedItems.Count > 0)
             {
-                ApplyEquippedItems(pcInv, slot.EquippedItems);
+                ApplyEquippedItems(pcInv, slot.EquippedItems, slot.ItemPossessions);
             }
 
             return pcs;
@@ -600,7 +600,7 @@ namespace Shadowrun.LocalService.Core.Career
             return item;
         }
 
-        private static void ApplyEquippedItems(PlayerCharacterInventory inventory, Dictionary<string, CareerSlot.EquippedSlotState> equipped)
+        private static void ApplyEquippedItems(PlayerCharacterInventory inventory, Dictionary<string, CareerSlot.EquippedSlotState> equipped, Dictionary<string, int> itemPossessions)
         {
             if (inventory == null || equipped == null || equipped.Count == 0)
             {
@@ -611,6 +611,7 @@ namespace Shadowrun.LocalService.Core.Career
             keys.Sort(StringComparer.Ordinal);
 
             var nextKey = 10;
+            var usedInventoryKeys = new HashSet<int>();
             for (var i = 0; i < keys.Count; i++)
             {
                 var slotKey = keys[i];
@@ -639,13 +640,55 @@ namespace Shadowrun.LocalService.Core.Career
 
                 var slot = new ItemSlot(def);
                 var inventoryKey = state.InventoryKey >= 0 ? state.InventoryKey : nextKey;
+                if (inventoryKey < 0 || usedInventoryKeys.Contains(inventoryKey))
+                {
+                    while (usedInventoryKeys.Contains(nextKey))
+                    {
+                        nextKey++;
+                    }
+
+                    inventoryKey = nextKey++;
+                }
+
+                usedInventoryKeys.Add(inventoryKey);
                 slot.Item = CreateItemWithId(state.ItemId, inventoryKey, state.Quality, state.Flavour);
+                slot.Item.Amount = ResolveEquippedItemAmount(itemPossessions, state.ItemId, state.Quality, state.Flavour);
                 inventory.EquippedItems.Add(slot);
                 if (inventoryKey >= nextKey)
                 {
                     nextKey = inventoryKey + 1;
                 }
             }
+        }
+
+        private static int ResolveEquippedItemAmount(Dictionary<string, int> itemPossessions, string itemId, int quality, int flavour)
+        {
+            if (itemPossessions == null || itemPossessions.Count == 0 || IsNullOrWhiteSpace(itemId))
+            {
+                return 1;
+            }
+
+            int amount;
+            if (itemPossessions.TryGetValue(BuildPossessionKey(itemId, quality, flavour), out amount))
+            {
+                if (amount < 1)
+                {
+                    return 1;
+                }
+
+                return amount > 255 ? 255 : amount;
+            }
+
+            return 1;
+        }
+
+        private static string BuildPossessionKey(string itemId, int quality, int flavour)
+        {
+            return (itemId ?? string.Empty)
+                + "|"
+                + quality.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + "|"
+                + flavour.ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
 
         private static string BuildEquippedItemsKey(CareerSlot slot)

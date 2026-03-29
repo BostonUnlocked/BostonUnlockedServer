@@ -77,6 +77,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 keys.Sort(StringComparer.Ordinal);
 
                 var nextKey = 10;
+                var usedInventoryKeys = new HashSet<int>();
                 for (var i = 0; i < keys.Count; i++)
                 {
                     var slotKey = keys[i];
@@ -105,6 +106,17 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                     var itemSlot = new ItemSlot(def);
                     var inventoryKey = state.InventoryKey >= 0 ? state.InventoryKey : nextKey;
+                    if (inventoryKey < 0 || usedInventoryKeys.Contains(inventoryKey))
+                    {
+                        while (usedInventoryKeys.Contains(nextKey))
+                        {
+                            nextKey++;
+                        }
+
+                        inventoryKey = nextKey++;
+                    }
+
+                    usedInventoryKeys.Add(inventoryKey);
                     itemSlot.Item = CreateInventoryItem(state.ItemId, inventoryKey);
                     itemSlot.Item.Quality = state.Quality;
                     itemSlot.Item.FlavourIndex = state.Flavour;
