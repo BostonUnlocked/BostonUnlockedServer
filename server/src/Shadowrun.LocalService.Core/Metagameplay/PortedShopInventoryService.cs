@@ -84,7 +84,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 }
                 else if (change.Delta == -1)
                 {
-                    if (!TryApplySell(index, tempInventory, change, applied, ref totalNuyenChange))
+                    if (!TryApplySell(index, slot, tempInventory, change, applied, ref totalNuyenChange))
                     {
                         result.ShopChanges = Fail(allRequested);
                         return result;
@@ -171,11 +171,17 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             return true;
         }
 
-        private static bool TryApplySell(MetagameplayStaticDataIndex index, Dictionary<string, int> tempInventory, ItemChange requestedChange, List<ItemChange> applied, ref int totalNuyenChange)
+        private static bool TryApplySell(MetagameplayStaticDataIndex index, CareerSlot slot, Dictionary<string, int> tempInventory, ItemChange requestedChange, List<ItemChange> applied, ref int totalNuyenChange)
         {
             var possessionKey = BuildPossessionKey(requestedChange.ItemDefintionId, requestedChange.Quality, requestedChange.Flavour);
             int existingAmount;
             if (!tempInventory.TryGetValue(possessionKey, out existingAmount) || existingAmount <= 0)
+            {
+                return false;
+            }
+
+            var equippedCount = CountEquippedMatchingItem(slot, requestedChange);
+            if (existingAmount - 1 < equippedCount)
             {
                 return false;
             }
@@ -198,6 +204,52 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             applied.Add(CloneItemChange(requestedChange));
             totalNuyenChange += itemDefinition.SellPrice;
             return true;
+        }
+
+        private static int CountEquippedMatchingItem(CareerSlot slot, ItemChange requestedChange)
+        {
+            if (slot == null || requestedChange == null || string.IsNullOrEmpty(requestedChange.ItemDefintionId))
+            {
+                return 0;
+            }
+
+            // Equipped item ids in persistence do not carry quality/flavour. In the client path,
+            // equipped checks are effectively against default metagameplay tuple (quality=0, flavour=-1).
+            if (requestedChange.Quality != 0 || requestedChange.Flavour != -1)
+            {
+                return 0;
+            }
+
+            var itemId = requestedChange.ItemDefintionId;
+            var count = 0;
+
+            if (string.Equals(slot.PrimaryWeaponItemId, itemId, StringComparison.OrdinalIgnoreCase))
+            {
+                count++;
+            }
+
+            if (string.Equals(slot.SecondaryWeaponItemId, itemId, StringComparison.OrdinalIgnoreCase))
+            {
+                count++;
+            }
+
+            if (string.Equals(slot.ArmorItemId, itemId, StringComparison.OrdinalIgnoreCase))
+            {
+                count++;
+            }
+
+            if (slot.EquippedItems != null && slot.EquippedItems.Count > 0)
+            {
+                foreach (var equipped in slot.EquippedItems.Values)
+                {
+                    if (equipped != null && string.Equals(equipped.ItemId, itemId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        count++;
+                    }
+                }
+            }
+
+            return count;
         }
 
         private static ItemChange CloneItemChange(ItemChange requestedChange)

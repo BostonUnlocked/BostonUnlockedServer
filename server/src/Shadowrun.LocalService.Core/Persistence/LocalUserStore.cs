@@ -708,6 +708,77 @@ namespace Shadowrun.LocalService.Core.Persistence
 
     public sealed class CareerSlot
     {
+        public sealed class EquippedSlotState
+        {
+            public string ItemId;
+            public int InventoryKey;
+            public int Quality;
+            public int Flavour;
+
+            public IDictionary ToDictionary()
+            {
+                var dict = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+                dict["ItemId"] = ItemId ?? string.Empty;
+                dict["InventoryKey"] = InventoryKey;
+                dict["Quality"] = Quality;
+                dict["Flavour"] = Flavour;
+                return dict;
+            }
+
+            public static EquippedSlotState FromDictionary(IDictionary dict)
+            {
+                if (dict == null)
+                {
+                    return null;
+                }
+
+                var state = new EquippedSlotState();
+                state.ItemId = dict.Contains("ItemId") ? (dict["ItemId"] as string) : null;
+                if (IsNullOrWhiteSpace(state.ItemId))
+                {
+                    return null;
+                }
+
+                try { if (dict.Contains("InventoryKey") && dict["InventoryKey"] != null) state.InventoryKey = Convert.ToInt32(dict["InventoryKey"], CultureInfo.InvariantCulture); } catch { state.InventoryKey = -1; }
+                try { if (dict.Contains("Quality") && dict["Quality"] != null) state.Quality = Convert.ToInt32(dict["Quality"], CultureInfo.InvariantCulture); } catch { state.Quality = 0; }
+                try { if (dict.Contains("Flavour") && dict["Flavour"] != null) state.Flavour = Convert.ToInt32(dict["Flavour"], CultureInfo.InvariantCulture); } catch { state.Flavour = -1; }
+
+                if (state.Quality < 0)
+                {
+                    state.Quality = 0;
+                }
+                if (state.Quality > byte.MaxValue)
+                {
+                    state.Quality = byte.MaxValue;
+                }
+                if (state.Flavour < short.MinValue)
+                {
+                    state.Flavour = short.MinValue;
+                }
+                if (state.Flavour > short.MaxValue)
+                {
+                    state.Flavour = short.MaxValue;
+                }
+
+                return state;
+            }
+
+            public static EquippedSlotState Create(string itemId, int inventoryKey, int quality, int flavour)
+            {
+                if (IsNullOrWhiteSpace(itemId))
+                {
+                    return null;
+                }
+
+                var state = new EquippedSlotState();
+                state.ItemId = itemId;
+                state.InventoryKey = inventoryKey;
+                state.Quality = quality;
+                state.Flavour = flavour;
+                return state;
+            }
+        }
+
         public int Index;
         public bool IsOccupied;
         public string CharacterName;
@@ -723,8 +794,9 @@ namespace Shadowrun.LocalService.Core.Persistence
         public int SecondaryWeaponInventoryKey;
         public string ArmorItemId;
         public int ArmorInventoryKey;
-        // Cosmetic/equipment item selections by itemslot id (serialized as string keys).
-        public Dictionary<string, string> EquippedItems;
+        // Cosmetic/equipment selections by itemslot id. Mirrors SRO.Server behavior by retaining
+        // inventory references for equipped slots instead of only item id strings.
+        public Dictionary<string, EquippedSlotState> EquippedItems;
         // Spendable karma (skill currency). This is what the hub UI displays.
         public int Karma;
         // Cumulative spent karma used for progression reference (Karma + SpentKarma).
@@ -778,7 +850,20 @@ namespace Shadowrun.LocalService.Core.Persistence
             dict["SecondaryWeaponInventoryKey"] = SecondaryWeaponInventoryKey;
             dict["ArmorItemId"] = ArmorItemId ?? string.Empty;
             dict["ArmorInventoryKey"] = ArmorInventoryKey;
-            dict["EquippedItems"] = EquippedItems ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var equipped = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            if (EquippedItems != null)
+            {
+                foreach (var kvp in EquippedItems)
+                {
+                    if (IsNullOrWhiteSpace(kvp.Key) || kvp.Value == null || IsNullOrWhiteSpace(kvp.Value.ItemId))
+                    {
+                        continue;
+                    }
+
+                    equipped[kvp.Key] = kvp.Value.ToDictionary();
+                }
+            }
+            dict["EquippedItems"] = equipped;
             dict["Karma"] = Karma;
             dict["SpentKarma"] = SpentKarma;
             dict["Nuyen"] = Nuyen;
@@ -857,7 +942,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
             catch { slot.WantsBackgroundChange = false; }
 
-            slot.EquippedItems = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            slot.EquippedItems = new Dictionary<string, EquippedSlotState>(StringComparer.OrdinalIgnoreCase);
             try
             {
                 if (dict.Contains("EquippedItems") && dict["EquippedItems"] != null)
@@ -868,10 +953,27 @@ namespace Shadowrun.LocalService.Core.Persistence
                         foreach (DictionaryEntry entry in asDict)
                         {
                             var k = entry.Key as string;
-                            var v = entry.Value as string;
-                            if (!IsNullOrWhiteSpace(k) && v != null)
+                            if (IsNullOrWhiteSpace(k) || entry.Value == null)
                             {
-                                slot.EquippedItems[k] = v;
+                                continue;
+                            }
+
+                            var asStateDict = entry.Value as IDictionary;
+                            if (asStateDict != null)
+                            {
+                                var state = EquippedSlotState.FromDictionary(asStateDict);
+                                if (state != null)
+                                {
+                                    slot.EquippedItems[k] = state;
+                                }
+                                continue;
+                            }
+
+                            // Backward compatibility for legacy account.json format where value was plain item id.
+                            var legacyItemId = entry.Value as string;
+                            if (!IsNullOrWhiteSpace(legacyItemId))
+                            {
+                                slot.EquippedItems[k] = EquippedSlotState.Create(legacyItemId, -1, 0, -1);
                             }
                         }
                     }
@@ -879,7 +981,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
             catch
             {
-                slot.EquippedItems = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                slot.EquippedItems = new Dictionary<string, EquippedSlotState>(StringComparer.OrdinalIgnoreCase);
             }
 
             try
@@ -1152,7 +1254,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 slot.PortraitPath = PlayerCharacterDefaultValues.PortraitPath;
                 slot.Portrait = slot.PortraitPath;
             }
-            if (slot.EquippedItems == null) slot.EquippedItems = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (slot.EquippedItems == null) slot.EquippedItems = new Dictionary<string, EquippedSlotState>(StringComparer.OrdinalIgnoreCase);
             if (slot.CharacterIdentifier == null) slot.CharacterIdentifier = string.Empty;
             if (slot.HubId == null) slot.HubId = string.Empty;
             if (slot.SkillTreeDefinitions == null) slot.SkillTreeDefinitions = new Dictionary<string, string[]>(StringComparer.Ordinal);

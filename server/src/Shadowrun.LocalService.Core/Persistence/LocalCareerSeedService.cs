@@ -546,7 +546,7 @@ namespace Shadowrun.LocalService.Core.Persistence
 
                 if (slot.EquippedItems == null)
                 {
-                    slot.EquippedItems = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    slot.EquippedItems = new Dictionary<string, CareerSlot.EquippedSlotState>(StringComparer.OrdinalIgnoreCase);
                 }
                 if (slot.ItemPossessions == null)
                 {
@@ -635,10 +635,10 @@ namespace Shadowrun.LocalService.Core.Persistence
                 }
 
                 var slotKey = slotId.ToString(CultureInfo.InvariantCulture);
-                string existing;
-                if (!slot.EquippedItems.TryGetValue(slotKey, out existing) || LocalUserStore.IsNullOrWhiteSpace(existing))
+                CareerSlot.EquippedSlotState existing;
+                if (!slot.EquippedItems.TryGetValue(slotKey, out existing) || existing == null || LocalUserStore.IsNullOrWhiteSpace(existing.ItemId))
                 {
-                    slot.EquippedItems[slotKey] = itemId;
+                    slot.EquippedItems[slotKey] = CareerSlot.EquippedSlotState.Create(itemId, -1, 0, -1);
                 }
 
                 var possessionKey = itemId + "|0|-1";

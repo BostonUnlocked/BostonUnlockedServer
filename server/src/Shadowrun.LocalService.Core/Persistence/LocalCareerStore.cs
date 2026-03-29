@@ -342,7 +342,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                     target.SecondaryWeaponInventoryKey = 1;
                     target.ArmorItemId = string.Empty;
                     target.ArmorInventoryKey = 2;
-                    target.EquippedItems = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    target.EquippedItems = new Dictionary<string, CareerSlot.EquippedSlotState>(StringComparer.OrdinalIgnoreCase);
                     target.ItemPossessions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                     target.SkillTreeDefinitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
                     target.Karma = 0;

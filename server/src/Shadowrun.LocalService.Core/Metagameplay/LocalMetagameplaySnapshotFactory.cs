@@ -21,6 +21,8 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 return inventory;
             }
 
+            var preferredKeysByTuple = BuildPreferredInventoryKeysByTuple(slot);
+            var usedKeys = new HashSet<int>();
             var items = new List<Item>();
             var keys = new List<string>(slot.ItemPossessions.Keys);
             keys.Sort(StringComparer.OrdinalIgnoreCase);
@@ -88,8 +90,18 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                     continue;
                 }
 
+                var inventoryKey = ConsumePreferredInventoryKey(preferredKeysByTuple, usedKeys, itemId, quality, flavour);
+                if (inventoryKey < 0)
+                {
+                    while (usedKeys.Contains(nextKey))
+                    {
+                        nextKey++;
+                    }
+                    inventoryKey = nextKey++;
+                }
+
                 var item = new Item();
-                item.InventoryKey = nextKey++;
+                item.InventoryKey = inventoryKey;
                 item.ItemId = itemId;
                 item.Amount = amount;
                 item.Quality = quality;
@@ -103,6 +115,82 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             }
 
             return inventory;
+        }
+
+        private static Dictionary<string, Queue<int>> BuildPreferredInventoryKeysByTuple(CareerSlot slot)
+        {
+            var preferred = new Dictionary<string, Queue<int>>(StringComparer.OrdinalIgnoreCase);
+            if (slot == null || slot.EquippedItems == null || slot.EquippedItems.Count == 0)
+            {
+                return preferred;
+            }
+
+            var keys = new List<string>(slot.EquippedItems.Keys);
+            keys.Sort(StringComparer.Ordinal);
+            for (var i = 0; i < keys.Count; i++)
+            {
+                var slotKey = keys[i];
+                if (IsNullOrWhiteSpace(slotKey))
+                {
+                    continue;
+                }
+
+                CareerSlot.EquippedSlotState state;
+                if (!slot.EquippedItems.TryGetValue(slotKey, out state) || state == null || IsNullOrWhiteSpace(state.ItemId) || state.InventoryKey < 0)
+                {
+                    continue;
+                }
+
+                var tuple = BuildItemTupleKey(state.ItemId, state.Quality, state.Flavour);
+                Queue<int> queue;
+                if (!preferred.TryGetValue(tuple, out queue))
+                {
+                    queue = new Queue<int>();
+                    preferred[tuple] = queue;
+                }
+
+                if (!queue.Contains(state.InventoryKey))
+                {
+                    queue.Enqueue(state.InventoryKey);
+                }
+            }
+
+            return preferred;
+        }
+
+        private static int ConsumePreferredInventoryKey(Dictionary<string, Queue<int>> preferredKeysByTuple, HashSet<int> usedKeys, string itemId, int quality, int flavour)
+        {
+            if (preferredKeysByTuple == null || usedKeys == null || IsNullOrWhiteSpace(itemId))
+            {
+                return -1;
+            }
+
+            Queue<int> queue;
+            if (!preferredKeysByTuple.TryGetValue(BuildItemTupleKey(itemId, quality, flavour), out queue) || queue == null)
+            {
+                return -1;
+            }
+
+            while (queue.Count > 0)
+            {
+                var key = queue.Dequeue();
+                if (key >= 0 && !usedKeys.Contains(key))
+                {
+                    usedKeys.Add(key);
+                    return key;
+                }
+            }
+
+            return -1;
+        }
+
+        private static string BuildItemTupleKey(string itemId, int quality, int flavour)
+        {
+            return (itemId ?? string.Empty)
+                + "|"
+                + quality.ToString(CultureInfo.InvariantCulture)
+                + "|"
+                + flavour.ToString(CultureInfo.InvariantCulture);
         }
 
         public static StoryProgressRuntimestate BuildStoryProgress(CareerSlot slot)

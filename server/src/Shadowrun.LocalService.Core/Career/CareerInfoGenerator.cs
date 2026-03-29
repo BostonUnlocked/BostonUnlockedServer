@@ -395,6 +395,8 @@ namespace Shadowrun.LocalService.Core.Career
                 return inventory;
             }
 
+            var preferredKeysByTuple = BuildPreferredInventoryKeysByTuple(slot);
+            var usedKeys = new HashSet<int>();
             var items = new List<Item>();
             var keys = new List<string>(slot.ItemPossessions.Keys);
             keys.Sort(StringComparer.OrdinalIgnoreCase);
@@ -464,8 +466,18 @@ namespace Shadowrun.LocalService.Core.Career
                     continue;
                 }
 
+                var inventoryKey = ConsumePreferredInventoryKey(preferredKeysByTuple, usedKeys, itemId, quality, flavour);
+                if (inventoryKey < 0)
+                {
+                    while (usedKeys.Contains(nextKey))
+                    {
+                        nextKey++;
+                    }
+                    inventoryKey = nextKey++;
+                }
+
                 var item = new Item();
-                item.InventoryKey = nextKey++;
+                item.InventoryKey = inventoryKey;
                 item.ItemId = itemId;
                 item.Amount = amount;
                 item.Quality = quality;
@@ -478,6 +490,82 @@ namespace Shadowrun.LocalService.Core.Career
                 inventory.AddRangeWithValidInventoryKey(items);
             }
             return inventory;
+        }
+
+        private static Dictionary<string, Queue<int>> BuildPreferredInventoryKeysByTuple(CareerSlot slot)
+        {
+            var preferred = new Dictionary<string, Queue<int>>(StringComparer.OrdinalIgnoreCase);
+            if (slot == null || slot.EquippedItems == null || slot.EquippedItems.Count == 0)
+            {
+                return preferred;
+            }
+
+            var keys = new List<string>(slot.EquippedItems.Keys);
+            keys.Sort(StringComparer.Ordinal);
+            for (var i = 0; i < keys.Count; i++)
+            {
+                var slotKey = keys[i];
+                if (IsNullOrWhiteSpace(slotKey))
+                {
+                    continue;
+                }
+
+                CareerSlot.EquippedSlotState state;
+                if (!slot.EquippedItems.TryGetValue(slotKey, out state) || state == null || IsNullOrWhiteSpace(state.ItemId) || state.InventoryKey < 0)
+                {
+                    continue;
+                }
+
+                var tuple = BuildItemTupleKey(state.ItemId, state.Quality, state.Flavour);
+                Queue<int> queue;
+                if (!preferred.TryGetValue(tuple, out queue))
+                {
+                    queue = new Queue<int>();
+                    preferred[tuple] = queue;
+                }
+
+                if (!queue.Contains(state.InventoryKey))
+                {
+                    queue.Enqueue(state.InventoryKey);
+                }
+            }
+
+            return preferred;
+        }
+
+        private static int ConsumePreferredInventoryKey(Dictionary<string, Queue<int>> preferredKeysByTuple, HashSet<int> usedKeys, string itemId, int quality, int flavour)
+        {
+            if (preferredKeysByTuple == null || usedKeys == null || IsNullOrWhiteSpace(itemId))
+            {
+                return -1;
+            }
+
+            Queue<int> queue;
+            if (!preferredKeysByTuple.TryGetValue(BuildItemTupleKey(itemId, quality, flavour), out queue) || queue == null)
+            {
+                return -1;
+            }
+
+            while (queue.Count > 0)
+            {
+                var key = queue.Dequeue();
+                if (key >= 0 && !usedKeys.Contains(key))
+                {
+                    usedKeys.Add(key);
+                    return key;
+                }
+            }
+
+            return -1;
+        }
+
+        private static string BuildItemTupleKey(string itemId, int quality, int flavour)
+        {
+            return (itemId ?? string.Empty)
+                + "|"
+                + quality.ToString(CultureInfo.InvariantCulture)
+                + "|"
+                + flavour.ToString(CultureInfo.InvariantCulture);
         }
 
         private static string BuildItemPossessionsKey(CareerSlot slot)
@@ -661,14 +749,21 @@ namespace Shadowrun.LocalService.Core.Career
 
         private static Item CreateItemWithId(string itemId, int inventoryKey)
         {
+            return CreateItemWithId(itemId, inventoryKey, 0, -1);
+        }
+
+        private static Item CreateItemWithId(string itemId, int inventoryKey, int quality, int flavour)
+        {
             var item = new Item();
             item.ItemId = itemId ?? string.Empty;
             item.InventoryKey = inventoryKey;
             item.Amount = 1;
+            item.Quality = quality;
+            item.FlavourIndex = flavour;
             return item;
         }
 
-        private static void ApplyEquippedItems(PlayerCharacterInventory inventory, Dictionary<string, string> equipped)
+        private static void ApplyEquippedItems(PlayerCharacterInventory inventory, Dictionary<string, CareerSlot.EquippedSlotState> equipped)
         {
             if (inventory == null || equipped == null || equipped.Count == 0)
             {
@@ -693,8 +788,8 @@ namespace Shadowrun.LocalService.Core.Career
                     continue;
                 }
 
-                string itemId;
-                if (!equipped.TryGetValue(slotKey, out itemId) || IsNullOrWhiteSpace(itemId))
+                CareerSlot.EquippedSlotState state;
+                if (!equipped.TryGetValue(slotKey, out state) || state == null || IsNullOrWhiteSpace(state.ItemId))
                 {
                     continue;
                 }
@@ -706,8 +801,13 @@ namespace Shadowrun.LocalService.Core.Career
                 def.DefaultItem = string.Empty;
 
                 var slot = new ItemSlot(def);
-                slot.Item = CreateItemWithId(itemId, nextKey++);
+                var inventoryKey = state.InventoryKey >= 0 ? state.InventoryKey : nextKey;
+                slot.Item = CreateItemWithId(state.ItemId, inventoryKey, state.Quality, state.Flavour);
                 inventory.EquippedItems.Add(slot);
+                if (inventoryKey >= nextKey)
+                {
+                    nextKey = inventoryKey + 1;
+                }
             }
         }
 
@@ -976,14 +1076,20 @@ namespace Shadowrun.LocalService.Core.Career
                 {
                     continue;
                 }
-                string v;
-                if (!slot.EquippedItems.TryGetValue(k, out v) || v == null)
+                CareerSlot.EquippedSlotState v;
+                if (!slot.EquippedItems.TryGetValue(k, out v) || v == null || IsNullOrWhiteSpace(v.ItemId))
                 {
                     continue;
                 }
                 sb.Append(k);
                 sb.Append('=');
-                sb.Append(v);
+                sb.Append(v.ItemId);
+                sb.Append(':');
+                sb.Append(v.InventoryKey.ToString(CultureInfo.InvariantCulture));
+                sb.Append(':');
+                sb.Append(v.Quality.ToString(CultureInfo.InvariantCulture));
+                sb.Append(':');
+                sb.Append(v.Flavour.ToString(CultureInfo.InvariantCulture));
                 sb.Append(';');
             }
             return sb.ToString();
