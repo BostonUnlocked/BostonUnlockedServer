@@ -1253,10 +1253,17 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         private static Item CreateInventoryItem(string itemId, int inventoryKey)
         {
+            return CreateInventoryItem(itemId, inventoryKey, 0, -1);
+        }
+
+        private static Item CreateInventoryItem(string itemId, int inventoryKey, int quality, int flavour)
+        {
             var item = new Item();
             item.ItemId = itemId ?? string.Empty;
             item.InventoryKey = inventoryKey;
             item.Amount = 1;
+            item.Quality = quality;
+            item.FlavourIndex = flavour;
             return item;
         }
     }

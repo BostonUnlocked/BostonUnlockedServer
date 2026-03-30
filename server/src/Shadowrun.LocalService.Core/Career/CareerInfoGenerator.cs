@@ -112,8 +112,14 @@ namespace Shadowrun.LocalService.Core.Career
                 var equippedKey = BuildEquippedItemsKey(slot);
                 var loadoutKey = slot != null
                     ? ((slot.PrimaryWeaponItemId ?? string.Empty) + ":" + slot.PrimaryWeaponInventoryKey.ToString(CultureInfo.InvariantCulture)
+                        + ":" + slot.PrimaryWeaponQuality.ToString(CultureInfo.InvariantCulture)
+                        + ":" + slot.PrimaryWeaponFlavour.ToString(CultureInfo.InvariantCulture)
                         + "|" + (slot.SecondaryWeaponItemId ?? string.Empty) + ":" + slot.SecondaryWeaponInventoryKey.ToString(CultureInfo.InvariantCulture)
+                        + ":" + slot.SecondaryWeaponQuality.ToString(CultureInfo.InvariantCulture)
+                        + ":" + slot.SecondaryWeaponFlavour.ToString(CultureInfo.InvariantCulture)
                         + "|" + (slot.ArmorItemId ?? string.Empty) + ":" + slot.ArmorInventoryKey.ToString(CultureInfo.InvariantCulture))
+                        + ":" + slot.ArmorQuality.ToString(CultureInfo.InvariantCulture)
+                        + ":" + slot.ArmorFlavour.ToString(CultureInfo.InvariantCulture)
                     : string.Empty;
                 var storyKey = BuildStoryProgressKey(slot);
                 var skillKey = BuildSkillTreeKey(slot);
@@ -165,15 +171,21 @@ namespace Shadowrun.LocalService.Core.Career
                 var pcInv = new PlayerCharacterInventory();
                 var primaryItemId = (slot != null && !IsNullOrWhiteSpace(slot.PrimaryWeaponItemId)) ? slot.PrimaryWeaponItemId : PlayerCharacterDefaultValues.PrimaryWeapon;
                 var primaryKey = slot != null ? slot.PrimaryWeaponInventoryKey : 0;
-                pcInv.PrimaryWeapon = CreateItemWithId(primaryItemId, primaryKey);
+                var primaryQuality = slot != null ? slot.PrimaryWeaponQuality : 0;
+                var primaryFlavour = slot != null ? slot.PrimaryWeaponFlavour : -1;
+                pcInv.PrimaryWeapon = CreateItemWithId(primaryItemId, primaryKey, primaryQuality, primaryFlavour);
 
                 var secondaryItemId = (slot != null && !IsNullOrWhiteSpace(slot.SecondaryWeaponItemId)) ? slot.SecondaryWeaponItemId : PlayerCharacterDefaultValues.SecondaryWeapon;
                 var secondaryKey = slot != null ? slot.SecondaryWeaponInventoryKey : 1;
-                pcInv.SecondaryWeapon = CreateItemWithId(secondaryItemId, secondaryKey);
+                var secondaryQuality = slot != null ? slot.SecondaryWeaponQuality : 0;
+                var secondaryFlavour = slot != null ? slot.SecondaryWeaponFlavour : -1;
+                pcInv.SecondaryWeapon = CreateItemWithId(secondaryItemId, secondaryKey, secondaryQuality, secondaryFlavour);
 
                 var armorItemId = (slot != null && !IsNullOrWhiteSpace(slot.ArmorItemId)) ? slot.ArmorItemId : PlayerCharacterDefaultValues.Armor;
                 var armorKey = slot != null ? slot.ArmorInventoryKey : 2;
-                pcInv.Armor = CreateItemWithId(armorItemId, armorKey);
+                var armorQuality = slot != null ? slot.ArmorQuality : 0;
+                var armorFlavour = slot != null ? slot.ArmorFlavour : -1;
+                pcInv.Armor = CreateItemWithId(armorItemId, armorKey, armorQuality, armorFlavour);
 
                 pcs.CharacterName = IsNullOrWhiteSpace(characterName) ? "OfflineRunner" : characterName;
 
