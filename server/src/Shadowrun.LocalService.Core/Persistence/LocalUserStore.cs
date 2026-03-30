@@ -790,10 +790,16 @@ namespace Shadowrun.LocalService.Core.Persistence
         // ItemId values are Cliffhanger item-definition IDs; InventoryKey matches the client-provided Item.InventoryKey.
         public string PrimaryWeaponItemId;
         public int PrimaryWeaponInventoryKey;
+        public int PrimaryWeaponQuality;
+        public int PrimaryWeaponFlavour;
         public string SecondaryWeaponItemId;
         public int SecondaryWeaponInventoryKey;
+        public int SecondaryWeaponQuality;
+        public int SecondaryWeaponFlavour;
         public string ArmorItemId;
         public int ArmorInventoryKey;
+        public int ArmorQuality;
+        public int ArmorFlavour;
         // Cosmetic/equipment selections by itemslot id. Mirrors SRO.Server behavior by retaining
         // inventory references for equipped slots instead of only item id strings.
         public Dictionary<string, EquippedSlotState> EquippedItems;
@@ -846,10 +852,16 @@ namespace Shadowrun.LocalService.Core.Persistence
             dict["WantsBackgroundChange"] = WantsBackgroundChange;
             dict["PrimaryWeaponItemId"] = PrimaryWeaponItemId ?? string.Empty;
             dict["PrimaryWeaponInventoryKey"] = PrimaryWeaponInventoryKey;
+            dict["PrimaryWeaponQuality"] = PrimaryWeaponQuality;
+            dict["PrimaryWeaponFlavour"] = PrimaryWeaponFlavour;
             dict["SecondaryWeaponItemId"] = SecondaryWeaponItemId ?? string.Empty;
             dict["SecondaryWeaponInventoryKey"] = SecondaryWeaponInventoryKey;
+            dict["SecondaryWeaponQuality"] = SecondaryWeaponQuality;
+            dict["SecondaryWeaponFlavour"] = SecondaryWeaponFlavour;
             dict["ArmorItemId"] = ArmorItemId ?? string.Empty;
             dict["ArmorInventoryKey"] = ArmorInventoryKey;
+            dict["ArmorQuality"] = ArmorQuality;
+            dict["ArmorFlavour"] = ArmorFlavour;
             var equipped = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
             if (EquippedItems != null)
             {
@@ -917,6 +929,63 @@ namespace Shadowrun.LocalService.Core.Persistence
             try { if (dict.Contains("PrimaryWeaponInventoryKey")) slot.PrimaryWeaponInventoryKey = Convert.ToInt32(dict["PrimaryWeaponInventoryKey"]); } catch { slot.PrimaryWeaponInventoryKey = 0; }
             try { if (dict.Contains("SecondaryWeaponInventoryKey")) slot.SecondaryWeaponInventoryKey = Convert.ToInt32(dict["SecondaryWeaponInventoryKey"]); } catch { slot.SecondaryWeaponInventoryKey = 1; }
             try { if (dict.Contains("ArmorInventoryKey")) slot.ArmorInventoryKey = Convert.ToInt32(dict["ArmorInventoryKey"]); } catch { slot.ArmorInventoryKey = 2; }
+            try { if (dict.Contains("PrimaryWeaponQuality")) slot.PrimaryWeaponQuality = Convert.ToInt32(dict["PrimaryWeaponQuality"]); } catch { slot.PrimaryWeaponQuality = 0; }
+            try { if (dict.Contains("PrimaryWeaponFlavour")) slot.PrimaryWeaponFlavour = Convert.ToInt32(dict["PrimaryWeaponFlavour"]); } catch { slot.PrimaryWeaponFlavour = -1; }
+            try { if (dict.Contains("SecondaryWeaponQuality")) slot.SecondaryWeaponQuality = Convert.ToInt32(dict["SecondaryWeaponQuality"]); } catch { slot.SecondaryWeaponQuality = 0; }
+            try { if (dict.Contains("SecondaryWeaponFlavour")) slot.SecondaryWeaponFlavour = Convert.ToInt32(dict["SecondaryWeaponFlavour"]); } catch { slot.SecondaryWeaponFlavour = -1; }
+            try { if (dict.Contains("ArmorQuality")) slot.ArmorQuality = Convert.ToInt32(dict["ArmorQuality"]); } catch { slot.ArmorQuality = 0; }
+            try { if (dict.Contains("ArmorFlavour")) slot.ArmorFlavour = Convert.ToInt32(dict["ArmorFlavour"]); } catch { slot.ArmorFlavour = -1; }
+
+            if (slot.PrimaryWeaponQuality < 0)
+            {
+                slot.PrimaryWeaponQuality = 0;
+            }
+            if (slot.PrimaryWeaponQuality > byte.MaxValue)
+            {
+                slot.PrimaryWeaponQuality = byte.MaxValue;
+            }
+            if (slot.PrimaryWeaponFlavour < short.MinValue)
+            {
+                slot.PrimaryWeaponFlavour = short.MinValue;
+            }
+            if (slot.PrimaryWeaponFlavour > short.MaxValue)
+            {
+                slot.PrimaryWeaponFlavour = short.MaxValue;
+            }
+
+            if (slot.SecondaryWeaponQuality < 0)
+            {
+                slot.SecondaryWeaponQuality = 0;
+            }
+            if (slot.SecondaryWeaponQuality > byte.MaxValue)
+            {
+                slot.SecondaryWeaponQuality = byte.MaxValue;
+            }
+            if (slot.SecondaryWeaponFlavour < short.MinValue)
+            {
+                slot.SecondaryWeaponFlavour = short.MinValue;
+            }
+            if (slot.SecondaryWeaponFlavour > short.MaxValue)
+            {
+                slot.SecondaryWeaponFlavour = short.MaxValue;
+            }
+
+            if (slot.ArmorQuality < 0)
+            {
+                slot.ArmorQuality = 0;
+            }
+            if (slot.ArmorQuality > byte.MaxValue)
+            {
+                slot.ArmorQuality = byte.MaxValue;
+            }
+            if (slot.ArmorFlavour < short.MinValue)
+            {
+                slot.ArmorFlavour = short.MinValue;
+            }
+            if (slot.ArmorFlavour > short.MaxValue)
+            {
+                slot.ArmorFlavour = short.MaxValue;
+            }
 
             try
             {

@@ -62,15 +62,21 @@ namespace Shadowrun.LocalService.Core.Protocols
             var pcInv = new PlayerCharacterInventory();
             var primaryItemId = (slot != null && !IsNullOrWhiteSpace(slot.PrimaryWeaponItemId)) ? slot.PrimaryWeaponItemId : PlayerCharacterDefaultValues.PrimaryWeapon;
             var primaryKey = slot != null ? slot.PrimaryWeaponInventoryKey : 0;
-            pcInv.PrimaryWeapon = CreateInventoryItem(primaryItemId, primaryKey);
+            var primaryQuality = slot != null ? slot.PrimaryWeaponQuality : 0;
+            var primaryFlavour = slot != null ? slot.PrimaryWeaponFlavour : -1;
+            pcInv.PrimaryWeapon = CreateInventoryItem(primaryItemId, primaryKey, primaryQuality, primaryFlavour);
 
             var secondaryItemId = (slot != null && !IsNullOrWhiteSpace(slot.SecondaryWeaponItemId)) ? slot.SecondaryWeaponItemId : PlayerCharacterDefaultValues.SecondaryWeapon;
             var secondaryKey = slot != null ? slot.SecondaryWeaponInventoryKey : 1;
-            pcInv.SecondaryWeapon = CreateInventoryItem(secondaryItemId, secondaryKey);
+            var secondaryQuality = slot != null ? slot.SecondaryWeaponQuality : 0;
+            var secondaryFlavour = slot != null ? slot.SecondaryWeaponFlavour : -1;
+            pcInv.SecondaryWeapon = CreateInventoryItem(secondaryItemId, secondaryKey, secondaryQuality, secondaryFlavour);
 
             var armorItemId = (slot != null && !IsNullOrWhiteSpace(slot.ArmorItemId)) ? slot.ArmorItemId : PlayerCharacterDefaultValues.Armor;
             var armorKey = slot != null ? slot.ArmorInventoryKey : 2;
-            pcInv.Armor = CreateInventoryItem(armorItemId, armorKey);
+            var armorQuality = slot != null ? slot.ArmorQuality : 0;
+            var armorFlavour = slot != null ? slot.ArmorFlavour : -1;
+            pcInv.Armor = CreateInventoryItem(armorItemId, armorKey, armorQuality, armorFlavour);
             if (slot != null && slot.EquippedItems != null && slot.EquippedItems.Count > 0)
             {
                 var keys = new List<string>(slot.EquippedItems.Keys);
@@ -421,13 +427,35 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             var primaryWeaponChange = GetDictValue(parsedChange, "PrimaryWeaponChange");
-            if (ApplyWeaponChange(primaryWeaponChange, "NewWeapon", 0, slot.PrimaryWeaponItemId, slot.PrimaryWeaponInventoryKey, out slot.PrimaryWeaponItemId, out slot.PrimaryWeaponInventoryKey))
+            if (ApplyWeaponChange(
+                primaryWeaponChange,
+                "NewWeapon",
+                0,
+                slot.PrimaryWeaponItemId,
+                slot.PrimaryWeaponInventoryKey,
+                slot.PrimaryWeaponQuality,
+                slot.PrimaryWeaponFlavour,
+                out slot.PrimaryWeaponItemId,
+                out slot.PrimaryWeaponInventoryKey,
+                out slot.PrimaryWeaponQuality,
+                out slot.PrimaryWeaponFlavour))
             {
                 result.Changed = true;
             }
 
             var secondaryWeaponChange = GetDictValue(parsedChange, "SecondaryWeaponChange");
-            if (ApplyWeaponChange(secondaryWeaponChange, "NewWeapon", 1, slot.SecondaryWeaponItemId, slot.SecondaryWeaponInventoryKey, out slot.SecondaryWeaponItemId, out slot.SecondaryWeaponInventoryKey))
+            if (ApplyWeaponChange(
+                secondaryWeaponChange,
+                "NewWeapon",
+                1,
+                slot.SecondaryWeaponItemId,
+                slot.SecondaryWeaponInventoryKey,
+                slot.SecondaryWeaponQuality,
+                slot.SecondaryWeaponFlavour,
+                out slot.SecondaryWeaponItemId,
+                out slot.SecondaryWeaponInventoryKey,
+                out slot.SecondaryWeaponQuality,
+                out slot.SecondaryWeaponFlavour))
             {
                 result.Changed = true;
             }
@@ -438,12 +466,34 @@ namespace Shadowrun.LocalService.Core.Protocols
                 var newArmor = GetDictValue(armorChange, "NewArmor") ?? GetDictValue(armorChange, "NewItem");
                 var newItemId = GetStringValue(newArmor, "ItemId");
                 var newInvKey = GetInt32Value(newArmor, "InventoryKey", 2);
+                var newQuality = GetInt32Value(newArmor, "Quality", 0);
+                var newFlavour = GetInt32Value(newArmor, "FlavourIndex", -1);
+                if (newQuality < 0)
+                {
+                    newQuality = 0;
+                }
+                if (newQuality > byte.MaxValue)
+                {
+                    newQuality = byte.MaxValue;
+                }
+                if (newFlavour < short.MinValue)
+                {
+                    newFlavour = short.MinValue;
+                }
+                if (newFlavour > short.MaxValue)
+                {
+                    newFlavour = short.MaxValue;
+                }
                 if (!IsNullOrWhiteSpace(newItemId)
                     && (!string.Equals(slot.ArmorItemId, newItemId, StringComparison.Ordinal)
-                        || slot.ArmorInventoryKey != newInvKey))
+                        || slot.ArmorInventoryKey != newInvKey
+                        || slot.ArmorQuality != newQuality
+                        || slot.ArmorFlavour != newFlavour))
                 {
                     slot.ArmorItemId = newItemId;
                     slot.ArmorInventoryKey = newInvKey;
+                    slot.ArmorQuality = newQuality;
+                    slot.ArmorFlavour = newFlavour;
                     result.Changed = true;
                 }
             }
@@ -598,10 +648,23 @@ namespace Shadowrun.LocalService.Core.Protocols
                 && TryApplyBodytypeChange(slot, inferredMeta, inferredGender);
         }
 
-        private static bool ApplyWeaponChange(IDictionary weaponChange, string newWeaponKey, int defaultInventoryKey, string currentItemId, int currentInventoryKey, out string updatedItemId, out int updatedInventoryKey)
+        private static bool ApplyWeaponChange(
+            IDictionary weaponChange,
+            string newWeaponKey,
+            int defaultInventoryKey,
+            string currentItemId,
+            int currentInventoryKey,
+            int currentQuality,
+            int currentFlavour,
+            out string updatedItemId,
+            out int updatedInventoryKey,
+            out int updatedQuality,
+            out int updatedFlavour)
         {
             updatedItemId = currentItemId;
             updatedInventoryKey = currentInventoryKey;
+            updatedQuality = currentQuality;
+            updatedFlavour = currentFlavour;
             if (weaponChange == null)
             {
                 return false;
@@ -610,14 +673,37 @@ namespace Shadowrun.LocalService.Core.Protocols
             var newWeapon = GetDictValue(weaponChange, newWeaponKey);
             var newItemId = GetStringValue(newWeapon, "ItemId");
             var newInvKey = GetInt32Value(newWeapon, "InventoryKey", defaultInventoryKey);
+            var newQuality = GetInt32Value(newWeapon, "Quality", 0);
+            var newFlavour = GetInt32Value(newWeapon, "FlavourIndex", -1);
+            if (newQuality < 0)
+            {
+                newQuality = 0;
+            }
+            if (newQuality > byte.MaxValue)
+            {
+                newQuality = byte.MaxValue;
+            }
+            if (newFlavour < short.MinValue)
+            {
+                newFlavour = short.MinValue;
+            }
+            if (newFlavour > short.MaxValue)
+            {
+                newFlavour = short.MaxValue;
+            }
             if (IsNullOrWhiteSpace(newItemId)
-                || (string.Equals(currentItemId, newItemId, StringComparison.Ordinal) && currentInventoryKey == newInvKey))
+                || (string.Equals(currentItemId, newItemId, StringComparison.Ordinal)
+                    && currentInventoryKey == newInvKey
+                    && currentQuality == newQuality
+                    && currentFlavour == newFlavour))
             {
                 return false;
             }
 
             updatedItemId = newItemId;
             updatedInventoryKey = newInvKey;
+            updatedQuality = newQuality;
+            updatedFlavour = newFlavour;
             return true;
         }
 
