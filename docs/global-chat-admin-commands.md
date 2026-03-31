@@ -22,6 +22,17 @@ Shows how many missions are currently active.
 Usage:
 /activemissions
 
+### /totalaccounts
+Shows total account count and authentication split.
+
+Usage:
+/totalaccounts
+
+Output:
+- Total accounts
+- Steam-authenticated accounts
+- Non-Steam accounts
+
 ### /onlineplayers
 Shows the number of currently logged-in players.
 

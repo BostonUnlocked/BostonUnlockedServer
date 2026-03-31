@@ -1519,6 +1519,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             RegisterChatCommand(map, new SetAccountNameCommand());
             RegisterChatCommand(map, new AnnounceChatCommand());
             RegisterChatCommand(map, new ActiveMissionsChatCommand());
+            RegisterChatCommand(map, new TotalAccountsChatCommand());
             RegisterChatCommand(map, new OnlinePlayersChatCommand());
             RegisterChatCommand(map, new ListPlayersChatCommand());
             RegisterChatCommand(map, new SetAvailableMissionCommand());
@@ -2952,6 +2953,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                         "/setaccountname {name}",
                         "/announce {message}",
                         "/activemissions",
+                        "/totalaccounts",
                         "/onlineplayers",
                         "/listplayers",
                         "/setavailablemission {MissionId} [Available]",
@@ -3146,6 +3148,47 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                 var count = owner._chatAndFriends.GetOnlineAccountCount();
                 return ChatCommandResult.Ok("Players currently logged in: " + count.ToString());
+            }
+        }
+
+        private sealed class TotalAccountsChatCommand : IChatCommand
+        {
+            public string Name { get { return "totalaccounts"; } }
+            public bool RequiresAdmin { get { return true; } }
+
+            public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
+            {
+                if (owner == null)
+                {
+                    return ChatCommandResult.Fail("Invalid command context.");
+                }
+
+                if (args != null && args.Length > 0)
+                {
+                    return ChatCommandResult.Fail("Usage: /totalaccounts");
+                }
+
+                if (owner._userStore == null)
+                {
+                    return ChatCommandResult.Fail("Account store is unavailable.");
+                }
+
+                int totalAccounts;
+                int steamAccounts;
+                int nonSteamAccounts;
+                if (!owner._userStore.TryGetAccountAuthenticationStats(out totalAccounts, out steamAccounts, out nonSteamAccounts))
+                {
+                    return ChatCommandResult.Fail("Unable to load account totals.");
+                }
+
+                return ChatCommandResult.Ok(
+                    "Accounts total: "
+                    + totalAccounts.ToString()
+                    + " (Steam: "
+                    + steamAccounts.ToString()
+                    + ", Non-Steam: "
+                    + nonSteamAccounts.ToString()
+                    + ")");
             }
         }
 

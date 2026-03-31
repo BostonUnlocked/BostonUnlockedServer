@@ -1097,6 +1097,62 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        public bool TryGetAccountAuthenticationStats(out int totalAccounts, out int steamAccounts, out int nonSteamAccounts)
+        {
+            totalAccounts = 0;
+            steamAccounts = 0;
+            nonSteamAccounts = 0;
+
+            if (!IsEnabled)
+            {
+                return false;
+            }
+
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                using (var connection = OpenConnection())
+                {
+                    totalAccounts = ExecuteScalarInt(connection, null, "SELECT COUNT(*) FROM accounts;");
+                    steamAccounts = ExecuteScalarInt(
+                        connection,
+                        null,
+                        "SELECT COUNT(*) FROM (" +
+                        "SELECT DISTINCT s.identity_hash " +
+                        "FROM steam_identities s " +
+                        "INNER JOIN accounts a ON a.identity_hash = s.identity_hash);");
+                }
+
+                if (steamAccounts < 0)
+                {
+                    steamAccounts = 0;
+                }
+
+                if (steamAccounts > totalAccounts)
+                {
+                    steamAccounts = totalAccounts;
+                }
+
+                nonSteamAccounts = totalAccounts - steamAccounts;
+
+                LogOperation("account-auth-stats", sw, new
+                {
+                    total = totalAccounts,
+                    steam = steamAccounts,
+                    nonSteam = nonSteamAccounts,
+                });
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogFailure("account-auth-stats-failed", sw, ex, null);
+                totalAccounts = 0;
+                steamAccounts = 0;
+                nonSteamAccounts = 0;
+                return false;
+            }
+        }
+
         private void EnsureBootstrapped(bool migrateJsonToSqlite)
         {
             if (!IsEnabled || IsNullOrWhiteSpace(_databasePath))
