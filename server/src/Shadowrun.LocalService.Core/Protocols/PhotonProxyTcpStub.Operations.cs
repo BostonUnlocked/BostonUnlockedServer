@@ -7,8 +7,10 @@ using System.Net.Sockets;
 using System.Text;
 using System.Web.Script.Serialization;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay;
+using Cliffhanger.SRO.ServerClientCommons.Metagameplay.Changes;
 using PhotonProxy.ChatAndFriends.Client.DTOs;
 using PhotonProxy.Common.ServiceCommunication;
+using Shadowrun.LocalService.Core.Metagameplay;
 using Shadowrun.LocalService.Core.Persistence;
 
 namespace Shadowrun.LocalService.Core.Protocols
@@ -1527,11 +1529,13 @@ namespace Shadowrun.LocalService.Core.Protocols
             RegisterChatCommand(map, new GetBalanceCommand("getnuyen", false, ChatCommandTargetMode.Self));
             RegisterChatCommand(map, new SetBalanceCommand("setkarma", true, ChatCommandTargetMode.Self));
             RegisterChatCommand(map, new SetBalanceCommand("setnuyen", false, ChatCommandTargetMode.Self));
+            RegisterChatCommand(map, new ResetSkillsCommand("resetskills", ChatCommandTargetMode.Self));
             RegisterChatCommand(map, new AddItemCommand("additem", ChatCommandTargetMode.Self));
             RegisterChatCommand(map, new GetBalanceCommand("othergetkarma", true, ChatCommandTargetMode.OtherByAccountId));
             RegisterChatCommand(map, new GetBalanceCommand("othergetnuyen", false, ChatCommandTargetMode.OtherByAccountId));
             RegisterChatCommand(map, new SetBalanceCommand("othersetkarma", true, ChatCommandTargetMode.OtherByAccountId));
             RegisterChatCommand(map, new SetBalanceCommand("othersetnuyen", false, ChatCommandTargetMode.OtherByAccountId));
+            RegisterChatCommand(map, new ResetSkillsCommand("otherresetskills", ChatCommandTargetMode.OtherByAccountId));
             RegisterChatCommand(map, new AddItemCommand("otheradditem", ChatCommandTargetMode.OtherByAccountId));
             return map;
         }
@@ -2539,6 +2543,47 @@ namespace Shadowrun.LocalService.Core.Protocols
             return true;
         }
 
+        private bool TryResetSkillsForTarget(ChatCommandTarget target, out int refundedKarma, out string message)
+        {
+            refundedKarma = 0;
+            message = "Unable to resolve active character.";
+
+            if (target == null || target.ActiveCareerSlot == null || _userStore == null || IsNullOrEmpty(target.IdentityHash))
+            {
+                return false;
+            }
+
+            var purchaseService = new PortedSkillPurchaseService(_options);
+            var requestedChanges = new SkillTreeChanges
+            {
+                ApplyReset = true,
+                Purchases = new SkillPurchase[0],
+            };
+
+            var result = purchaseService.Apply(target.ActiveCareerSlot, requestedChanges);
+            if (result == null)
+            {
+                message = "Unable to reset skill tree.";
+                return false;
+            }
+
+            refundedKarma = result.KarmaRefunded;
+            _userStore.UpsertCareer(target.IdentityHash, target.ActiveCareerSlot);
+
+            if (_characterStatePushBroker != null)
+            {
+                _characterStatePushBroker.Enqueue(
+                    target.AccountId,
+                    CharacterStatePushPaths.Wallet | CharacterStatePushPaths.MetaSnapshot | CharacterStatePushPaths.CareerSummaries);
+            }
+
+            message = "Reset skills for " + FormatChatCommandTarget(target)
+                + ", career slot " + target.ActiveCareerIndex.ToString()
+                + ". Refunded karma: " + refundedKarma.ToString()
+                + ". Spent karma is now 0.";
+            return true;
+        }
+
         private ChatCommandPlayerSummary[] BuildConnectedPlayerSummaries(Guid requesterAccountId)
         {
             if (_chatAndFriends == null)
@@ -2961,11 +3006,13 @@ namespace Shadowrun.LocalService.Core.Protocols
                         "/getnuyen",
                         "/setkarma {X}",
                         "/setnuyen {X}",
+                        "/resetskills",
                         "/additem {ItemCode} [Variant]",
                         "/othergetkarma {AccountId}",
                         "/othergetnuyen {AccountId}",
                         "/othersetkarma {AccountId} {X}",
                         "/othersetnuyen {AccountId} {X}",
+                        "/otherresetskills {AccountId}",
                         "/otheradditem {AccountId} {ItemCode} [Variant]",
                     };
                     return ChatCommandResult.OkMany(BuildPagedFeedbackMessages("Admin commands:", lines));
@@ -3556,6 +3603,82 @@ namespace Shadowrun.LocalService.Core.Protocols
                         itemCode = itemCode,
                         variant = appliedVariant,
                         quality = quality,
+                        success = success,
+                    });
+                }
+
+                return success ? ChatCommandResult.Ok(message) : ChatCommandResult.Fail(message);
+            }
+        }
+
+        private sealed class ResetSkillsCommand : IChatCommand
+        {
+            private readonly string _name;
+            private readonly ChatCommandTargetMode _targetMode;
+
+            public ResetSkillsCommand(string name, ChatCommandTargetMode targetMode)
+            {
+                _name = name;
+                _targetMode = targetMode;
+            }
+
+            public string Name { get { return _name; } }
+            public bool RequiresAdmin { get { return true; } }
+
+            public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
+            {
+                if (owner == null || context == null)
+                {
+                    return ChatCommandResult.Fail("Invalid command context.");
+                }
+
+                if (_targetMode == ChatCommandTargetMode.Self)
+                {
+                    if (args != null && args.Length != 0)
+                    {
+                        return ChatCommandResult.Fail("Usage: /" + _name);
+                    }
+                }
+                else if (args == null || args.Length != 1)
+                {
+                    return ChatCommandResult.Fail("Usage: /" + _name + " {AccountId}");
+                }
+
+                ChatCommandTarget target;
+                string error;
+                if (_targetMode == ChatCommandTargetMode.Self)
+                {
+                    if (!owner.TryResolveSenderCommandTarget(context, out target, out error))
+                    {
+                        return ChatCommandResult.Fail(error);
+                    }
+                }
+                else if (!owner.TryResolveConnectedCommandTarget(args[0], out target, out error))
+                {
+                    return ChatCommandResult.Fail(error);
+                }
+
+                int refundedKarma;
+                string message;
+                var success = owner.TryResetSkillsForTarget(target, out refundedKarma, out message);
+                if (_targetMode == ChatCommandTargetMode.OtherByAccountId)
+                {
+                    owner.LogAdminEvent(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "chat-command",
+                        action = "target-skills-reset",
+                        command = _name,
+                        senderAccountId = context.SenderAccountId,
+                        senderIdentity = context.SenderIdentityHash ?? string.Empty,
+                        senderCareerIndex = context.ActiveCareerIndex,
+                        targetAccountId = target != null && target.AccountId != Guid.Empty ? target.AccountId.ToString("D") : string.Empty,
+                        targetIdentityHash = target != null ? (target.IdentityHash ?? string.Empty) : string.Empty,
+                        targetCareerIndex = target != null ? target.ActiveCareerIndex : 0,
+                        targetCharacterId = target != null ? (target.CharacterId ?? string.Empty) : string.Empty,
+                        targetCharacterName = target != null ? (target.CharacterName ?? string.Empty) : string.Empty,
+                        targetHubId = target != null ? (target.HubId ?? string.Empty) : string.Empty,
+                        refundedKarma = refundedKarma,
                         success = success,
                     });
                 }
