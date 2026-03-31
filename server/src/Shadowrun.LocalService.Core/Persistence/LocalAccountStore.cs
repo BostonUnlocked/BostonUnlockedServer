@@ -366,6 +366,65 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        public bool TryGetAccountAuthenticationStats(out int totalAccounts, out int steamAccounts, out int nonSteamAccounts)
+        {
+            totalAccounts = 0;
+            steamAccounts = 0;
+            nonSteamAccounts = 0;
+
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.TryGetAccountAuthenticationStats(out totalAccounts, out steamAccounts, out nonSteamAccounts);
+            }
+
+            lock (_syncRoot)
+            {
+                var store = LoadAccountStoreNoThrow(true);
+                var accounts = GetOrCreateDict(store, AccountStoreAccountsKey);
+                var steamIdentities = GetDict(store, AccountStoreSteamIdentitiesKey);
+
+                var knownAccountIdentities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (DictionaryEntry entry in accounts)
+                {
+                    var identityHash = entry.Key as string;
+                    if (IsGuidish(identityHash))
+                    {
+                        knownAccountIdentities.Add(NormalizeGuidish(identityHash));
+                    }
+                }
+
+                totalAccounts = knownAccountIdentities.Count;
+
+                var steamAccountIdentities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (steamIdentities != null)
+                {
+                    foreach (DictionaryEntry entry in steamIdentities)
+                    {
+                        var identityHash = entry.Value as string;
+                        if (!IsGuidish(identityHash))
+                        {
+                            continue;
+                        }
+
+                        var normalized = NormalizeGuidish(identityHash);
+                        if (knownAccountIdentities.Contains(normalized))
+                        {
+                            steamAccountIdentities.Add(normalized);
+                        }
+                    }
+                }
+
+                steamAccounts = steamAccountIdentities.Count;
+                if (steamAccounts > totalAccounts)
+                {
+                    steamAccounts = totalAccounts;
+                }
+
+                nonSteamAccounts = totalAccounts - steamAccounts;
+                return true;
+            }
+        }
+
         public string GetDisplayName(string identityHash)
         {
             if (_sqliteStore != null && _sqliteStore.IsEnabled)

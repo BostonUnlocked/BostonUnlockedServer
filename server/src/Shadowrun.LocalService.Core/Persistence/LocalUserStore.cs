@@ -119,6 +119,20 @@ namespace Shadowrun.LocalService.Core.Persistence
             return _accountStore.TryAuthenticateCliffhangerCredentials(email, password, out identityHash, out isVerified, out message);
         }
 
+        public bool TryGetAccountAuthenticationStats(out int totalAccounts, out int steamAccounts, out int nonSteamAccounts)
+        {
+            totalAccounts = 0;
+            steamAccounts = 0;
+            nonSteamAccounts = 0;
+
+            if (_accountStore == null)
+            {
+                return false;
+            }
+
+            return _accountStore.TryGetAccountAuthenticationStats(out totalAccounts, out steamAccounts, out nonSteamAccounts);
+        }
+
         private static string NormalizeCredentialEmail(string email)
         {
             if (IsNullOrWhiteSpace(email))
