@@ -10,10 +10,13 @@ Data source:
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+
+import UnityPy
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC_DATA = ROOT / "server" / "static-data"
@@ -28,6 +31,11 @@ WEAPONS_DOC = DOCS_DIR / "items_weapons_reference.md"
 CYBERWARE_DOC = DOCS_DIR / "items_cyberware_reference.md"
 ARMOR_DOC = DOCS_DIR / "items_armor_reference.md"
 TACTICAL_DOC = DOCS_DIR / "items_tactical_reference.md"
+ICON_OUTPUT_DIR = DOCS_DIR / "assets" / "item-icons"
+LOCALIZATION_CANDIDATES = [
+    ROOT / "server" / "src" / "Shadowrun.LocalService.Host" / "bin" / "Debug" / "Resources" / "StreamingAssets" / "localization" / "English.csv",
+    ROOT / "server" / "StreamingAssets" / "localization" / "English.csv",
+]
 
 CYBERWARE_ITEM_TYPES = {
     196826: "Legs",
@@ -38,6 +46,120 @@ CYBERWARE_ITEM_TYPES = {
 
 ARMOR_ITEM_TYPE = 196821
 CONSUMABLE_ITEM_TYPE = 196820
+
+
+def icon_basename(icon_path: str | None) -> str:
+    if not icon_path:
+        return ""
+    clean = icon_path.replace("\\", "/")
+    base = clean.rsplit("/", 1)[-1]
+    if "." in base:
+        base = base.rsplit(".", 1)[0]
+    return base
+
+
+def icon_markdown(icon_path: str | None, icon_relpath_by_name: dict[str, str]) -> str:
+    name = icon_basename(icon_path)
+    relpath = icon_relpath_by_name.get(name)
+    if not relpath:
+        return ""
+    return f"![{name}]({relpath})"
+
+
+def detect_localization_csv() -> Path | None:
+    for candidate in LOCALIZATION_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def load_localization_map() -> dict[str, str]:
+    csv_path = detect_localization_csv()
+    if csv_path is None:
+        print("[loca] skipped: English.csv not found")
+        return {}
+
+    lookup: dict[str, str] = {}
+    lines = csv_path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    for line in lines:
+        if ";" not in line:
+            continue
+        key, value = line.split(";", 1)
+        if key == "id" and value == "text":
+            continue
+        lookup[key] = value
+
+    print(f"[loca] loaded={len(lookup)} from={csv_path}")
+    return lookup
+
+
+def resolve_loca(value: str, loca_map: dict[str, str]) -> str:
+    resolved = loca_map.get(value, value)
+    return resolved.replace("\\n", "<br>")
+
+
+def detect_game_data_dir() -> Path | None:
+    env_candidates = []
+    if os.environ.get("SRO_GAME_DATA"):
+        env_candidates.append(Path(os.environ["SRO_GAME_DATA"]))
+    if os.environ.get("SRO_GAME_ROOT"):
+        env_candidates.append(Path(os.environ["SRO_GAME_ROOT"]) / "Shadowrun_Data")
+    if os.environ.get("SHADOWRUN_GAME_ROOT"):
+        env_candidates.append(Path(os.environ["SHADOWRUN_GAME_ROOT"]) / "Shadowrun_Data")
+
+    default_candidates = [
+        Path(r"d:/SteamLibrary/steamapps/common/ShadowrunChronicles/Shadowrun_Data"),
+        Path(r"d:/ShadowrunLegacy/Shadowrun_Data"),
+    ]
+
+    for candidate in env_candidates + default_candidates:
+        if (candidate / "resources.assets").exists():
+            return candidate
+    return None
+
+
+def export_icon_images(icon_paths: list[str]) -> dict[str, str]:
+    names = {icon_basename(path) for path in icon_paths if icon_basename(path)}
+    if not names:
+        return {}
+
+    game_data_dir = detect_game_data_dir()
+    if game_data_dir is None:
+        print("[icons] skipped: no game data directory found (resources.assets not found)")
+        return {}
+
+    asset_paths = [game_data_dir / "resources.assets", *sorted(game_data_dir.glob("sharedassets*.assets"))]
+    asset_paths = [path for path in asset_paths if path.exists()]
+    if not asset_paths:
+        print("[icons] skipped: no asset files found")
+        return {}
+
+    ICON_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    env = UnityPy.load(*[str(path) for path in asset_paths])
+
+    exported: dict[str, str] = {}
+    for obj in env.objects:
+        if obj.type.name != "Texture2D":
+            continue
+
+        try:
+            data = obj.read()
+            texture_name = getattr(data, "m_Name", "")
+            if texture_name not in names or texture_name in exported:
+                continue
+
+            image = getattr(data, "image", None)
+            if image is None:
+                continue
+
+            out_path = ICON_OUTPUT_DIR / f"{texture_name}.png"
+            image.save(out_path)
+            exported[texture_name] = f"assets/item-icons/{out_path.name}"
+        except Exception:
+            continue
+
+    print(f"[icons] exported={len(exported)} requested={len(names)} from={game_data_dir}")
+    return exported
 
 
 def load_json(path: Path) -> Any:
@@ -81,12 +203,15 @@ def item_type_from_id(item_id: str) -> str:
 
 
 def table(headers: list[str], rows: list[list[str]]) -> str:
+    def sanitize(cell: str) -> str:
+        return str(cell).replace("|", "\\|").replace("\n", "<br>")
+
     lines = [
-        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(sanitize(h) for h in headers) + " |",
         "| " + " | ".join(["---"] * len(headers)) + " |",
     ]
     for row in rows:
-        lines.append("| " + " | ".join(row) + " |")
+        lines.append("| " + " | ".join(sanitize(c) for c in row) + " |")
     return "\n".join(lines)
 
 
@@ -106,6 +231,17 @@ def collect_status_values(status_modifiers: list[dict[str, Any]] | None) -> dict
     for mod in status_modifiers or []:
         out[int(mod["ID"])] = mod.get("Modifier", 0)
     return out
+
+
+def weapon_icon_path(item: dict[str, Any], weapon_data_map: dict[str, dict[str, Any]]) -> str:
+    item_icon = item.get("Icon") or ""
+    if item_icon:
+        return item_icon
+
+    weapon_ref = str(item.get("MissionWeaponReference", ""))
+    weapon_data = weapon_data_map.get(weapon_ref, {})
+    visual = weapon_data.get("WeaponData") or {}
+    return (visual.get("SmallIcon") or visual.get("Icon") or "")
 
 
 def _walk(obj: Any):
@@ -205,6 +341,8 @@ def build_weapons_doc(
     ids_map: dict[str, str],
     weapon_item_defs: list[dict[str, Any]],
     weapon_data_map: dict[str, dict[str, Any]],
+    icon_relpath_by_name: dict[str, str],
+    loca_map: dict[str, str],
 ) -> str:
     by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
@@ -217,9 +355,10 @@ def build_weapons_doc(
         by_type[item_type_from_id(item_id)].append(
             {
                 "tier": infer_tier(item_id),
-                "name": item.get("Name") or "",
+                "name": resolve_loca(item.get("Name") or "", loca_map),
                 "id": item_id,
                 "stats": stats,
+                "icon": weapon_icon_path(item, weapon_data_map),
             }
         )
 
@@ -234,13 +373,14 @@ def build_weapons_doc(
         entries = by_type[weapon_type]
         stat_ids = sorted({sid for entry in entries for sid in entry["stats"].keys()})
 
-        headers = ["Tier", "Name", "Id"] + [short_stat_name(ids_map, sid) for sid in stat_ids]
+        headers = ["IconImage", "Tier", "Name", "Id"] + [short_stat_name(ids_map, sid) for sid in stat_ids]
         rows: list[list[str]] = []
 
         entries.sort(key=lambda x: (x["tier"] is None, x["tier"] if x["tier"] is not None else 999, x["name"], x["id"]))
 
         for entry in entries:
             row = [
+                icon_markdown(entry["icon"], icon_relpath_by_name),
                 "" if entry["tier"] is None else str(entry["tier"]),
                 fmt_value(entry["name"]),
                 entry["id"],
@@ -267,7 +407,12 @@ def stat_columns_for_items(items: list[dict[str, Any]]) -> list[int]:
     return non_zero_stats
 
 
-def build_cyberware_doc(ids_map: dict[str, str], equipment_defs: list[dict[str, Any]]) -> str:
+def build_cyberware_doc(
+    ids_map: dict[str, str],
+    equipment_defs: list[dict[str, Any]],
+    icon_relpath_by_name: dict[str, str],
+    loca_map: dict[str, str],
+) -> str:
     lines = [
         "# Cyberware Reference",
         "",
@@ -284,20 +429,22 @@ def build_cyberware_doc(ids_map: dict[str, str], equipment_defs: list[dict[str, 
             entries.append(
                 {
                     "tier": infer_tier(item_id),
-                    "name": item.get("Name") or "",
+                    "name": resolve_loca(item.get("Name") or "", loca_map),
                     "id": item_id,
                     "stats": collect_status_values(item.get("StatusValueModifiers")),
+                    "icon": item.get("Icon") or "",
                 }
             )
 
         entries.sort(key=lambda x: (x["tier"] is None, x["tier"] if x["tier"] is not None else 999, x["name"], x["id"]))
         stat_ids = stat_columns_for_items(entries)
 
-        headers = ["Tier", "Name", "Id"] + [short_stat_name(ids_map, sid) for sid in stat_ids]
+        headers = ["IconImage", "Tier", "Name", "Id"] + [short_stat_name(ids_map, sid) for sid in stat_ids]
         rows: list[list[str]] = []
 
         for entry in entries:
             row = [
+                icon_markdown(entry["icon"], icon_relpath_by_name),
                 "" if entry["tier"] is None else str(entry["tier"]),
                 entry["name"],
                 entry["id"],
@@ -315,7 +462,12 @@ def build_cyberware_doc(ids_map: dict[str, str], equipment_defs: list[dict[str, 
     return "\n".join(lines).rstrip() + "\n"
 
 
-def build_armor_doc(ids_map: dict[str, str], equipment_defs: list[dict[str, Any]]) -> str:
+def build_armor_doc(
+    ids_map: dict[str, str],
+    equipment_defs: list[dict[str, Any]],
+    icon_relpath_by_name: dict[str, str],
+    loca_map: dict[str, str],
+) -> str:
     entries: list[dict[str, Any]] = []
     for item in equipment_defs:
         if int(item.get("ItemTypeId", -1)) != ARMOR_ITEM_TYPE:
@@ -324,19 +476,21 @@ def build_armor_doc(ids_map: dict[str, str], equipment_defs: list[dict[str, Any]
         entries.append(
             {
                 "tier": infer_tier(item_id),
-                "name": item.get("Name") or "",
+                "name": resolve_loca(item.get("Name") or "", loca_map),
                 "id": item_id,
                 "stats": collect_status_values(item.get("StatusValueModifiers")),
+                "icon": item.get("Icon") or "",
             }
         )
 
     entries.sort(key=lambda x: (x["tier"] is None, x["tier"] if x["tier"] is not None else 999, x["name"], x["id"]))
     stat_ids = stat_columns_for_items(entries)
 
-    headers = ["Tier", "Name", "Id"] + [short_stat_name(ids_map, sid) for sid in stat_ids]
+    headers = ["IconImage", "Tier", "Name", "Id"] + [short_stat_name(ids_map, sid) for sid in stat_ids]
     rows: list[list[str]] = []
     for entry in entries:
         row = [
+            icon_markdown(entry["icon"], icon_relpath_by_name),
             "" if entry["tier"] is None else str(entry["tier"]),
             entry["name"],
             entry["id"],
@@ -433,6 +587,8 @@ def build_tactical_doc(
     ids_map: dict[str, str],
     consumable_defs: list[dict[str, Any]],
     activities: dict[str, dict[str, Any]],
+    icon_relpath_by_name: dict[str, str],
+    loca_map: dict[str, str],
 ) -> str:
     entries = []
     for item in consumable_defs:
@@ -443,8 +599,8 @@ def build_tactical_doc(
             {
                 "tier": infer_tier(item_id),
                 "id": item_id,
-                "name": item.get("Name") or "",
-                "description": item.get("Description") or "",
+                "name": resolve_loca(item.get("Name") or "", loca_map),
+                "description": resolve_loca(item.get("Description") or "", loca_map),
                 "skill_id": skill_id,
                 "skill_name": id_label(ids_map, skill_id) if skill_id is not None else "",
                 "sell_price": item.get("SellPrice"),
@@ -496,6 +652,7 @@ def build_tactical_doc(
             current_category = entry["category"]
             lines.extend([f"## {current_category}", ""])
             headers = [
+                "IconImage",
                 "Tier",
                 "Id",
                 "Name",
@@ -505,12 +662,12 @@ def build_tactical_doc(
                 "SkillStats",
                 "SellPrice",
                 "MaxStacksize",
-                "Icon",
             ]
             lines.append("| " + " | ".join(headers) + " |")
             lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
 
         row = [
+            icon_markdown(entry["icon"], icon_relpath_by_name),
             fmt_value(entry["tier"]),
             entry["id"],
             entry["name"],
@@ -520,7 +677,6 @@ def build_tactical_doc(
             skill_stats_line,
             fmt_value(entry["sell_price"]),
             fmt_value(entry["max_stack"]),
-            entry["icon"],
         ]
         lines.append("| " + " | ".join(row) + " |")
 
@@ -544,21 +700,40 @@ def main() -> None:
         if isinstance(c, dict) and "ActivityData" in c.get("TypeName", "")
     )
     activities = activity_component.get("Activities", {})
+    loca_map = load_localization_map()
+
+    all_icon_paths: list[str] = []
+    for item in weapon_item_defs:
+        icon = weapon_icon_path(item, weapon_data_map)
+        if icon:
+            all_icon_paths.append(icon)
+
+    for item in equipment_defs:
+        icon = item.get("Icon") or ""
+        if icon:
+            all_icon_paths.append(icon)
+
+    for item in consumable_defs:
+        icon = item.get("Icon") or ""
+        if icon:
+            all_icon_paths.append(icon)
+
+    icon_relpath_by_name = export_icon_images(all_icon_paths)
 
     WEAPONS_DOC.write_text(
-        build_weapons_doc(ids_map, weapon_item_defs, weapon_data_map),
+        build_weapons_doc(ids_map, weapon_item_defs, weapon_data_map, icon_relpath_by_name, loca_map),
         encoding="utf-8",
     )
     CYBERWARE_DOC.write_text(
-        build_cyberware_doc(ids_map, equipment_defs),
+        build_cyberware_doc(ids_map, equipment_defs, icon_relpath_by_name, loca_map),
         encoding="utf-8",
     )
     ARMOR_DOC.write_text(
-        build_armor_doc(ids_map, equipment_defs),
+        build_armor_doc(ids_map, equipment_defs, icon_relpath_by_name, loca_map),
         encoding="utf-8",
     )
     TACTICAL_DOC.write_text(
-        build_tactical_doc(ids_map, consumable_defs, activities),
+        build_tactical_doc(ids_map, consumable_defs, activities, icon_relpath_by_name, loca_map),
         encoding="utf-8",
     )
 
