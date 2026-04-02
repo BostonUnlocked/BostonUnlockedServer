@@ -31,6 +31,7 @@
 **/*.userosscache
 **/*.sln.docstates
 **/*.sln.cache
+/server/src/.vs/
 
 # .NET / C# build artifacts
 **/bin/
