@@ -30,6 +30,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    environment: CI
 
     steps:
     - uses: actions/checkout@v4
