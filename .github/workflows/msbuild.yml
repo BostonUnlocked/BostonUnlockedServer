@@ -128,5 +128,117 @@ jobs:
       uses: microsoft/setup-msbuild@v1.0.2
 
     - name: Build
-      working-directory: ${{ env.GITHUB_WORKSPACE }}
+      working-directory: ${{ github.workspace }}
       run: msbuild /m /p:Configuration=${{ env.BUILD_CONFIGURATION }} ${{ env.SOLUTION_FILE_PATH }}
+
+    - name: Package server patch artifact
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        $requiredFiles = @(
+          "Shadowrun.LocalService.Core.dll",
+          "Shadowrun.LocalService.Core.pdb",
+          "Shadowrun.LocalService.Host.exe",
+          "Shadowrun.LocalService.Host.pdb"
+        )
+
+        $stageDir = Join-Path $env:GITHUB_WORKSPACE "server-patch"
+        $zipPath = Join-Path $env:GITHUB_WORKSPACE "ServerPatch.zip"
+
+        if (Test-Path -LiteralPath $stageDir) {
+          Remove-Item -LiteralPath $stageDir -Recurse -Force
+        }
+        New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
+
+        foreach ($fileName in $requiredFiles) {
+          $matches = Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE "server/src") -Recurse -File -Filter $fileName |
+            Where-Object { $_.FullName -match "\\bin\\Release\\" }
+
+          if (-not $matches -or $matches.Count -eq 0) {
+            throw "Required build output '$fileName' was not found under bin/Release."
+          }
+
+          $selected = $matches | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          Copy-Item -LiteralPath $selected.FullName -Destination (Join-Path $stageDir $fileName) -Force
+        }
+
+        if (Test-Path -LiteralPath $zipPath) {
+          Remove-Item -LiteralPath $zipPath -Force
+        }
+
+        Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
+
+    - name: Upload server patch artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: server-patch
+        path: ServerPatch.zip
+        if-no-files-found: error
+
+  release:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Download server patch artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: server-patch
+        path: .
+
+    - name: Compute release label
+      id: release-label
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+          const pattern = new RegExp(`^${today}\\.(\\d+)$`);
+
+          const releaseData = await github.paginate(
+            github.rest.repos.listReleases,
+            {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            }
+          );
+
+          const tagData = await github.paginate(
+            github.rest.repos.listTags,
+            {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            }
+          );
+
+          let maxVersion = 0;
+
+          for (const release of releaseData) {
+            const match = release.tag_name.match(pattern);
+            if (match) {
+              maxVersion = Math.max(maxVersion, Number(match[1]));
+            }
+          }
+
+          for (const tag of tagData) {
+            const match = tag.name.match(pattern);
+            if (match) {
+              maxVersion = Math.max(maxVersion, Number(match[1]));
+            }
+          }
+
+          const label = `${today}.${maxVersion + 1}`;
+          core.setOutput("label", label);
+
+    - name: Create GitHub release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.release-label.outputs.label }}
+        name: ${{ steps.release-label.outputs.label }}
+        files: ServerPatch.zip
+        generate_release_notes: true
