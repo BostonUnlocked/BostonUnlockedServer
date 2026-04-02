@@ -797,6 +797,12 @@ namespace Shadowrun.LocalService.Core.Protocols
                 text = trimmed,
             });
 
+            if (state.AccountId != Guid.Empty && IsAccountPendingDisconnect(state.AccountId))
+            {
+                ClearPendingDisconnect(state.AccountId);
+                state.RequestedDisconnect = true;
+            }
+
             return true;
         }
 
@@ -1538,6 +1544,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             RegisterChatCommand(map, new SetBalanceCommand("othersetnuyen", false, ChatCommandTargetMode.OtherByAccountId));
             RegisterChatCommand(map, new ResetSkillsCommand("otherresetskills", ChatCommandTargetMode.OtherByAccountId));
             RegisterChatCommand(map, new AddItemCommand("otheradditem", ChatCommandTargetMode.OtherByAccountId));
+            RegisterChatCommand(map, new DeleteAccountChatCommand());
             return map;
         }
 
@@ -3019,7 +3026,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     return ChatCommandResult.OkMany(BuildPagedFeedbackMessages("Admin commands:", lines));
                 }
 
-                return ChatCommandResult.Ok("Commands: /help, /bug {message}, /setaccountname {name}");
+                return ChatCommandResult.Ok("Commands: /help, /bug {message}, /setaccountname {name}, /deleteaccount");
             }
         }
 
@@ -3693,6 +3700,68 @@ namespace Shadowrun.LocalService.Core.Protocols
             public readonly HashSet<string> ValidItemCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             public readonly Dictionary<string, int> ItemCategoryByCode = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             public readonly Dictionary<int, HashSet<int>> VariantCompatibleCategories = new Dictionary<int, HashSet<int>>();
+        }
+
+        private sealed class DeleteAccountChatCommand : IChatCommand
+        {
+            public string Name { get { return "deleteaccount"; } }
+            public bool RequiresAdmin { get { return false; } }
+
+            public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
+            {
+                if (owner == null || context == null || context.SenderAccountId == Guid.Empty)
+                {
+                    return ChatCommandResult.Fail("Invalid command context.");
+                }
+
+                if (owner.IsChatCommandAuthorized(context.SenderAccountId))
+                {
+                    return ChatCommandResult.Fail("Admin accounts cannot be deleted. Remove admin privileges first before using /deleteaccount.");
+                }
+
+                // No code supplied: begin the deletion flow.
+                if (args == null || args.Length == 0)
+                {
+                    var code = owner.StartAccountDeletion(context.SenderAccountId);
+                    if (code == null)
+                    {
+                        return ChatCommandResult.Fail("Could not start the account deletion process. Please try again.");
+                    }
+
+                    return ChatCommandResult.OkMany(
+                        "You have begun the account deletion process.",
+                        "WARNING: This is a non-reversible action that will permanently delete all of your account data.",
+                        "To continue, run: /deleteaccount " + code,
+                        "This code will expire in 5 minutes. Running /deleteaccount again will generate a new code.");
+                }
+
+                // A code was supplied.
+                if (args.Length != 1)
+                {
+                    return ChatCommandResult.Fail("Usage: /deleteaccount  OR  /deleteaccount {code}");
+                }
+
+                var suppliedCode = args[0];
+
+                // Try to advance from step 1 to step 2.
+                var nextCode = owner.AdvanceAccountDeletion(context.SenderAccountId, suppliedCode);
+                if (nextCode != null)
+                {
+                    return ChatCommandResult.OkMany(
+                        "This is the final confirmation. If you proceed, you will be immediately disconnected and your account will be permanently deleted with no ability to recover it.",
+                        "To confirm deletion, run: /deleteaccount " + nextCode,
+                        "This code will expire in 5 minutes.");
+                }
+
+                // Try to complete the deletion at step 2.
+                var deleted = owner.ConfirmAndExecuteAccountDeletion(context.SenderAccountId, suppliedCode);
+                if (deleted)
+                {
+                    return ChatCommandResult.Ok("Your account has been deleted. You will now be disconnected.");
+                }
+
+                return ChatCommandResult.Fail("Invalid or expired code. Run /deleteaccount to start over.");
+            }
         }
 
         private sealed class MainCampaignStoryline

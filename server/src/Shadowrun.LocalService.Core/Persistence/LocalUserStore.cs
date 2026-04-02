@@ -133,6 +133,30 @@ namespace Shadowrun.LocalService.Core.Persistence
             return _accountStore.TryGetAccountAuthenticationStats(out totalAccounts, out steamAccounts, out nonSteamAccounts);
         }
 
+        public void DeleteAccount(string identityHash)
+        {
+            if (IsNullOrWhiteSpace(identityHash))
+            {
+                return;
+            }
+
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                _sqliteStore.DeleteAccountNoThrow(identityHash);
+                return;
+            }
+
+            if (_accountStore != null)
+            {
+                _accountStore.DeleteAccountNoThrow(identityHash);
+            }
+
+            if (_playerInfoStore != null)
+            {
+                _playerInfoStore.DeleteAccountNoThrow(identityHash);
+            }
+        }
+
         private static string NormalizeCredentialEmail(string email)
         {
             if (IsNullOrWhiteSpace(email))

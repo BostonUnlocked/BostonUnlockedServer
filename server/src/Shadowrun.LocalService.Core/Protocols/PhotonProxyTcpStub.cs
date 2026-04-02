@@ -28,6 +28,10 @@ public sealed partial class PhotonProxyTcpStub
 
     private readonly ClientSerializer _serializer = new ClientSerializer();
 
+    private readonly object _pendingDeletionLock = new object();
+    private readonly Dictionary<Guid, PendingAccountDeletion> _pendingAccountDeletions = new Dictionary<Guid, PendingAccountDeletion>();
+    private readonly HashSet<Guid> _accountsPendingDisconnect = new HashSet<Guid>();
+
     public PhotonProxyTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore)
         : this(options, logger, userStore, null, null, null)
     {
@@ -67,6 +71,182 @@ public sealed partial class PhotonProxyTcpStub
         }
 
         _chatAndFriends.HandleHardOfflineAccount(accountId);
+    }
+
+    private static string GenerateDeletionCode(Random rng)
+    {
+        return rng.Next(1000, 10000).ToString();
+    }
+
+    internal string StartAccountDeletion(Guid accountId)
+    {
+        if (accountId == Guid.Empty)
+        {
+            return null;
+        }
+
+        var rng = new Random();
+        var code = GenerateDeletionCode(rng);
+        var pending = new PendingAccountDeletion
+        {
+            Step = 1,
+            Code = code,
+            ExpiresUtc = DateTime.UtcNow.AddMinutes(5),
+        };
+
+        lock (_pendingDeletionLock)
+        {
+            _pendingAccountDeletions[accountId] = pending;
+        }
+
+        return code;
+    }
+
+    internal string AdvanceAccountDeletion(Guid accountId, string suppliedCode)
+    {
+        if (accountId == Guid.Empty || string.IsNullOrEmpty(suppliedCode))
+        {
+            return null;
+        }
+
+        lock (_pendingDeletionLock)
+        {
+            PendingAccountDeletion pending;
+            if (!_pendingAccountDeletions.TryGetValue(accountId, out pending) || pending == null)
+            {
+                return null;
+            }
+
+            if (DateTime.UtcNow > pending.ExpiresUtc)
+            {
+                _pendingAccountDeletions.Remove(accountId);
+                return null;
+            }
+
+            if (!string.Equals(pending.Code, suppliedCode, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            if (pending.Step != 1)
+            {
+                return null;
+            }
+
+            var rng = new Random();
+            var newCode = GenerateDeletionCode(rng);
+            pending.Step = 2;
+            pending.Code = newCode;
+            pending.ExpiresUtc = DateTime.UtcNow.AddMinutes(5);
+            return newCode;
+        }
+    }
+
+    internal bool ConfirmAndExecuteAccountDeletion(Guid accountId, string suppliedCode)
+    {
+        if (accountId == Guid.Empty || string.IsNullOrEmpty(suppliedCode))
+        {
+            return false;
+        }
+
+        lock (_pendingDeletionLock)
+        {
+            PendingAccountDeletion pending;
+            if (!_pendingAccountDeletions.TryGetValue(accountId, out pending) || pending == null)
+            {
+                return false;
+            }
+
+            if (DateTime.UtcNow > pending.ExpiresUtc)
+            {
+                _pendingAccountDeletions.Remove(accountId);
+                return false;
+            }
+
+            if (!string.Equals(pending.Code, suppliedCode, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (pending.Step != 2)
+            {
+                return false;
+            }
+
+            _pendingAccountDeletions.Remove(accountId);
+        }
+
+        var identityHash = accountId.ToString("D");
+
+        try
+        {
+            if (_userStore != null)
+            {
+                _userStore.DeleteAccount(identityHash);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            if (_friendsStore != null)
+            {
+                _friendsStore.DeleteAccount(accountId);
+            }
+        }
+        catch
+        {
+        }
+
+        lock (_pendingDeletionLock)
+        {
+            _accountsPendingDisconnect.Add(accountId);
+        }
+
+        LogAdminEvent(new
+        {
+            ts = RequestLogger.UtcNowIso(),
+            type = "account-deleted",
+            accountId = accountId,
+            identityHash = identityHash,
+        });
+
+        return true;
+    }
+
+    internal bool IsAccountPendingDisconnect(Guid accountId)
+    {
+        if (accountId == Guid.Empty)
+        {
+            return false;
+        }
+
+        lock (_pendingDeletionLock)
+        {
+            return _accountsPendingDisconnect.Contains(accountId);
+        }
+    }
+
+    internal void ClearPendingDisconnect(Guid accountId)
+    {
+        if (accountId == Guid.Empty)
+        {
+            return;
+        }
+
+        lock (_pendingDeletionLock)
+        {
+            _accountsPendingDisconnect.Remove(accountId);
+        }
+    }
+
+    private sealed class PendingAccountDeletion
+    {
+        public int Step;
+        public string Code;
+        public DateTime ExpiresUtc;
     }
 
     public void Run(ManualResetEvent stopEvent)

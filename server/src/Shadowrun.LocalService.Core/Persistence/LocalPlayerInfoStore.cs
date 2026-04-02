@@ -255,6 +255,43 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        public void DeleteAccountNoThrow(string identityHash)
+        {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                // SQLite deletion is handled by SqliteLocalStore.DeleteAccountNoThrow.
+                return;
+            }
+
+            if (IsNullOrWhiteSpace(identityHash) || !IsGuidish(identityHash))
+            {
+                return;
+            }
+
+            var normalized = NormalizeGuidish(identityHash);
+
+            try
+            {
+                lock (_lock)
+                {
+                    var root = LoadPlayerInfoNoThrow();
+                    if (root == null)
+                    {
+                        return;
+                    }
+
+                    if (root.Contains(normalized))
+                    {
+                        root.Remove(normalized);
+                        SavePlayerInfoNoThrow(root);
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
         private IDictionary LoadPlayerInfoNoThrow()
         {
             try
@@ -351,6 +388,24 @@ namespace Shadowrun.LocalService.Core.Persistence
             catch
             {
                 return value.Trim();
+            }
+        }
+
+        private static bool IsGuidish(string value)
+        {
+            if (IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            try
+            {
+                new Guid(value.Trim());
+                return true;
+            }
+            catch
+            {
+                return false;
             }
         }
 

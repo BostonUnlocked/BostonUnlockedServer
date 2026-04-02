@@ -1097,6 +1097,46 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        public void DeleteAccountNoThrow(string identityHash)
+        {
+            if (!IsEnabled || IsNullOrWhiteSpace(identityHash) || !IsGuidish(identityHash))
+            {
+                return;
+            }
+
+            var normalized = NormalizeGuidish(identityHash);
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                using (var connection = OpenConnection())
+                using (var transaction = connection.BeginTransaction())
+                {
+                    ExecuteNonQuery(connection, transaction,
+                        "DELETE FROM player_info WHERE identity_hash = @identityHash;",
+                        "@identityHash", normalized);
+                    ExecuteNonQuery(connection, transaction,
+                        "DELETE FROM steam_identities WHERE identity_hash = @identityHash;",
+                        "@identityHash", normalized);
+                    ExecuteNonQuery(connection, transaction,
+                        "DELETE FROM credential_identities WHERE identity_hash = @identityHash;",
+                        "@identityHash", normalized);
+                    ExecuteNonQuery(connection, transaction,
+                        "DELETE FROM friends WHERE account_id = @identityHash OR friend_account_id = @identityHash;",
+                        "@identityHash", normalized);
+                    ExecuteNonQuery(connection, transaction,
+                        "DELETE FROM accounts WHERE identity_hash = @identityHash;",
+                        "@identityHash", normalized);
+                    transaction.Commit();
+                }
+
+                LogOperation("account-deleted", sw, new { identityHash = normalized });
+            }
+            catch (Exception ex)
+            {
+                LogFailure("account-delete-failed", sw, ex, new { identityHash = normalized });
+            }
+        }
+
         public bool TryGetAccountAuthenticationStats(out int totalAccounts, out int steamAccounts, out int nonSteamAccounts)
         {
             totalAccounts = 0;

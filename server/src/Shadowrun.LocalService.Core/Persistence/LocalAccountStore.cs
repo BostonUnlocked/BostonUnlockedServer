@@ -425,6 +425,79 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        public void DeleteAccountNoThrow(string identityHash)
+        {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                _sqliteStore.DeleteAccountNoThrow(identityHash);
+                return;
+            }
+
+            if (IsNullOrWhiteSpace(identityHash) || !IsGuidish(identityHash))
+            {
+                return;
+            }
+
+            var normalized = NormalizeGuidish(identityHash);
+
+            try
+            {
+                lock (_syncRoot)
+                {
+                    var store = LoadAccountStoreNoThrow(false);
+
+                    var accounts = GetDict(store, AccountStoreAccountsKey);
+                    if (accounts != null)
+                    {
+                        accounts.Remove(normalized);
+                    }
+
+                    var steamIdentities = GetDict(store, AccountStoreSteamIdentitiesKey);
+                    if (steamIdentities != null)
+                    {
+                        var keysToRemove = new List<string>();
+                        foreach (DictionaryEntry entry in steamIdentities)
+                        {
+                            var mappedIdentity = entry.Value as string;
+                            if (IsGuidish(mappedIdentity) && string.Equals(NormalizeGuidish(mappedIdentity), normalized, StringComparison.OrdinalIgnoreCase))
+                            {
+                                keysToRemove.Add(entry.Key as string);
+                            }
+                        }
+
+                        for (var i = 0; i < keysToRemove.Count; i++)
+                        {
+                            steamIdentities.Remove(keysToRemove[i]);
+                        }
+                    }
+
+                    var credentialIdentities = GetDict(store, AccountStoreCredentialIdentitiesKey);
+                    if (credentialIdentities != null)
+                    {
+                        var keysToRemove = new List<string>();
+                        foreach (DictionaryEntry entry in credentialIdentities)
+                        {
+                            var mappedIdentity = entry.Value as string;
+                            if (IsGuidish(mappedIdentity) && string.Equals(NormalizeGuidish(mappedIdentity), normalized, StringComparison.OrdinalIgnoreCase))
+                            {
+                                keysToRemove.Add(entry.Key as string);
+                            }
+                        }
+
+                        for (var i = 0; i < keysToRemove.Count; i++)
+                        {
+                            credentialIdentities.Remove(keysToRemove[i]);
+                        }
+                    }
+
+                    SaveAccountStoreNoThrow(store);
+                }
+            }
+            catch
+            {
+            }
+        }
+
         public string GetDisplayName(string identityHash)
         {
             if (_sqliteStore != null && _sqliteStore.IsEnabled)

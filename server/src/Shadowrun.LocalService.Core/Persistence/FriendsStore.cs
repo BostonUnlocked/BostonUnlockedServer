@@ -130,6 +130,73 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        public void DeleteAccount(Guid accountId)
+        {
+            if (accountId == Guid.Empty)
+            {
+                return;
+            }
+
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                // SQLite deletion is handled by SqliteLocalStore.DeleteAccountNoThrow which removes all friend edges.
+                return;
+            }
+
+            lock (_lock)
+            {
+                var root = LoadNoThrow();
+                var friends = GetOrCreateDict(root, "Friends");
+
+                var accountKey = NormalizeGuidish(accountId.ToString());
+
+                // Collect keys where this account is the owner (to remove entirely),
+                // and keys where this account appears in the friend list (to update).
+                var keysToRemove = new List<string>();
+                var keysToUpdate = new List<KeyValuePair<string, List<string>>>();
+
+                foreach (var kvp in friends)
+                {
+                    if (string.Equals(kvp.Key, accountKey, StringComparison.OrdinalIgnoreCase))
+                    {
+                        keysToRemove.Add(kvp.Key);
+                        continue;
+                    }
+
+                    var list = ConvertToStringList(kvp.Value);
+                    if (list != null)
+                    {
+                        var hadEntry = false;
+                        for (var i = list.Count - 1; i >= 0; i--)
+                        {
+                            if (string.Equals(NormalizeGuidish(list[i]), accountKey, StringComparison.OrdinalIgnoreCase))
+                            {
+                                list.RemoveAt(i);
+                                hadEntry = true;
+                            }
+                        }
+
+                        if (hadEntry)
+                        {
+                            keysToUpdate.Add(new KeyValuePair<string, List<string>>(kvp.Key, list));
+                        }
+                    }
+                }
+
+                for (var i = 0; i < keysToRemove.Count; i++)
+                {
+                    friends.Remove(keysToRemove[i]);
+                }
+
+                for (var i = 0; i < keysToUpdate.Count; i++)
+                {
+                    friends[keysToUpdate[i].Key] = keysToUpdate[i].Value;
+                }
+
+                SaveNoThrow(root);
+            }
+        }
+
         private static void AddOneWay(Dictionary<string, object> friends, Guid from, Guid to)
         {
             var fromKey = NormalizeGuidish(from.ToString());

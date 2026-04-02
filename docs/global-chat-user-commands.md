@@ -35,6 +35,33 @@ Usage:
 Example:
 /setaccountname NeonRunner
 
+### /deleteaccount
+Permanently deletes your account and all associated data. This is an irreversible operation that requires three-step confirmation with temporary codes.
+
+**This command is not available to admin accounts.** If you are an admin, you must have your admin privileges removed before you can delete your account.
+
+The deletion flow works as follows:
+
+**Step 1** — Start the process:
+```
+/deleteaccount
+```
+The server sends you a 4-digit confirmation code.
+
+**Step 2** — Confirm with the first code:
+```
+/deleteaccount {code}
+```
+The server sends a second 4-digit code and a final warning.
+
+**Step 3** — Final confirmation with the second code:
+```
+/deleteaccount {code}
+```
+Your account data is permanently deleted and you are immediately disconnected.
+
+Each code expires after 5 minutes. Only one active code exists at a time — running `/deleteaccount` at any point restarts the process with a new code.
+
 ## Notes
 
 - Command names are case-insensitive.
