@@ -13,6 +13,7 @@
 
 # Local service state
 /server/data/
+server/src/Shadowrun.LocalService.Supervisor/appsettings.json
 
 # Extracted game resources (do not commit)
 /server/src/Dependencies/*.dll
