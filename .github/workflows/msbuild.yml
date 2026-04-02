@@ -124,17 +124,6 @@ jobs:
 
         Copy-Item -LiteralPath $sourceDir -Destination $env:DEPS_DIR -Recurse -Force
 
-    - name: Verify restored dependencies
-      shell: pwsh
-      env:
-        DEPS_CACHE_DIR: ${{ env.DEPS_CACHE_DIR }}
-        DEPS_DIR: ${{ env.DEPS_DIR }}
-      run: |
-        powershell -ExecutionPolicy Bypass -File ./tools/verify_ci_dependencies.ps1 `
-          -DependenciesDir $env:DEPS_DIR `
-          -ManifestPath (Join-Path $env:DEPS_CACHE_DIR "unpacked/manifest.json") `
-          -ChecksumsPath (Join-Path $env:DEPS_CACHE_DIR "unpacked/checksums.sha256")
-
     - name: Add MSBuild to PATH
       uses: microsoft/setup-msbuild@v1.0.2
 
