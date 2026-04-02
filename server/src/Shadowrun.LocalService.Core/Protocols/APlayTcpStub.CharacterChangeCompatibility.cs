@@ -467,7 +467,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 var newItemId = GetStringValue(newArmor, "ItemId");
                 var newInvKey = GetInt32Value(newArmor, "InventoryKey", 2);
                 var newQuality = GetInt32Value(newArmor, "Quality", 0);
-                var newFlavour = GetInt32Value(newArmor, "FlavourIndex", -1);
+                var newFlavour = GetInt32Value(newArmor, "FlavourIndex", GetInt32Value(newArmor, "Flavour", -1));
                 if (newQuality < 0)
                 {
                     newQuality = 0;
@@ -530,7 +530,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                         var newInvKey = GetInt32Value(newItem, "InventoryKey", -1);
                         var newQuality = GetInt32Value(newItem, "Quality", 0);
-                        var newFlavour = GetInt32Value(newItem, "FlavourIndex", -1);
+                        var newFlavour = GetInt32Value(newItem, "FlavourIndex", GetInt32Value(newItem, "Flavour", -1));
                         if (newQuality < 0)
                         {
                             newQuality = 0;
@@ -674,7 +674,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             var newItemId = GetStringValue(newWeapon, "ItemId");
             var newInvKey = GetInt32Value(newWeapon, "InventoryKey", defaultInventoryKey);
             var newQuality = GetInt32Value(newWeapon, "Quality", 0);
-            var newFlavour = GetInt32Value(newWeapon, "FlavourIndex", -1);
+            var newFlavour = GetInt32Value(newWeapon, "FlavourIndex", GetInt32Value(newWeapon, "Flavour", -1));
             if (newQuality < 0)
             {
                 newQuality = 0;

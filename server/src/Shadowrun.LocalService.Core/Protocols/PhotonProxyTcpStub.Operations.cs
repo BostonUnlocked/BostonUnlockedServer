@@ -1211,6 +1211,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     var itemCategory = 0;
                     if (TryGetIntValue(dict, "ItemCategory", out itemCategory)
                         || TryGetIntValue(dict, "ItemCategoryId", out itemCategory)
+                        || TryGetIntValue(dict, "ItemTypeId", out itemCategory)
                         || TryGetIntValue(dict, "SkillTreeId", out itemCategory))
                     {
                         result.ItemCategoryByCode[idText] = itemCategory;
