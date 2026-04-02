@@ -95,6 +95,7 @@ exit /b 0</PostBuildEvent>
   <ItemGroup>
     <Reference Include="System" />
     <Reference Include="System.Core" />
+    <Reference Include="System.ServiceProcess" />
     <Reference Include="APlayCommon">
       <HintPath>..\Dependencies\APlayCommon.dll</HintPath>
       <SpecificVersion>False</SpecificVersion>

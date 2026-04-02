@@ -1,6 +1,7 @@
 ﻿using System;
 using System.IO;
 using System.Reflection;
+using System.ServiceProcess;
 using System.Threading;
 using Shadowrun.LocalService.Core;
 using Shadowrun.LocalService.Core.Http;
@@ -11,133 +12,56 @@ namespace Shadowrun.LocalService.Host
 {
 	internal static class Program
 	{
+		private const string ServiceFlag = "--service";
+
 		public static int Main(string[] args)
 		{
 			var options = ParseArgs(args);
-			InstallAssemblyResolution(options);
-			try
+			if (ShouldRunAsWindowsService(args))
 			{
-				var asm = typeof(Cliffhanger.SRO.ServerClientCommons.Gameworld.StaticGameData.IStaticData).Assembly;
-				Console.WriteLine("[localservice-cs] ServerClientCommons loaded from: {0}", asm.Location);
-			}
-			catch
-			{
-				// Ignore.
-			}
-			var logger = options.DisableFileLogs
-				? new RequestLogger(null, null, null, options.StructuredLogRotationIntervalMinutes, options.StructuredLogRetentionDays)
-				: new RequestLogger(options.EventsLogPrefix, options.DiagnosticsLogPrefix, options.PlayerBugReportsLogPrefix, options.StructuredLogRotationIntervalMinutes, options.StructuredLogRetentionDays);
-			logger.Reset();
-			logger.Log(new
-			{
-				timestamp = RequestLogger.UtcNowIso(),
-				component = "startup",
-				eventName = "host-start",
-				message = "local service host starting",
-				host = options.Host,
-				port = options.Port,
-				aplayPort = options.APlayPort,
-				photonPort = options.PhotonPort,
-				persistenceBackend = options.UseSqlite ? "Sqlite" : "Json",
-				sqliteDatabasePath = options.UseSqlite ? options.SqliteDatabasePath : null,
-				rotationIntervalMinutes = options.StructuredLogRotationIntervalMinutes,
-				retentionDays = options.StructuredLogRetentionDays,
-				missionSeedMode = options.UseFixedMissionSeeds ? "fixed" : "random",
-				runtime = ".NET Framework 4.8",
-			});
-
-			Console.WriteLine("[localservice-cs] listening on http://{0}:{1}", options.Host, options.Port);
-			Console.WriteLine("[localservice-cs] APlay TCP stub on {0}:{1}", options.Host, options.APlayPort);
-			Console.WriteLine("[localservice-cs] PhotonProxy TCP stub on {0}:{1}", options.Host, options.PhotonPort);
-			if (options.DisableFileLogs)
-			{
-				Console.WriteLine("[localservice-cs] structured logs: (disabled)");
-			}
-			else
-			{
-				Console.WriteLine("[localservice-cs] events log prefix: {0}", options.EventsLogPrefix);
-				Console.WriteLine("[localservice-cs] diagnostics log prefix: {0}", options.DiagnosticsLogPrefix);
-				Console.WriteLine("[localservice-cs] player bug log prefix: {0}", options.PlayerBugReportsLogPrefix);
-				Console.WriteLine("[localservice-cs] log rotation: {0} minutes", options.StructuredLogRotationIntervalMinutes);
-				Console.WriteLine("[localservice-cs] log retention: {0} day(s)", options.StructuredLogRetentionDays);
-			}
-			Console.WriteLine("[localservice-cs] chat admin config: {0}", options.ChatAdminConfigPath);
-			Console.WriteLine("[localservice-cs] mission seed mode: {0}", options.UseFixedMissionSeeds ? "fixed" : "random");
-
-			var stopEvent = new ManualResetEvent(false);
-			Console.CancelKeyPress += delegate (object sender, ConsoleCancelEventArgs eventArgs)
-			{
-				eventArgs.Cancel = true;
-				stopEvent.Set();
-			};
-
-			var userStore = new LocalUserStore(options, logger);
-			userStore.RunDisplayNameFormatMigrationOnStartup();
-			var sessionIdentityMap = new ExpiringSessionIdentityMap();
-			var characterStatePushBroker = new CharacterStatePushBroker();
-			var hubPresenceRegistry = new HubPresenceRegistry();
-			var httpServer = new HttpStubServer(options, logger, userStore, sessionIdentityMap, null);
-			var aplayStub = new APlayTcpStub(options, logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry);
-			var photonStub = new PhotonProxyTcpStub(options, logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry);
-
-			Exception httpError = null;
-			Exception aplayError = null;
-			Exception photonError = null;
-
-			var httpThread = new Thread(delegate ()
-			{
-				try { httpServer.Run(stopEvent); }
-				catch (Exception ex) { httpError = ex; stopEvent.Set(); }
-			});
-
-			var aplayThread = new Thread(delegate ()
-			{
-				try { aplayStub.Run(stopEvent); }
-				catch (Exception ex) { aplayError = ex; stopEvent.Set(); }
-			});
-
-			var photonThread = new Thread(delegate ()
-			{
-				try { photonStub.Run(stopEvent); }
-				catch (Exception ex) { photonError = ex; stopEvent.Set(); }
-			});
-
-			httpThread.IsBackground = true;
-			aplayThread.IsBackground = true;
-			photonThread.IsBackground = true;
-
-			httpThread.Start();
-			aplayThread.Start();
-			photonThread.Start();
-
-			stopEvent.WaitOne();
-
-			// Give threads a moment to unwind after listener.Stop() triggers.
-			httpThread.Join(3000);
-			aplayThread.Join(3000);
-			photonThread.Join(3000);
-
-			var ex0 = httpError ?? aplayError ?? photonError;
-			if (ex0 != null)
-			{
-				logger.Log(new
+				if (Environment.UserInteractive)
 				{
-					timestamp = RequestLogger.UtcNowIso(),
-					component = "fatal",
-					eventName = "service-thread-faulted",
-					level = "error",
-					message = "service thread faulted",
-					error = ex0.Message,
-					errorType = ex0.GetType().FullName,
-				});
-				Console.Error.WriteLine("[localservice-cs] fatal: {0}", ex0.Message);
-				return 1;
+					Console.Error.WriteLine("[localservice-cs] '{0}' can only be used under Service Control Manager.", ServiceFlag);
+					return 2;
+				}
+
+				ServiceBase.Run(new[] { new LocalServiceWindowsService(options) });
+				return 0;
 			}
 
-			return 0;
+			var runtime = new LocalServiceRuntime(options, true);
+			return runtime.RunUntilStoppedByConsole();
 		}
 
-		private static void InstallAssemblyResolution(LocalServiceOptions options)
+		private static bool ShouldRunAsWindowsService(string[] args)
+		{
+			if (HasFlag(args, ServiceFlag))
+			{
+				return true;
+			}
+
+			return !Environment.UserInteractive;
+		}
+
+		private static bool HasFlag(string[] args, string flag)
+		{
+			if (args == null)
+			{
+				return false;
+			}
+
+			for (var i = 0; i < args.Length; i++)
+			{
+				if (string.Equals(args[i], flag, StringComparison.OrdinalIgnoreCase))
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		internal static void InstallAssemblyResolution(LocalServiceOptions options)
 		{
 			// LocalService is a standalone .NET process, not the Unity player.
 			// Ensure we resolve Cliffhanger/SRO dependencies from known locations.
@@ -225,6 +149,10 @@ namespace Shadowrun.LocalService.Host
 			for (var i = 0; i < args.Length; i++)
 			{
 				var arg = args[i] ?? string.Empty;
+				if (string.Equals(arg, ServiceFlag, StringComparison.OrdinalIgnoreCase))
+				{
+					continue;
+				}
 				if (string.Equals(arg, "--no-file-logs", StringComparison.OrdinalIgnoreCase))
 				{
 					noFileLogs = true;
@@ -309,6 +237,268 @@ namespace Shadowrun.LocalService.Host
 				options.SqliteDatabasePath = sqliteDbPath;
 			}
 			return options;
+		}
+	}
+
+	internal sealed class LocalServiceWindowsService : ServiceBase
+	{
+		private readonly LocalServiceOptions _options;
+		private LocalServiceRuntime _runtime;
+		private Thread _watchThread;
+
+		public LocalServiceWindowsService(LocalServiceOptions options)
+		{
+			_options = options;
+			ServiceName = "ShadowrunLocalService";
+			CanStop = true;
+			CanPauseAndContinue = false;
+			AutoLog = false;
+		}
+
+		protected override void OnStart(string[] args)
+		{
+			_runtime = new LocalServiceRuntime(_options, false);
+			_runtime.Start();
+
+			_watchThread = new Thread(delegate ()
+			{
+				var exitCode = _runtime.WaitForStop();
+				if (exitCode != 0)
+				{
+					try
+					{
+						ExitCode = exitCode;
+					}
+					catch
+					{
+					}
+
+					try
+					{
+						Stop();
+					}
+					catch
+					{
+					}
+				}
+			});
+			_watchThread.IsBackground = true;
+			_watchThread.Start();
+		}
+
+		protected override void OnStop()
+		{
+			if (_runtime != null)
+			{
+				_runtime.Stop();
+				_runtime.WaitForStop();
+			}
+		}
+	}
+
+	internal sealed class LocalServiceRuntime
+	{
+		private readonly LocalServiceOptions _options;
+		private readonly bool _writeConsole;
+
+		private RequestLogger _logger;
+		private ManualResetEvent _stopEvent;
+		private Thread _httpThread;
+		private Thread _aplayThread;
+		private Thread _photonThread;
+		private Exception _httpError;
+		private Exception _aplayError;
+		private Exception _photonError;
+		private bool _started;
+
+		public LocalServiceRuntime(LocalServiceOptions options, bool writeConsole)
+		{
+			_options = options;
+			_writeConsole = writeConsole;
+		}
+
+		public int RunUntilStoppedByConsole()
+		{
+			ConsoleCancelEventHandler cancelHandler = delegate (object sender, ConsoleCancelEventArgs eventArgs)
+			{
+				eventArgs.Cancel = true;
+				Stop();
+			};
+
+			Console.CancelKeyPress += cancelHandler;
+			try
+			{
+				Start();
+				return WaitForStop();
+			}
+			finally
+			{
+				Console.CancelKeyPress -= cancelHandler;
+			}
+		}
+
+		public void Start()
+		{
+			if (_started)
+			{
+				return;
+			}
+
+			Program.InstallAssemblyResolution(_options);
+
+			if (_writeConsole)
+			{
+				try
+				{
+					var asm = typeof(Cliffhanger.SRO.ServerClientCommons.Gameworld.StaticGameData.IStaticData).Assembly;
+					Console.WriteLine("[localservice-cs] ServerClientCommons loaded from: {0}", asm.Location);
+				}
+				catch
+				{
+				}
+			}
+
+			_logger = _options.DisableFileLogs
+				? new RequestLogger(null, null, null, _options.StructuredLogRotationIntervalMinutes, _options.StructuredLogRetentionDays)
+				: new RequestLogger(_options.EventsLogPrefix, _options.DiagnosticsLogPrefix, _options.PlayerBugReportsLogPrefix, _options.StructuredLogRotationIntervalMinutes, _options.StructuredLogRetentionDays);
+
+			_logger.Reset();
+			_logger.Log(new
+			{
+				timestamp = RequestLogger.UtcNowIso(),
+				component = "startup",
+				eventName = "host-start",
+				message = "local service host starting",
+				host = _options.Host,
+				port = _options.Port,
+				aplayPort = _options.APlayPort,
+				photonPort = _options.PhotonPort,
+				persistenceBackend = _options.UseSqlite ? "Sqlite" : "Json",
+				sqliteDatabasePath = _options.UseSqlite ? _options.SqliteDatabasePath : null,
+				rotationIntervalMinutes = _options.StructuredLogRotationIntervalMinutes,
+				retentionDays = _options.StructuredLogRetentionDays,
+				missionSeedMode = _options.UseFixedMissionSeeds ? "fixed" : "random",
+				runtime = ".NET Framework 4.8",
+				hostMode = _writeConsole ? "console" : "windows-service",
+			});
+
+			if (_writeConsole)
+			{
+				Console.WriteLine("[localservice-cs] listening on http://{0}:{1}", _options.Host, _options.Port);
+				Console.WriteLine("[localservice-cs] APlay TCP stub on {0}:{1}", _options.Host, _options.APlayPort);
+				Console.WriteLine("[localservice-cs] PhotonProxy TCP stub on {0}:{1}", _options.Host, _options.PhotonPort);
+				if (_options.DisableFileLogs)
+				{
+					Console.WriteLine("[localservice-cs] structured logs: (disabled)");
+				}
+				else
+				{
+					Console.WriteLine("[localservice-cs] events log prefix: {0}", _options.EventsLogPrefix);
+					Console.WriteLine("[localservice-cs] diagnostics log prefix: {0}", _options.DiagnosticsLogPrefix);
+					Console.WriteLine("[localservice-cs] player bug log prefix: {0}", _options.PlayerBugReportsLogPrefix);
+					Console.WriteLine("[localservice-cs] log rotation: {0} minutes", _options.StructuredLogRotationIntervalMinutes);
+					Console.WriteLine("[localservice-cs] log retention: {0} day(s)", _options.StructuredLogRetentionDays);
+				}
+				Console.WriteLine("[localservice-cs] chat admin config: {0}", _options.ChatAdminConfigPath);
+				Console.WriteLine("[localservice-cs] mission seed mode: {0}", _options.UseFixedMissionSeeds ? "fixed" : "random");
+			}
+
+			_stopEvent = new ManualResetEvent(false);
+
+			var userStore = new LocalUserStore(_options, _logger);
+			userStore.RunDisplayNameFormatMigrationOnStartup();
+			var sessionIdentityMap = new ExpiringSessionIdentityMap();
+			var characterStatePushBroker = new CharacterStatePushBroker();
+			var hubPresenceRegistry = new HubPresenceRegistry();
+			var httpServer = new HttpStubServer(_options, _logger, userStore, sessionIdentityMap, null);
+			var aplayStub = new APlayTcpStub(_options, _logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry);
+			var photonStub = new PhotonProxyTcpStub(_options, _logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry);
+
+			_httpThread = new Thread(delegate ()
+			{
+				try { httpServer.Run(_stopEvent); }
+				catch (Exception ex) { _httpError = ex; _stopEvent.Set(); }
+			});
+
+			_aplayThread = new Thread(delegate ()
+			{
+				try { aplayStub.Run(_stopEvent); }
+				catch (Exception ex) { _aplayError = ex; _stopEvent.Set(); }
+			});
+
+			_photonThread = new Thread(delegate ()
+			{
+				try { photonStub.Run(_stopEvent); }
+				catch (Exception ex) { _photonError = ex; _stopEvent.Set(); }
+			});
+
+			_httpThread.IsBackground = true;
+			_aplayThread.IsBackground = true;
+			_photonThread.IsBackground = true;
+
+			_httpThread.Start();
+			_aplayThread.Start();
+			_photonThread.Start();
+
+			_started = true;
+		}
+
+		public void Stop()
+		{
+			if (_stopEvent != null)
+			{
+				_stopEvent.Set();
+			}
+		}
+
+		public int WaitForStop()
+		{
+			if (_stopEvent == null)
+			{
+				return 0;
+			}
+
+			_stopEvent.WaitOne();
+			JoinIfPresent(_httpThread);
+			JoinIfPresent(_aplayThread);
+			JoinIfPresent(_photonThread);
+
+			var ex0 = _httpError ?? _aplayError ?? _photonError;
+			if (ex0 != null)
+			{
+				if (_logger != null)
+				{
+					_logger.Log(new
+					{
+						timestamp = RequestLogger.UtcNowIso(),
+						component = "fatal",
+						eventName = "service-thread-faulted",
+						level = "error",
+						message = "service thread faulted",
+						error = ex0.Message,
+						errorType = ex0.GetType().FullName,
+					});
+				}
+
+				if (_writeConsole)
+				{
+					Console.Error.WriteLine("[localservice-cs] fatal: {0}", ex0.Message);
+				}
+				return 1;
+			}
+
+			return 0;
+		}
+
+		private static void JoinIfPresent(Thread thread)
+		{
+			if (thread == null)
+			{
+				return;
+			}
+
+			// Give listener loops a short window to unwind after stop signal.
+			thread.Join(3000);
 		}
 	}
 
