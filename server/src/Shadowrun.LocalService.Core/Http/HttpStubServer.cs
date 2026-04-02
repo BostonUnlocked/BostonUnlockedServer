@@ -10,6 +10,7 @@ using System.Threading;
 using System.Web.Script.Serialization;
 using System.Globalization;
 using Shadowrun.LocalService.Core.Persistence;
+using Shadowrun.LocalService.Core.Protocols;
 
 namespace Shadowrun.LocalService.Core.Http
 {
@@ -23,6 +24,12 @@ namespace Shadowrun.LocalService.Core.Http
         private readonly ISessionIdentityMap _sessionIdentityMap;
         private readonly IPlayerInfoRepository _playerInfoRepository;
         private readonly LocalUserStore _userStore;
+        private readonly HubPresenceRegistry _hubPresenceRegistry;
+        private readonly object _statusPageCacheLock = new object();
+        private string _cachedStatusPageHtml;
+        private DateTime _cachedStatusPageGeneratedUtc = DateTime.MinValue;
+
+        private static readonly TimeSpan StatusPageCacheDuration = TimeSpan.FromSeconds(10);
 
         public HttpStubServer(LocalServiceOptions options, RequestLogger logger)
             : this(options, logger, new LocalUserStore(options, logger))
@@ -30,7 +37,7 @@ namespace Shadowrun.LocalService.Core.Http
         }
 
         public HttpStubServer(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore)
-            : this(options, logger, userStore, new ExpiringSessionIdentityMap(), new LocalUserStorePlayerInfoRepository(userStore))
+            : this(options, logger, userStore, new ExpiringSessionIdentityMap(), new LocalUserStorePlayerInfoRepository(userStore), null)
         {
         }
 
@@ -40,11 +47,23 @@ namespace Shadowrun.LocalService.Core.Http
             LocalUserStore userStore,
             ISessionIdentityMap sessionIdentityMap,
             IPlayerInfoRepository playerInfoRepository)
+            : this(options, logger, userStore, sessionIdentityMap, playerInfoRepository, null)
+        {
+        }
+
+        public HttpStubServer(
+            LocalServiceOptions options,
+            RequestLogger logger,
+            LocalUserStore userStore,
+            ISessionIdentityMap sessionIdentityMap,
+            IPlayerInfoRepository playerInfoRepository,
+            HubPresenceRegistry hubPresenceRegistry)
         {
             _options = options;
             _logger = logger;
             _userStore = userStore ?? new LocalUserStore(options, logger);
             _sessionIdentityMap = sessionIdentityMap ?? new InMemorySessionIdentityMap();
+            _hubPresenceRegistry = hubPresenceRegistry;
 
             // PlayerInfo is useful to persist (character blob, display name, etc.).
             // If a LocalUserStore is present, default to its repository unless overridden.
@@ -311,6 +330,11 @@ namespace Shadowrun.LocalService.Core.Http
                 });
             }
 
+            if (string.Equals(path, "/", StringComparison.Ordinal))
+            {
+                return TextResponse(200, GetCachedServerStatusPageHtml(), "text/html; charset=utf-8");
+            }
+
             return JsonResponse(404, new Dictionary<string, object>
             {
                 { "ok", false },
@@ -483,6 +507,209 @@ namespace Shadowrun.LocalService.Core.Http
                 return null;
             }
             return dict[key] as string;
+        }
+
+        private string BuildServerStatusPageHtml()
+        {
+            var participants = _hubPresenceRegistry != null
+                ? _hubPresenceRegistry.SnapshotParticipants()
+                : new HubPresenceRegistry.Participant[0];
+            var playerEntries = BuildStatusPlayerEntries(participants);
+            var renderedAtUtc = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
+
+            var html = new StringBuilder(2048);
+            html.Append("<!doctype html><html><head><meta charset=\"utf-8\" />");
+            html.Append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />");
+            html.Append("<title>BostonUnlocked Server Status</title>");
+            html.Append("<style>");
+            html.Append("body{margin:0;background:#0f1419;color:#d9e1ea;font-family:Segoe UI,Arial,sans-serif;}");
+            html.Append(".wrap{max-width:760px;margin:32px auto;padding:0 16px;}");
+            html.Append(".card{background:#171d24;border:1px solid #2b3642;border-radius:10px;padding:16px 18px;box-shadow:0 8px 28px rgba(0,0,0,0.35);}");
+            html.Append("h1{margin:0 0 4px 0;font-size:20px;font-weight:600;color:#eff5fb;}");
+            html.Append(".muted{color:#8ea0b2;font-size:13px;}");
+            html.Append(".row{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0 12px 0;}");
+            html.Append(".pill{background:#1f2833;border:1px solid #304052;border-radius:999px;padding:7px 11px;font-size:13px;}");
+            html.Append(".ok{color:#7ee787;border-color:#2f6d4f;background:#133124;}");
+            html.Append("ul{margin:10px 0 0 18px;padding:0;}");
+            html.Append("li{margin:5px 0;}");
+            html.Append("a{color:#8dc7ff;text-decoration:none;}a:hover{text-decoration:underline;}");
+            html.Append("</style></head><body><div class=\"wrap\"><div class=\"card\">");
+            html.Append("<h1>BostonUnlocked Server Status</h1>");
+            html.Append("<div class=\"row\">");
+            html.Append("<div class=\"pill ok\">Status: Online</div>");
+            html.Append("<div class=\"pill\">Current players: ");
+            html.Append(playerEntries.Count.ToString(CultureInfo.InvariantCulture));
+            html.Append("</div></div>");
+            html.Append("<div><strong>Logged-in players</strong></div>");
+
+            if (playerEntries.Count == 0)
+            {
+                html.Append("<div class=\"muted\" style=\"margin-top:8px;\">No players currently logged in.</div>");
+            }
+            else
+            {
+                html.Append("<ul>");
+                for (var i = 0; i < playerEntries.Count; i++)
+                {
+                    html.Append("<li>");
+                    html.Append(HtmlEncode(playerEntries[i]));
+                    html.Append("</li>");
+                }
+                html.Append("</ul>");
+            }
+
+            html.Append("<div class=\"muted\" style=\"margin-top:14px;\">Rendered: ");
+            html.Append(HtmlEncode(renderedAtUtc));
+            html.Append(" | Refresh the page to update values.</div>");
+            html.Append("</div></div></body></html>");
+            return html.ToString();
+        }
+
+        private string GetCachedServerStatusPageHtml()
+        {
+            var now = DateTime.UtcNow;
+            var age = now - _cachedStatusPageGeneratedUtc;
+            if (_cachedStatusPageHtml != null && age < StatusPageCacheDuration)
+            {
+                return _cachedStatusPageHtml;
+            }
+
+            lock (_statusPageCacheLock)
+            {
+                now = DateTime.UtcNow;
+                age = now - _cachedStatusPageGeneratedUtc;
+                if (_cachedStatusPageHtml != null && age < StatusPageCacheDuration)
+                {
+                    return _cachedStatusPageHtml;
+                }
+
+                _cachedStatusPageHtml = BuildServerStatusPageHtml();
+                _cachedStatusPageGeneratedUtc = now;
+                return _cachedStatusPageHtml;
+            }
+        }
+
+        private List<string> BuildStatusPlayerEntries(HubPresenceRegistry.Participant[] participants)
+        {
+            if (participants == null || participants.Length == 0)
+            {
+                return new List<string>();
+            }
+
+            var byAccount = new Dictionary<Guid, HubPresenceRegistry.Participant>();
+            var byPeer = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var looseParticipants = new List<HubPresenceRegistry.Participant>();
+
+            for (var i = 0; i < participants.Length; i++)
+            {
+                var participant = participants[i];
+                if (participant == null)
+                {
+                    continue;
+                }
+
+                var hasCharacterName = !IsNullOrWhiteSpace(participant.CharacterName);
+                if (participant.AccountId != Guid.Empty)
+                {
+                    HubPresenceRegistry.Participant existing;
+                    if (!byAccount.TryGetValue(participant.AccountId, out existing) || existing == null)
+                    {
+                        byAccount[participant.AccountId] = participant;
+                        continue;
+                    }
+
+                    if (hasCharacterName && IsNullOrWhiteSpace(existing.CharacterName))
+                    {
+                        byAccount[participant.AccountId] = participant;
+                    }
+                    continue;
+                }
+
+                if (!IsNullOrWhiteSpace(participant.Peer) && !byPeer.Add(participant.Peer))
+                {
+                    continue;
+                }
+
+                looseParticipants.Add(participant);
+            }
+
+            var names = new List<string>(byAccount.Count + looseParticipants.Count);
+            foreach (var participant in byAccount.Values)
+            {
+                names.Add(BuildStatusPlayerEntry(participant));
+            }
+
+            for (var i = 0; i < looseParticipants.Count; i++)
+            {
+                names.Add(BuildStatusPlayerEntry(looseParticipants[i]));
+            }
+
+            names.Sort(StringComparer.OrdinalIgnoreCase);
+            return names;
+        }
+
+        private string BuildStatusPlayerEntry(HubPresenceRegistry.Participant participant)
+        {
+            if (participant == null)
+            {
+                return "Unknown Character (Unknown Account)";
+            }
+
+            var characterName = !IsNullOrWhiteSpace(participant.CharacterName)
+                ? participant.CharacterName.Trim()
+                : "Unknown Character";
+            var accountDisplayName = ResolveAccountDisplayName(participant);
+            return characterName + " (" + accountDisplayName + ")";
+        }
+
+        private string ResolveAccountDisplayName(HubPresenceRegistry.Participant participant)
+        {
+            var fallback = participant != null && participant.AccountId != Guid.Empty
+                ? participant.AccountId.ToString("D")
+                : "Unknown Account";
+
+            if (participant == null || _userStore == null)
+            {
+                return fallback;
+            }
+
+            var identityHash = participant.IdentityHash;
+            if (IsNullOrWhiteSpace(identityHash) && participant.AccountId != Guid.Empty)
+            {
+                identityHash = participant.AccountId.ToString("D");
+            }
+
+            if (IsNullOrWhiteSpace(identityHash))
+            {
+                return fallback;
+            }
+
+            string resolved;
+            try
+            {
+                resolved = _userStore.GetDisplayName(identityHash);
+            }
+            catch
+            {
+                resolved = null;
+            }
+
+            return IsNullOrWhiteSpace(resolved) ? fallback : resolved.Trim();
+        }
+
+        private static string HtmlEncode(string value)
+        {
+            if (value == null)
+            {
+                return string.Empty;
+            }
+
+            return value
+                .Replace("&", "&amp;")
+                .Replace("<", "&lt;")
+                .Replace(">", "&gt;")
+                .Replace("\"", "&quot;")
+                .Replace("'", "&#39;");
         }
 
         public interface IPlayerInfoRepository
