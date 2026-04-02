@@ -8,9 +8,9 @@
     ],
     "CommandTimeoutSeconds": 900,
     "DefaultLogRootPath": "C:\\Users\\Drumm\\git\\BostonUnlockedServer\\server\\src\\Shadowrun.LocalService.Host\\bin\\Release\\logs",
-    "GithubOwner": "",
-    "GithubRepo": "",
-    "GithubAssetName": "",
+    "GithubOwner": "BostonUnlocked",
+    "GithubRepo": "BostonUnlockedServer",
+    "GithubAssetName": "ServerPatch.zip",
     "LocalServiceBinPath": "C:\\Users\\Drumm\\git\\BostonUnlockedServer\\server\\src\\Shadowrun.LocalService.Host\\bin\\Release",
     "BackupRootPath": "C:\\Users\\Drumm\\git\\BostonUnlockedServer\\server\\backups"
   }

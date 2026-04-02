@@ -11,7 +11,7 @@ internal sealed class SupervisorOptions
 
     public string? GithubOwner { get; set; }
     public string? GithubRepo { get; set; }
-    public string? GithubAssetName { get; set; }
+    public string? GithubAssetName { get; set; } = "ServerPatch.zip";
 
     public string? LocalServiceBinPath { get; set; }
     public string? BackupRootPath { get; set; }
