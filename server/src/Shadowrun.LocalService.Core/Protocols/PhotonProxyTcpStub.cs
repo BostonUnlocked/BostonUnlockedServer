@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using PhotonProxy.ChatAndFriends.Client.DTOs;
@@ -73,9 +74,16 @@ public sealed partial class PhotonProxyTcpStub
         _chatAndFriends.HandleHardOfflineAccount(accountId);
     }
 
-    private static string GenerateDeletionCode(Random rng)
+    private static string GenerateDeletionCode()
     {
-        return rng.Next(1000, 10000).ToString();
+        using (var rng = new RNGCryptoServiceProvider())
+        {
+            var bytes = new byte[4];
+            rng.GetBytes(bytes);
+            var raw = BitConverter.ToUInt32(bytes, 0);
+            var value = (int)(raw % 9000u) + 1000;
+            return value.ToString();
+        }
     }
 
     internal string StartAccountDeletion(Guid accountId)
@@ -85,8 +93,7 @@ public sealed partial class PhotonProxyTcpStub
             return null;
         }
 
-        var rng = new Random();
-        var code = GenerateDeletionCode(rng);
+        var code = GenerateDeletionCode();
         var pending = new PendingAccountDeletion
         {
             Step = 1,
@@ -133,8 +140,7 @@ public sealed partial class PhotonProxyTcpStub
                 return null;
             }
 
-            var rng = new Random();
-            var newCode = GenerateDeletionCode(rng);
+            var newCode = GenerateDeletionCode();
             pending.Step = 2;
             pending.Code = newCode;
             pending.ExpiresUtc = DateTime.UtcNow.AddMinutes(5);
@@ -185,8 +191,25 @@ public sealed partial class PhotonProxyTcpStub
                 _userStore.DeleteAccount(identityHash);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            try
+            {
+                if (_logger != null)
+                {
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "account-delete-error",
+                        store = "user-store",
+                        accountId = accountId.ToString("D"),
+                        error = ex.Message,
+                    });
+                }
+            }
+            catch
+            {
+            }
         }
 
         try
@@ -196,8 +219,25 @@ public sealed partial class PhotonProxyTcpStub
                 _friendsStore.DeleteAccount(accountId);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            try
+            {
+                if (_logger != null)
+                {
+                    _logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "account-delete-error",
+                        store = "friends-store",
+                        accountId = accountId.ToString("D"),
+                        error = ex.Message,
+                    });
+                }
+            }
+            catch
+            {
+            }
         }
 
         lock (_pendingDeletionLock)
