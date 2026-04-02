@@ -13,6 +13,7 @@ param(
     [switch]$UseJson,
     [switch]$MigrateJsonToSqlite,
     [string]$SQLiteDbPath,
+    [Parameter(Mandatory = $true)]
     [string]$ExePath,
     [switch]$StartAfterRegister,
     [switch]$Remove
@@ -40,23 +41,39 @@ function Get-ExistingService {
     }
 }
 
-if ([string]::IsNullOrWhiteSpace($ExePath)) {
-    $ExePath = Join-Path $PSScriptRoot "src\Shadowrun.LocalService.Host\bin\Release\Shadowrun.LocalService.Host.exe"
-}
-
 if (-not (Test-Path -LiteralPath $ExePath)) {
     throw "Host executable not found: $ExePath`nBuild first with .\\start_localserver.ps1 or MSBuild."
 }
 
-$effectiveUseSqlite = -not $UseJson
+try {
+    $resolvedExePath = Resolve-Path -LiteralPath $ExePath -ErrorAction Stop
+    $ExePath = $resolvedExePath.ProviderPath
+}
+catch {
+    throw "Could not resolve ExePath to a full filesystem path: $ExePath"
+}
 
-$argTokens = @(
-    '--service',
-    '--host', $BindHost,
-    '--port', $Port,
-    '--aplay-port', $APlayPort,
-    '--photon-port', $PhotonPort
-)
+$argTokens = @('--service')
+
+if ($PSBoundParameters.ContainsKey('BindHost')) {
+    $argTokens += '--host'
+    $argTokens += $BindHost
+}
+
+if ($PSBoundParameters.ContainsKey('Port')) {
+    $argTokens += '--port'
+    $argTokens += $Port
+}
+
+if ($PSBoundParameters.ContainsKey('APlayPort')) {
+    $argTokens += '--aplay-port'
+    $argTokens += $APlayPort
+}
+
+if ($PSBoundParameters.ContainsKey('PhotonPort')) {
+    $argTokens += '--photon-port'
+    $argTokens += $PhotonPort
+}
 
 if ($NoFileLogs) {
     $argTokens += '--no-file-logs'
@@ -66,10 +83,7 @@ if ($FixedSeed) {
     $argTokens += '--fixed-seed'
 }
 
-if ($effectiveUseSqlite) {
-    $argTokens += '--use-sqlite'
-}
-else {
+if ($UseJson) {
     $argTokens += '--use-json'
 }
 
@@ -91,13 +105,18 @@ $quotedArgs = $argTokens | ForEach-Object {
     }
 }
 
-$binPath = '"{0}" {1}' -f $ExePath, ($quotedArgs -join ' ')
+if (@($quotedArgs).Count -gt 0) {
+    $binPath = '"{0}" {1}' -f $ExePath, ($quotedArgs -join ' ')
+}
+else {
+    $binPath = '"{0}"' -f $ExePath
+}
 $scStartup = Convert-StartupTypeToScValue -Type $StartupType
 
 $existingService = Get-ExistingService -Name $ServiceName
 
 if ($Remove) {
-    if (-not $existingService) {
+    if ([object]::ReferenceEquals($existingService, $null)) {
         Write-Output "[service] '$ServiceName' is not installed."
         return
     }
@@ -112,7 +131,7 @@ if ($Remove) {
     return
 }
 
-if (-not $existingService) {
+if ([object]::ReferenceEquals($existingService, $null)) {
     Write-Output "[service] creating '$ServiceName'..."
     & sc.exe create $ServiceName binPath= $binPath start= $scStartup DisplayName= $DisplayName | Out-Null
 }

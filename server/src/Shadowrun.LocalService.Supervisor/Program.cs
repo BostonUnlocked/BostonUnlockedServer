@@ -1,25 +1,29 @@
+using Microsoft.Extensions.Hosting;
 using Shadowrun.LocalService.Supervisor;
 
 var configPath = GetConfigPathFromArgs(args);
-var builder = Host.CreateApplicationBuilder(args);
+var host = Host.CreateDefaultBuilder(args)
+    .UseWindowsService(options =>
+    {
+        options.ServiceName = "ShadowrunLocalSupervisor";
+    })
+    .ConfigureAppConfiguration((_, configuration) =>
+    {
+        if (!string.IsNullOrWhiteSpace(configPath))
+        {
+            configuration.AddJsonFile(configPath, optional: false, reloadOnChange: false);
+        }
+    })
+    .ConfigureServices((context, services) =>
+    {
+        services.Configure<SupervisorOptions>(context.Configuration.GetSection("Supervisor"));
+        services.AddSingleton<SupervisorOperationLock>();
+        services.AddSingleton<SupervisorAuditLogger>();
+        services.AddSingleton<SupervisorOperations>();
+        services.AddHostedService<DiscordBotHostedService>();
+    })
+    .Build();
 
-if (!string.IsNullOrWhiteSpace(configPath))
-{
-    builder.Configuration.AddJsonFile(configPath, optional: false, reloadOnChange: false);
-}
-
-builder.Services.Configure<SupervisorOptions>(builder.Configuration.GetSection("Supervisor"));
-builder.Services.AddSingleton<SupervisorOperationLock>();
-builder.Services.AddSingleton<SupervisorAuditLogger>();
-builder.Services.AddSingleton<SupervisorOperations>();
-builder.Services.AddHostedService<DiscordBotHostedService>();
-
-builder.Services.AddWindowsService(options =>
-{
-    options.ServiceName = "ShadowrunLocalSupervisor";
-});
-
-var host = builder.Build();
 await host.RunAsync();
 
 static string? GetConfigPathFromArgs(string[] args)

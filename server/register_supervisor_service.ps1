@@ -33,11 +33,11 @@ function Get-ExistingService {
 }
 
 if ([string]::IsNullOrWhiteSpace($ExePath)) {
-    $ExePath = Join-Path $PSScriptRoot "src\Shadowrun.LocalService.Supervisor\bin\Release\net8.0-windows\win-x64\publish\Shadowrun.LocalService.Supervisor.exe"
+    $ExePath = Join-Path $PSScriptRoot "src\Shadowrun.LocalService.Supervisor\bin\Release\net6.0-windows\win-x64\publish\Shadowrun.LocalService.Supervisor.exe"
 }
 
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
-    $ConfigPath = Join-Path $PSScriptRoot "src\Shadowrun.LocalService.Supervisor\bin\Release\net8.0-windows\win-x64\publish\appsettings.json"
+    $ConfigPath = Join-Path $PSScriptRoot "src\Shadowrun.LocalService.Supervisor\bin\Release\net6.0-windows\win-x64\publish\appsettings.json"
 }
 
 if (-not (Test-Path -LiteralPath $ExePath)) {
