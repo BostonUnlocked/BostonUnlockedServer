@@ -270,18 +270,24 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             }
 
             if (string.Equals(slot.PrimaryWeaponItemId, itemId, StringComparison.OrdinalIgnoreCase)
+                && slot.PrimaryWeaponQuality == requestedChange.Quality
+                && slot.PrimaryWeaponFlavour == requestedChange.Flavour
                 && !HasRichEquippedIdentity(slot.EquippedItems, itemId, slot.PrimaryWeaponInventoryKey))
             {
                 primaryCount = 1;
             }
 
             if (string.Equals(slot.SecondaryWeaponItemId, itemId, StringComparison.OrdinalIgnoreCase)
+                && slot.SecondaryWeaponQuality == requestedChange.Quality
+                && slot.SecondaryWeaponFlavour == requestedChange.Flavour
                 && !HasRichEquippedIdentity(slot.EquippedItems, itemId, slot.SecondaryWeaponInventoryKey))
             {
                 secondaryCount = 1;
             }
 
             if (string.Equals(slot.ArmorItemId, itemId, StringComparison.OrdinalIgnoreCase)
+                && slot.ArmorQuality == requestedChange.Quality
+                && slot.ArmorFlavour == requestedChange.Flavour
                 && !HasRichEquippedIdentity(slot.EquippedItems, itemId, slot.ArmorInventoryKey))
             {
                 armorCount = 1;
