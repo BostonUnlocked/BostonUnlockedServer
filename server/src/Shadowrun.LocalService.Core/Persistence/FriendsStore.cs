@@ -183,14 +183,14 @@ namespace Shadowrun.LocalService.Core.Persistence
                     }
                 }
 
-                for (var i = 0; i < keysToRemove.Count; i++)
+                foreach (var key in keysToRemove)
                 {
-                    friends.Remove(keysToRemove[i]);
+                    friends.Remove(key);
                 }
 
-                for (var i = 0; i < keysToUpdate.Count; i++)
+                foreach (var kvp in keysToUpdate)
                 {
-                    friends[keysToUpdate[i].Key] = keysToUpdate[i].Value;
+                    friends[kvp.Key] = kvp.Value;
                 }
 
                 SaveNoThrow(root);
