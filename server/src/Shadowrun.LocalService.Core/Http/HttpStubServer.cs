@@ -18,6 +18,7 @@ namespace Shadowrun.LocalService.Core.Http
     {
         private static readonly JavaScriptSerializer Json = CreateSerializer();
         private const string PatchesLivePrefix = "/Patches/SRO/StandaloneWindows/live";
+        private const int MaxLoggedRequestBodyBytes = 4096;
 
         private readonly LocalServiceOptions _options;
         private readonly RequestLogger _logger;
@@ -152,7 +153,8 @@ namespace Shadowrun.LocalService.Core.Http
                         }
                         catch (Exception ex)
                         {
-                            _logger.Log(new { ts = RequestLogger.UtcNowIso(), type = "http-error", connectionHash = connectionHash, peer = endpoint, message = ex.Message });
+                            SafeLog(new { ts = RequestLogger.UtcNowIso(), type = "http-error", connectionHash = connectionHash, peer = endpoint, message = ex.Message });
+                            TryWriteSimpleErrorResponse(stream, 400, "Bad Request");
                             return;
                         }
 
@@ -161,32 +163,77 @@ namespace Shadowrun.LocalService.Core.Http
                             return;
                         }
 
-                        _logger.Log(new
+                        try
                         {
-                            ts = RequestLogger.UtcNowIso(),
-                            type = "http-request",
-                            accountId = ResolveRequestAccountId(request),
-                            connectionHash = connectionHash,
-                            peer = endpoint,
-                            method = request.Method,
-                            host = request.Host,
-                            path = request.Path,
-                            query = request.Query,
-                            userAgent = request.UserAgent,
-                            contentType = request.ContentType,
-                            contentLength = request.BodyBytes != null ? request.BodyBytes.Length : 0,
-                            body = BuildSafeRequestBodyForLog(request.Path, request.BodyBytes),
-                        });
+                            SafeLog(new
+                            {
+                                ts = RequestLogger.UtcNowIso(),
+                                type = "http-request",
+                                accountId = ResolveRequestAccountId(request),
+                                connectionHash = connectionHash,
+                                peer = endpoint,
+                                method = request.Method,
+                                host = request.Host,
+                                path = request.Path,
+                                query = request.Query,
+                                userAgent = request.UserAgent,
+                                contentType = request.ContentType,
+                                contentLength = request.BodyBytes != null ? request.BodyBytes.Length : 0,
+                                body = BuildSafeRequestBodyForLog(request.Path, request.BodyBytes),
+                            });
 
-                        var response = RouteRequest(request);
-                        var suppressBody = string.Equals(request.Method, "HEAD", StringComparison.OrdinalIgnoreCase);
-                        WriteResponse(stream, response, suppressBody);
+                            var response = RouteRequest(request);
+                            var suppressBody = string.Equals(request.Method, "HEAD", StringComparison.OrdinalIgnoreCase);
+                            WriteResponse(stream, response, suppressBody);
+                        }
+                        catch (Exception ex)
+                        {
+                            SafeLog(new
+                            {
+                                ts = RequestLogger.UtcNowIso(),
+                                type = "http-error",
+                                connectionHash = connectionHash,
+                                peer = endpoint,
+                                path = request.Path,
+                                message = ex.Message,
+                            });
+
+                            TryWriteSimpleErrorResponse(stream, 500, "Internal Server Error");
+                            return;
+                        }
                     }
                 }
                 finally
                 {
                     _logger.ClearConnectionContext("http", endpoint, connectionHash);
                 }
+            }
+        }
+
+        private void SafeLog(object payload)
+        {
+            try
+            {
+                _logger.Log(payload);
+            }
+            catch
+            {
+            }
+        }
+
+        private static void TryWriteSimpleErrorResponse(NetworkStream stream, int statusCode, string message)
+        {
+            if (stream == null)
+            {
+                return;
+            }
+
+            try
+            {
+                WriteResponse(stream, TextResponse(statusCode, message, "text/plain; charset=utf-8"), false);
+            }
+            catch
+            {
             }
         }
 
@@ -457,10 +504,20 @@ namespace Shadowrun.LocalService.Core.Http
                 return string.Empty;
             }
 
-            var raw = Encoding.UTF8.GetString(bodyBytes);
+            if (!ShouldCaptureRequestBody(path))
+            {
+                return string.Format("[body omitted for path; {0} bytes]", bodyBytes.Length);
+            }
+
+            var raw = ConvertBodyBytesToSafeLogString(bodyBytes);
             if (!ShouldRedactSensitiveBody(path))
             {
                 return raw;
+            }
+
+            if (bodyBytes.Length > MaxLoggedRequestBodyBytes)
+            {
+                return "[redacted body; truncated]";
             }
 
             try
@@ -482,6 +539,39 @@ namespace Shadowrun.LocalService.Core.Http
             {
                 return raw;
             }
+        }
+
+        private static string ConvertBodyBytesToSafeLogString(byte[] bodyBytes)
+        {
+            if (bodyBytes == null || bodyBytes.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            if (bodyBytes.Length <= MaxLoggedRequestBodyBytes)
+            {
+                return Encoding.UTF8.GetString(bodyBytes);
+            }
+
+            var truncatedBytes = new byte[MaxLoggedRequestBodyBytes];
+            Buffer.BlockCopy(bodyBytes, 0, truncatedBytes, 0, MaxLoggedRequestBodyBytes);
+            var truncatedBody = Encoding.UTF8.GetString(truncatedBytes);
+            var omittedBytes = bodyBytes.Length - MaxLoggedRequestBodyBytes;
+            return string.Format("{0}...[truncated {1} bytes]", truncatedBody, omittedBytes);
+        }
+
+        private static bool ShouldCaptureRequestBody(string path)
+        {
+            if (IsNullOrWhiteSpace(path))
+            {
+                return false;
+            }
+
+            var normalizedPath = NormalizePathForRoute(path);
+            return StartsWith(normalizedPath, "/AccountSystem/")
+                || StartsWith(normalizedPath, "/CouponSystem/")
+                || StartsWith(normalizedPath, "/Matchmaking/")
+                || StartsWith(normalizedPath, "/ChatAndFriends/");
         }
 
         private static bool ShouldRedactSensitiveBody(string path)

@@ -8,6 +8,9 @@ namespace Shadowrun.LocalService.Core.Http
 {
     public sealed partial class HttpStubServer
     {
+        private const int MaxHttpHeaderBytes = 64 * 1024;
+        private const int MaxHttpBodyBytes = 1024 * 1024;
+
         private static HttpRequest ReadSingleRequest(NetworkStream stream)
         {
             // Read until header terminator (\r\n\r\n). Keep it simple: one request per TCP connection.
@@ -29,7 +32,7 @@ namespace Shadowrun.LocalService.Core.Http
                     break;
                 }
 
-                if (ms.Length > 64 * 1024)
+                if (ms.Length > MaxHttpHeaderBytes)
                 {
                     throw new InvalidOperationException("HTTP header too large");
                 }
@@ -84,7 +87,15 @@ namespace Shadowrun.LocalService.Core.Http
             string contentLengthRaw;
             if (headers.TryGetValue("Content-Length", out contentLengthRaw))
             {
-                int.TryParse(contentLengthRaw, out contentLength);
+                if (!int.TryParse(contentLengthRaw, out contentLength) || contentLength < 0)
+                {
+                    throw new InvalidOperationException("Invalid Content-Length");
+                }
+            }
+
+            if (contentLength > MaxHttpBodyBytes)
+            {
+                throw new InvalidOperationException("HTTP body too large");
             }
 
             var bodyBytes = new byte[0];
