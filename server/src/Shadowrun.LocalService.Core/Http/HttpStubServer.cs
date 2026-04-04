@@ -514,9 +514,82 @@ namespace Shadowrun.LocalService.Core.Http
             var participants = _hubPresenceRegistry != null
                 ? _hubPresenceRegistry.SnapshotParticipants()
                 : new HubPresenceRegistry.Participant[0];
-            var playerEntries = BuildStatusPlayerEntries(participants);
+            var deduplicated = BuildStatusPlayerEntries(participants);
             var renderedAtUtc = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
 
+            // ── Group by party using PartyHubFollowRegistry ──
+            var partyGroups = new Dictionary<Guid, List<HubPresenceRegistry.Participant>>();
+            var soloPlayers = new List<HubPresenceRegistry.Participant>();
+
+            for (var i = 0; i < deduplicated.Count; i++)
+            {
+                var p = deduplicated[i];
+                Guid hostId;
+                if (p.AccountId != Guid.Empty && PartyHubFollowRegistry.TryGetHostForMember(p.AccountId, out hostId))
+                {
+                    List<HubPresenceRegistry.Participant> group;
+                    if (!partyGroups.TryGetValue(hostId, out group))
+                    {
+                        group = new List<HubPresenceRegistry.Participant>();
+                        partyGroups[hostId] = group;
+                    }
+                    group.Add(p);
+                }
+                else
+                {
+                    soloPlayers.Add(p);
+                }
+            }
+
+            // Move hosts from solo into their party group at position 0 (leader)
+            for (var i = soloPlayers.Count - 1; i >= 0; i--)
+            {
+                var p = soloPlayers[i];
+                if (p.AccountId != Guid.Empty && partyGroups.ContainsKey(p.AccountId))
+                {
+                    partyGroups[p.AccountId].Insert(0, p);
+                    soloPlayers.RemoveAt(i);
+                }
+            }
+
+            // Sort members inside each group: alphabetically, then leader to front
+            var sortedGroupKeys = new List<Guid>(partyGroups.Keys);
+            foreach (var hostKey in sortedGroupKeys)
+            {
+                var members = partyGroups[hostKey];
+                members.Sort(delegate(HubPresenceRegistry.Participant a, HubPresenceRegistry.Participant b)
+                {
+                    return string.Compare(BuildStatusPlayerEntry(a), BuildStatusPlayerEntry(b), StringComparison.OrdinalIgnoreCase);
+                });
+                for (var j = 0; j < members.Count; j++)
+                {
+                    if (members[j].AccountId == hostKey && j > 0)
+                    {
+                        var leader = members[j];
+                        members.RemoveAt(j);
+                        members.Insert(0, leader);
+                        break;
+                    }
+                }
+            }
+
+            // Sort party groups by leader / first-member display name
+            sortedGroupKeys.Sort(delegate(Guid a, Guid b)
+            {
+                var ga = partyGroups[a];
+                var gb = partyGroups[b];
+                var nameA = ga.Count > 0 ? BuildStatusPlayerEntry(ga[0]) : "";
+                var nameB = gb.Count > 0 ? BuildStatusPlayerEntry(gb[0]) : "";
+                return string.Compare(nameA, nameB, StringComparison.OrdinalIgnoreCase);
+            });
+
+            // Sort solo players alphabetically
+            soloPlayers.Sort(delegate(HubPresenceRegistry.Participant a, HubPresenceRegistry.Participant b)
+            {
+                return string.Compare(BuildStatusPlayerEntry(a), BuildStatusPlayerEntry(b), StringComparison.OrdinalIgnoreCase);
+            });
+
+            // ── Render ──
             var html = new StringBuilder(2048);
             html.Append("<!doctype html><html><head><meta charset=\"utf-8\" />");
             html.Append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />");
@@ -530,6 +603,8 @@ namespace Shadowrun.LocalService.Core.Http
             html.Append(".row{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0 12px 0;}");
             html.Append(".pill{background:#1f2833;border:1px solid #304052;border-radius:999px;padding:7px 11px;font-size:13px;}");
             html.Append(".ok{color:#7ee787;border-color:#2f6d4f;background:#133124;}");
+            html.Append(".party{background:#1a232d;border:1px solid #304052;border-radius:8px;padding:8px 12px;margin:8px 0;}");
+            html.Append(".leader{color:#f0c040;font-size:12px;margin-left:4px;}");
             html.Append("ul{margin:10px 0 0 18px;padding:0;}");
             html.Append("li{margin:5px 0;}");
             html.Append("a{color:#8dc7ff;text-decoration:none;}a:hover{text-decoration:underline;}");
@@ -538,24 +613,46 @@ namespace Shadowrun.LocalService.Core.Http
             html.Append("<div class=\"row\">");
             html.Append("<div class=\"pill ok\">Status: Online</div>");
             html.Append("<div class=\"pill\">Current players: ");
-            html.Append(playerEntries.Count.ToString(CultureInfo.InvariantCulture));
+            html.Append(deduplicated.Count.ToString(CultureInfo.InvariantCulture));
             html.Append("</div></div>");
             html.Append("<div><strong>Logged-in players</strong></div>");
 
-            if (playerEntries.Count == 0)
+            if (deduplicated.Count == 0)
             {
                 html.Append("<div class=\"muted\" style=\"margin-top:8px;\">No players currently logged in.</div>");
             }
             else
             {
-                html.Append("<ul>");
-                for (var i = 0; i < playerEntries.Count; i++)
+                for (var g = 0; g < sortedGroupKeys.Count; g++)
                 {
-                    html.Append("<li>");
-                    html.Append(HtmlEncode(playerEntries[i]));
-                    html.Append("</li>");
+                    var groupHostId = sortedGroupKeys[g];
+                    var members = partyGroups[groupHostId];
+                    html.Append("<div class=\"party\">");
+                    html.Append("<ul style=\"margin-top:4px;\">");
+                    for (var m = 0; m < members.Count; m++)
+                    {
+                        html.Append("<li>");
+                        html.Append(HtmlEncode(BuildStatusPlayerEntry(members[m])));
+                        if (members[m].AccountId == groupHostId)
+                        {
+                            html.Append("<span class=\"leader\">\u2605</span>");
+                        }
+                        html.Append("</li>");
+                    }
+                    html.Append("</ul></div>");
                 }
-                html.Append("</ul>");
+
+                if (soloPlayers.Count > 0)
+                {
+                    html.Append("<ul>");
+                    for (var i = 0; i < soloPlayers.Count; i++)
+                    {
+                        html.Append("<li>");
+                        html.Append(HtmlEncode(BuildStatusPlayerEntry(soloPlayers[i])));
+                        html.Append("</li>");
+                    }
+                    html.Append("</ul>");
+                }
             }
 
             html.Append("<div class=\"muted\" style=\"margin-top:14px;\">Rendered: ");
@@ -589,11 +686,11 @@ namespace Shadowrun.LocalService.Core.Http
             }
         }
 
-        private List<string> BuildStatusPlayerEntries(HubPresenceRegistry.Participant[] participants)
+        private List<HubPresenceRegistry.Participant> BuildStatusPlayerEntries(HubPresenceRegistry.Participant[] participants)
         {
             if (participants == null || participants.Length == 0)
             {
-                return new List<string>();
+                return new List<HubPresenceRegistry.Participant>();
             }
 
             var byAccount = new Dictionary<Guid, HubPresenceRegistry.Participant>();
@@ -633,19 +730,18 @@ namespace Shadowrun.LocalService.Core.Http
                 looseParticipants.Add(participant);
             }
 
-            var names = new List<string>(byAccount.Count + looseParticipants.Count);
+            var result = new List<HubPresenceRegistry.Participant>(byAccount.Count + looseParticipants.Count);
             foreach (var participant in byAccount.Values)
             {
-                names.Add(BuildStatusPlayerEntry(participant));
+                result.Add(participant);
             }
 
             for (var i = 0; i < looseParticipants.Count; i++)
             {
-                names.Add(BuildStatusPlayerEntry(looseParticipants[i]));
+                result.Add(looseParticipants[i]);
             }
 
-            names.Sort(StringComparer.OrdinalIgnoreCase);
-            return names;
+            return result;
         }
 
         private string BuildStatusPlayerEntry(HubPresenceRegistry.Participant participant)
