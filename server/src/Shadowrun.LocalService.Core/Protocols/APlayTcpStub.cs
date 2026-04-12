@@ -2436,11 +2436,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     var previousHubId = ResolveParticipantHubId(previousParticipant, null);
                                     var currentParticipantHubId = ResolveParticipantHubId(currentParticipant, routedHubId);
 
-                                    var shouldBroadcastAdd = transition != null
-                                        ? transition.JoinUpdate != null
-                                        : previousParticipant == null
-                                            || !string.Equals(previousHubId, routedHubId, StringComparison.OrdinalIgnoreCase)
-                                            || !string.Equals(previousParticipant.CharacterId, routedCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
+                                    var shouldBroadcastAdd = previousParticipant == null
+                                        || !string.Equals(previousHubId, currentParticipantHubId, StringComparison.OrdinalIgnoreCase)
+                                        || !string.Equals(previousParticipant.CharacterId, currentParticipant != null ? currentParticipant.CharacterId : routedCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
 
                                     if (transition != null && transition.LeaveUpdate != null && !IsNullOrWhiteSpace(transition.LeaveUpdate.RemovedCharacter))
                                     {
@@ -2456,9 +2454,16 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                     if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipantHubId))
                                     {
-                                        // Force a fresh hub-ready/replay cycle for this peer on story-hub requests.
-                                        // This is needed when the client returns from mission but hub/character IDs are unchanged.
-                                        ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
+                                        var isSameHubSameCharacter = previousParticipant != null
+                                            && string.Equals(previousHubId, currentParticipantHubId, StringComparison.OrdinalIgnoreCase)
+                                            && string.Equals(previousParticipant.CharacterId, currentParticipant.CharacterId, StringComparison.OrdinalIgnoreCase);
+
+                                        // Preserve per-peer hub announcement/readiness state on same-hub refresh.
+                                        // Clearing this forces roster replay on next move and can duplicate remote avatars.
+                                        if (!isSameHubSameCharacter)
+                                        {
+                                            ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
+                                        }
 
                                         if (shouldBroadcastAdd)
                                         {
@@ -2704,11 +2709,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         var previousHubId = ResolveParticipantHubId(previousParticipant, null);
                                         var currentParticipantHubId = ResolveParticipantHubId(currentParticipant, effectiveHubId);
 
-                                            var shouldBroadcastAdd = transition != null
-                                                ? transition.JoinUpdate != null
-                                                : previousParticipant == null
-                                                    || !string.Equals(previousHubId, effectiveHubId, StringComparison.OrdinalIgnoreCase)
-                                                    || !string.Equals(previousParticipant.CharacterId, currentCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
+                                            var shouldBroadcastAdd = previousParticipant == null
+                                                || !string.Equals(previousHubId, currentParticipantHubId, StringComparison.OrdinalIgnoreCase)
+                                                || !string.Equals(previousParticipant.CharacterId, currentParticipant != null ? currentParticipant.CharacterId : currentCharacterIdentifier, StringComparison.OrdinalIgnoreCase);
 
                                             if (transition != null && transition.LeaveUpdate != null && !IsNullOrWhiteSpace(transition.LeaveUpdate.RemovedCharacter))
                                             {
@@ -2724,9 +2727,16 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                         if (currentParticipant != null && !IsNullOrWhiteSpace(currentParticipantHubId))
                                         {
-                                            // Force a fresh hub-ready/replay cycle for this peer on story-hub requests.
-                                            // This is needed when the client returns from mission but hub/character IDs are unchanged.
-                                            ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
+                                            var isSameHubSameCharacter = previousParticipant != null
+                                                && string.Equals(previousHubId, currentParticipantHubId, StringComparison.OrdinalIgnoreCase)
+                                                && string.Equals(previousParticipant.CharacterId, currentParticipant.CharacterId, StringComparison.OrdinalIgnoreCase);
+
+                                            // Preserve per-peer hub announcement/readiness state on same-hub refresh.
+                                            // Clearing this forces roster replay on next move and can duplicate remote avatars.
+                                            if (!isSameHubSameCharacter)
+                                            {
+                                                ClearHubAnnouncementsForPeerHub(peer, currentParticipantHubId);
+                                            }
 
                                             if (shouldBroadcastAdd)
                                             {
