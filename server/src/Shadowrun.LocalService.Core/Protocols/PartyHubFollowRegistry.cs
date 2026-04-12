@@ -54,6 +54,36 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
+        public static void ClearMembersFollowingHost(Guid hostAccountId)
+        {
+            if (hostAccountId == Guid.Empty)
+            {
+                return;
+            }
+
+            lock (LockObj)
+            {
+                if (HostByMember.Count == 0)
+                {
+                    return;
+                }
+
+                var membersToClear = new List<Guid>();
+                foreach (var kvp in HostByMember)
+                {
+                    if (kvp.Value == hostAccountId)
+                    {
+                        membersToClear.Add(kvp.Key);
+                    }
+                }
+
+                for (var i = 0; i < membersToClear.Count; i++)
+                {
+                    HostByMember.Remove(membersToClear[i]);
+                }
+            }
+        }
+
         public static void ClearForGroup(IEnumerable<Guid> memberAccountIds)
         {
             if (memberAccountIds == null)

@@ -606,18 +606,20 @@ namespace Shadowrun.LocalService.Core.Protocols
                 {
                     var req = DeserializeMessage<RemoveGroupMemberRequest>(requestPayload);
                     var result = "GroupNotExists";
+                    var removedAccountId = req != null && req.MemberId != Guid.Empty ? req.MemberId : state.AccountId;
                     try
                     {
                         result = _chatAndFriends.RemoveGroupMember(state.AccountId, req != null ? req.GroupId : 0, req != null ? req.MemberId : Guid.Empty);
                         if (string.Equals(result, "Success", StringComparison.OrdinalIgnoreCase)
                             || string.Equals(result, "Ok", StringComparison.OrdinalIgnoreCase))
                         {
-                            if (req != null && req.MemberId != Guid.Empty)
+                            if (removedAccountId != Guid.Empty)
                             {
-                                PartyHubFollowRegistry.ClearForMember(req.MemberId);
+                                PartyHubFollowRegistry.ClearForMember(removedAccountId);
+                                PartyHubFollowRegistry.ClearMembersFollowingHost(removedAccountId);
                             }
 
-                            if (req == null || req.MemberId == Guid.Empty || req.MemberId == state.AccountId)
+                            if (removedAccountId == Guid.Empty || removedAccountId == state.AccountId)
                             {
                                 PartyHubFollowRegistry.ClearForMember(state.AccountId);
                             }
