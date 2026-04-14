@@ -424,6 +424,7 @@ namespace Shadowrun.LocalService.Core.Http
                 var playerInfoUpdates = ParsePlayerInfoUpdates(dict);
                 SanitizePlayerInfoUpdates(identityHash, playerInfoUpdates);
                 TryValidatePlayerCharacterBlob(identityHash, gameName, playerInfoUpdates);
+                ApplyRuntimeAuthoritativePlayerStatus(identityHash, gameName, playerInfoUpdates, "setplayerinfo", true);
 
                 string displayName;
                 if (!playerInfoUpdates.ContainsKey("LauncherDisplayName") && playerInfoUpdates.TryGetValue("DisplayName", out displayName))
@@ -651,6 +652,7 @@ namespace Shadowrun.LocalService.Core.Http
             }
 
             SanitizeStoredDisplayNames(identityHash, stored);
+            ApplyRuntimeAuthoritativePlayerStatus(identityHash, "SRO", stored, "buildplayerinforesponse", false);
 
             if (!stored.ContainsKey("LauncherDisplayName"))
             {
@@ -697,6 +699,79 @@ namespace Shadowrun.LocalService.Core.Http
             }
 
             return items.ToArray();
+        }
+
+        private void ApplyRuntimeAuthoritativePlayerStatus(string identityHash, string gameName, Dictionary<string, string> playerInfo, string source, bool logOverrides)
+        {
+            if (playerInfo == null)
+            {
+                return;
+            }
+
+            Guid accountId;
+            try
+            {
+                accountId = new Guid(identityHash);
+            }
+            catch
+            {
+                return;
+            }
+
+            if (accountId == Guid.Empty)
+            {
+                return;
+            }
+
+            var runtimeOnline = AccountTransportLivenessRegistry.IsOnline(accountId);
+            var hasHubPresence = false;
+            if (_hubPresenceRegistry != null)
+            {
+                HubPresenceRegistry.Participant participant;
+                hasHubPresence = _hubPresenceRegistry.TryGetParticipantForAccount(accountId, out participant);
+            }
+
+            string previousOnline;
+            var hadOnline = playerInfo.TryGetValue("Online", out previousOnline);
+            var runtimeOnlineText = runtimeOnline.ToString();
+            playerInfo["Online"] = runtimeOnlineText;
+
+            var forceNotInMission = !runtimeOnline || hasHubPresence;
+            string previousInMission;
+            var hadInMission = playerInfo.TryGetValue("InMission", out previousInMission);
+            if (forceNotInMission)
+            {
+                playerInfo["InMission"] = bool.FalseString;
+            }
+
+            if (!logOverrides)
+            {
+                return;
+            }
+
+            var onlineChanged = !hadOnline || !string.Equals(previousOnline, runtimeOnlineText, StringComparison.OrdinalIgnoreCase);
+            var inMissionChanged = forceNotInMission && (!hadInMission || !string.Equals(previousInMission, bool.FalseString, StringComparison.OrdinalIgnoreCase));
+
+            if (!onlineChanged && !inMissionChanged)
+            {
+                return;
+            }
+
+            _logger.LogLow(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "playerinfo-status-runtime-override",
+                identityHash = identityHash,
+                gameName = gameName,
+                source = source,
+                runtimeOnline = runtimeOnline,
+                hasHubPresence = hasHubPresence,
+                forceNotInMission = forceNotInMission,
+                previousOnline = hadOnline ? previousOnline : null,
+                previousInMission = hadInMission ? previousInMission : null,
+                appliedOnline = runtimeOnlineText,
+                appliedInMission = playerInfo.ContainsKey("InMission") ? playerInfo["InMission"] : null,
+            });
         }
 
         private void SanitizePlayerInfoUpdates(string identityHash, Dictionary<string, string> updates)
