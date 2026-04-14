@@ -58,6 +58,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                         peer,
                         responseMsgNoBase,
                         missionInstanceEntityId,
+                        activeIdentityGuid,
+                        currentMissionMapName,
                         currentCoopGroupName,
                         simulationSession,
                         simulationSessionSync);
@@ -124,6 +126,8 @@ namespace Shadowrun.LocalService.Core.Protocols
             string peer,
             ulong responseMsgNoBase,
             ulong missionInstanceEntityId,
+            Guid activeIdentityGuid,
+            string currentMissionMapName,
             string currentCoopGroupName,
             ServerSimulationSession simulationSession,
             object simulationSessionSync)
@@ -143,7 +147,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             if (!IsNullOrWhiteSpace(currentCoopGroupName))
             {
-                HandleCoopMissionReadyCommand(stream, peer, responseMsgNoBase, missionInstanceEntityId, currentCoopGroupName, simulationSession, simulationSessionSync);
+                HandleCoopMissionReadyCommand(stream, peer, responseMsgNoBase, missionInstanceEntityId, currentMissionMapName, currentCoopGroupName, simulationSession, simulationSessionSync);
                 return;
             }
 
@@ -190,7 +194,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             RemoveHubPresenceWithBroadcast(peer, null, "mission-start-solo");
-            MissionRuntimeRegistry.MarkSoloMissionStarted(peer);
+            MissionRuntimeRegistry.MarkSoloMissionStarted(peer, activeIdentityGuid, currentMissionMapName);
             SendMissionStartForClients(stream, peer, responseMsgNoBase, missionInstanceEntityId, "sent MissionInstanceCommunicationObject StartMissionForClients");
         }
 
@@ -199,6 +203,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             string peer,
             ulong responseMsgNoBase,
             ulong missionInstanceEntityId,
+            string currentMissionMapName,
             string currentCoopGroupName,
             ServerSimulationSession simulationSession,
             object simulationSessionSync)
@@ -279,7 +284,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 RemoveHubPresenceWithBroadcast(participant.Peer, null, "mission-start-coop");
             }
 
-            MissionRuntimeRegistry.MarkCoopMissionStarted(currentCoopGroupName);
+                    MissionRuntimeRegistry.MarkCoopMissionStarted(currentCoopGroupName, currentMissionMapName);
             var frame = BuildMissionStartForClientsFrame(responseMsgNoBase, missionInstanceEntityId);
             SendRawFrame(stream, peer, frame, "sent MissionInstanceCommunicationObject StartMissionForClients (coop)");
             BroadcastToCoopMissionPeers(currentCoopGroupName, peer, frame, "sent MissionInstanceCommunicationObject StartMissionForClients (coop bcast)");

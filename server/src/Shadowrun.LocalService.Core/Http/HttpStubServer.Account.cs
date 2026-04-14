@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using Shadowrun.LocalService.Core.Protocols;
 
 namespace Shadowrun.LocalService.Core.Http
 {

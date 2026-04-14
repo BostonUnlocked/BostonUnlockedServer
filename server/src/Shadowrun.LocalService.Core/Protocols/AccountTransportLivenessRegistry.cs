@@ -168,6 +168,32 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
+        public static Guid[] SnapshotOnlineAccountIds()
+        {
+            lock (SyncRoot)
+            {
+                if (StateByAccountId.Count == 0)
+                {
+                    return new Guid[0];
+                }
+
+                var online = new List<Guid>(StateByAccountId.Count);
+                foreach (var kvp in StateByAccountId)
+                {
+                    var accountId = kvp.Key;
+                    var state = kvp.Value;
+                    if (accountId == Guid.Empty || state == null || !state.IsOnline)
+                    {
+                        continue;
+                    }
+
+                    online.Add(accountId);
+                }
+
+                return online.ToArray();
+            }
+        }
+
         public static AccountLivenessSnapshot Evaluate(Guid accountId)
         {
             var snapshot = new AccountLivenessSnapshot
