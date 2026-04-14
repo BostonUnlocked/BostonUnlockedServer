@@ -13,6 +13,7 @@ namespace Shadowrun.LocalService.Core.Persistence
     public sealed partial class LocalUserStore
     {
         private static readonly JavaScriptSerializer Json = CreateSerializer();
+        private const string DefaultPlayerInfoGameName = "SRO";
 
         private static int LoggedStaticDataDir;
 
@@ -574,7 +575,9 @@ namespace Shadowrun.LocalService.Core.Persistence
                 return;
             }
 
-            _careerStore.UpsertCareer(GetOrCreateIdentityHash(), slot);
+            var identityHash = GetOrCreateIdentityHash();
+            _careerStore.UpsertCareer(identityHash, slot);
+            TrySyncPlayerInfoFromCareer(identityHash, slot);
         }
 
         public void UpsertCareer(string identityHash, CareerSlot slot)
@@ -585,6 +588,60 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
 
             _careerStore.UpsertCareer(identityHash, slot);
+            TrySyncPlayerInfoFromCareer(identityHash, slot);
+        }
+
+        private void TrySyncPlayerInfoFromCareer(string identityHash, CareerSlot slot)
+        {
+            if (_playerInfoStore == null || slot == null || !slot.IsOccupied)
+            {
+                return;
+            }
+
+            if (!IsGuidish(identityHash) || IsNullOrWhiteSpace(slot.CharacterName))
+            {
+                return;
+            }
+
+            var normalizedIdentity = NormalizeGuidish(identityHash);
+            var characterName = slot.CharacterName.Trim();
+            var launcherDisplayName = GetDisplayName(normalizedIdentity);
+            if (IsNullOrWhiteSpace(launcherDisplayName))
+            {
+                launcherDisplayName = BuildAnonymizedDisplayName(normalizedIdentity);
+            }
+
+            if (IsNullOrWhiteSpace(launcherDisplayName))
+            {
+                return;
+            }
+
+            var updates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "CharacterName", characterName },
+                { "LauncherDisplayName", launcherDisplayName },
+                { "DisplayName", launcherDisplayName + ";" + characterName },
+            };
+
+            try
+            {
+                _playerInfoStore.Set(normalizedIdentity, DefaultPlayerInfoGameName, updates);
+                if (_logger != null)
+                {
+                    _logger.LogLow(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "playerinfo-backfill",
+                        op = "sync-from-career",
+                        identityHash = normalizedIdentity,
+                        careerIndex = slot.Index,
+                        characterName = characterName,
+                    });
+                }
+            }
+            catch
+            {
+            }
         }
 
         public bool TryResolveCouponItemPackageCode(string code, out string packageTechnicalName)
