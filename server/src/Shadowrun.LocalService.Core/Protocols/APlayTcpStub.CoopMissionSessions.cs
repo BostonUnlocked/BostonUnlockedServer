@@ -875,7 +875,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
             }
 
-            MissionRuntimeRegistry.MarkCoopMissionParticipantJoined(coopGroupName, peer);
+            MissionRuntimeRegistry.MarkCoopMissionParticipantJoined(coopGroupName, peer, identityGuid);
         }
 
         private CoopMissionParticipant[] GetCoopMissionParticipantsSnapshot(string coopGroupName)

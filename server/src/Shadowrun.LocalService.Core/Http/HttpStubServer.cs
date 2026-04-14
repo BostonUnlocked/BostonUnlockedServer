@@ -27,10 +27,14 @@ namespace Shadowrun.LocalService.Core.Http
         private readonly LocalUserStore _userStore;
         private readonly HubPresenceRegistry _hubPresenceRegistry;
         private readonly object _statusPageCacheLock = new object();
+        private readonly object _missionNameCacheLock = new object();
         private string _cachedStatusPageHtml;
         private DateTime _cachedStatusPageGeneratedUtc = DateTime.MinValue;
+        private Dictionary<string, string> _cachedMissionEnglishNames;
+        private DateTime _cachedMissionEnglishNamesLoadedUtc = DateTime.MinValue;
 
         private static readonly TimeSpan StatusPageCacheDuration = TimeSpan.FromSeconds(10);
+        private static readonly TimeSpan MissionNameCacheDuration = TimeSpan.FromMinutes(5);
 
         public HttpStubServer(LocalServiceOptions options, RequestLogger logger)
             : this(options, logger, new LocalUserStore(options, logger))
@@ -601,100 +605,30 @@ namespace Shadowrun.LocalService.Core.Http
 
         private string BuildServerStatusPageHtml()
         {
-            var participants = _hubPresenceRegistry != null
-                ? _hubPresenceRegistry.SnapshotParticipants()
-                : new HubPresenceRegistry.Participant[0];
-            var deduplicated = BuildStatusPlayerEntries(participants);
+            var allPlayers = BuildOnlineStatusPlayers();
+            var acts = BuildActBuckets(allPlayers);
             var renderedAtUtc = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
 
-            // ── Group by party using PartyHubFollowRegistry ──
-            var partyGroups = new Dictionary<Guid, List<HubPresenceRegistry.Participant>>();
-            var soloPlayers = new List<HubPresenceRegistry.Participant>();
-
-            for (var i = 0; i < deduplicated.Count; i++)
-            {
-                var p = deduplicated[i];
-                Guid hostId;
-                if (p.AccountId != Guid.Empty && PartyHubFollowRegistry.TryGetHostForMember(p.AccountId, out hostId))
-                {
-                    List<HubPresenceRegistry.Participant> group;
-                    if (!partyGroups.TryGetValue(hostId, out group))
-                    {
-                        group = new List<HubPresenceRegistry.Participant>();
-                        partyGroups[hostId] = group;
-                    }
-                    group.Add(p);
-                }
-                else
-                {
-                    soloPlayers.Add(p);
-                }
-            }
-
-            // Move hosts from solo into their party group at position 0 (leader)
-            for (var i = soloPlayers.Count - 1; i >= 0; i--)
-            {
-                var p = soloPlayers[i];
-                if (p.AccountId != Guid.Empty && partyGroups.ContainsKey(p.AccountId))
-                {
-                    partyGroups[p.AccountId].Insert(0, p);
-                    soloPlayers.RemoveAt(i);
-                }
-            }
-
-            // Sort members inside each group: alphabetically, then leader to front
-            var sortedGroupKeys = new List<Guid>(partyGroups.Keys);
-            foreach (var hostKey in sortedGroupKeys)
-            {
-                var members = partyGroups[hostKey];
-                members.Sort(delegate(HubPresenceRegistry.Participant a, HubPresenceRegistry.Participant b)
-                {
-                    return string.Compare(BuildStatusPlayerEntry(a), BuildStatusPlayerEntry(b), StringComparison.OrdinalIgnoreCase);
-                });
-                for (var j = 0; j < members.Count; j++)
-                {
-                    if (members[j].AccountId == hostKey && j > 0)
-                    {
-                        var leader = members[j];
-                        members.RemoveAt(j);
-                        members.Insert(0, leader);
-                        break;
-                    }
-                }
-            }
-
-            // Sort party groups by leader / first-member display name
-            sortedGroupKeys.Sort(delegate(Guid a, Guid b)
-            {
-                var ga = partyGroups[a];
-                var gb = partyGroups[b];
-                var nameA = ga.Count > 0 ? BuildStatusPlayerEntry(ga[0]) : "";
-                var nameB = gb.Count > 0 ? BuildStatusPlayerEntry(gb[0]) : "";
-                return string.Compare(nameA, nameB, StringComparison.OrdinalIgnoreCase);
-            });
-
-            // Sort solo players alphabetically
-            soloPlayers.Sort(delegate(HubPresenceRegistry.Participant a, HubPresenceRegistry.Participant b)
-            {
-                return string.Compare(BuildStatusPlayerEntry(a), BuildStatusPlayerEntry(b), StringComparison.OrdinalIgnoreCase);
-            });
-
-            // ── Render ──
             var html = new StringBuilder(2048);
             html.Append("<!doctype html><html><head><meta charset=\"utf-8\" />");
             html.Append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />");
             html.Append("<title>BostonUnlocked Server Status</title>");
             html.Append("<style>");
             html.Append("body{margin:0;background:#0f1419;color:#d9e1ea;font-family:Segoe UI,Arial,sans-serif;}");
-            html.Append(".wrap{max-width:760px;margin:32px auto;padding:0 16px;}");
+            html.Append(".wrap{max-width:980px;margin:32px auto;padding:0 16px;}");
             html.Append(".card{background:#171d24;border:1px solid #2b3642;border-radius:10px;padding:16px 18px;box-shadow:0 8px 28px rgba(0,0,0,0.35);}");
             html.Append("h1{margin:0 0 4px 0;font-size:20px;font-weight:600;color:#eff5fb;}");
+            html.Append("h2{margin:16px 0 8px 0;font-size:18px;color:#eff5fb;}");
+            html.Append("h3{margin:0 0 6px 0;font-size:15px;color:#dce7f3;}");
             html.Append(".muted{color:#8ea0b2;font-size:13px;}");
             html.Append(".row{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0 12px 0;}");
             html.Append(".pill{background:#1f2833;border:1px solid #304052;border-radius:999px;padding:7px 11px;font-size:13px;}");
             html.Append(".ok{color:#7ee787;border-color:#2f6d4f;background:#133124;}");
+            html.Append(".act{margin-top:14px;padding:10px 12px;background:#111820;border:1px solid #283444;border-radius:10px;}");
+            html.Append(".act h2{margin-top:0;}");
+            html.Append(".section{margin-top:8px;padding:10px;background:#1a232d;border:1px solid #304052;border-radius:8px;}");
             html.Append(".party{background:#1a232d;border:1px solid #304052;border-radius:8px;padding:8px 12px;margin:8px 0;}");
-            html.Append(".leader{color:#f0c040;font-size:12px;margin-left:4px;}");
+            html.Append(".leader{color:#f0c040;font-size:12px;margin-left:6px;}");
             html.Append("ul{margin:10px 0 0 18px;padding:0;}");
             html.Append("li{margin:5px 0;}");
             html.Append("a{color:#8dc7ff;text-decoration:none;}a:hover{text-decoration:underline;}");
@@ -703,45 +637,74 @@ namespace Shadowrun.LocalService.Core.Http
             html.Append("<div class=\"row\">");
             html.Append("<div class=\"pill ok\">Status: Online</div>");
             html.Append("<div class=\"pill\">Current players: ");
-            html.Append(deduplicated.Count.ToString(CultureInfo.InvariantCulture));
+            html.Append(allPlayers.Count.ToString(CultureInfo.InvariantCulture));
             html.Append("</div></div>");
-            html.Append("<div><strong>Logged-in players</strong></div>");
+            html.Append("<div><strong>Logged-in players by act and location</strong></div>");
 
-            if (deduplicated.Count == 0)
+            if (allPlayers.Count == 0)
             {
                 html.Append("<div class=\"muted\" style=\"margin-top:8px;\">No players currently logged in.</div>");
             }
             else
             {
-                for (var g = 0; g < sortedGroupKeys.Count; g++)
+                var actOrder = new int[] { 1, 2, 3, 4 };
+                for (var a = 0; a < actOrder.Length; a++)
                 {
-                    var groupHostId = sortedGroupKeys[g];
-                    var members = partyGroups[groupHostId];
-                    html.Append("<div class=\"party\">");
-                    html.Append("<ul style=\"margin-top:4px;\">");
-                    for (var m = 0; m < members.Count; m++)
+                    var actNumber = actOrder[a];
+                    ActStatusBucket act;
+                    if (!acts.TryGetValue(actNumber, out act) || act == null || act.TotalCount <= 0)
                     {
-                        html.Append("<li>");
-                        html.Append(HtmlEncode(BuildStatusPlayerEntry(members[m])));
-                        if (members[m].AccountId == groupHostId)
-                        {
-                            html.Append("<span class=\"leader\">\u2605</span>");
-                        }
-                        html.Append("</li>");
+                        continue;
                     }
-                    html.Append("</ul></div>");
-                }
 
-                if (soloPlayers.Count > 0)
-                {
-                    html.Append("<ul>");
-                    for (var i = 0; i < soloPlayers.Count; i++)
+                    html.Append("<div class=\"act\">");
+                    html.Append("<h2>");
+                    html.Append(HtmlEncode(GetActDisplayName(actNumber)));
+                    html.Append("</h2>");
+
+                    var hubKeys = new List<string>(act.HubPlayersByHubId.Keys);
+                    hubKeys.Sort(StringComparer.OrdinalIgnoreCase);
+                    for (var h = 0; h < hubKeys.Count; h++)
                     {
-                        html.Append("<li>");
-                        html.Append(HtmlEncode(BuildStatusPlayerEntry(soloPlayers[i])));
-                        html.Append("</li>");
+                        var hubId = hubKeys[h];
+                        List<StatusPlayerRecord> hubPlayers;
+                        if (!act.HubPlayersByHubId.TryGetValue(hubId, out hubPlayers) || hubPlayers == null || hubPlayers.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        html.Append("<div class=\"section\">");
+                        html.Append("<h3>");
+                        html.Append(HtmlEncode(hubId));
+                        html.Append("</h3>");
+                        AppendGroupedPlayersHtml(html, hubPlayers);
+                        html.Append("</div>");
                     }
-                    html.Append("</ul>");
+
+                    var missionKeys = new List<string>(act.MissionPlayersByMapName.Keys);
+                    missionKeys.Sort(StringComparer.OrdinalIgnoreCase);
+                    for (var m = 0; m < missionKeys.Count; m++)
+                    {
+                        var mapName = missionKeys[m];
+                        List<StatusPlayerRecord> missionPlayers;
+                        if (!act.MissionPlayersByMapName.TryGetValue(mapName, out missionPlayers) || missionPlayers == null || missionPlayers.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        var missionTitle = !IsNullOrWhiteSpace(mapName)
+                            ? ResolveMissionDisplayName(mapName)
+                            : "Unknown Mission";
+
+                        html.Append("<div class=\"section\">");
+                        html.Append("<h3>Mission: ");
+                        html.Append(HtmlEncode(missionTitle));
+                        html.Append("</h3>");
+                        AppendGroupedPlayersHtml(html, missionPlayers);
+                        html.Append("</div>");
+                    }
+
+                    html.Append("</div>");
                 }
             }
 
@@ -750,6 +713,700 @@ namespace Shadowrun.LocalService.Core.Http
             html.Append(" | Refresh the page to update values.</div>");
             html.Append("</div></div></body></html>");
             return html.ToString();
+        }
+
+        private sealed class StatusPlayerRecord
+        {
+            public Guid AccountId;
+            public string IdentityHash;
+            public string CharacterName;
+            public string AccountDisplayName;
+            public int Chapter;
+            public string HubId;
+            public string MissionMapName;
+        }
+
+        private sealed class ActStatusBucket
+        {
+            public readonly Dictionary<string, List<StatusPlayerRecord>> HubPlayersByHubId = new Dictionary<string, List<StatusPlayerRecord>>(StringComparer.OrdinalIgnoreCase);
+            public readonly Dictionary<string, List<StatusPlayerRecord>> MissionPlayersByMapName = new Dictionary<string, List<StatusPlayerRecord>>(StringComparer.OrdinalIgnoreCase);
+
+            public int TotalCount
+            {
+                get
+                {
+                    var total = 0;
+                    foreach (var entry in HubPlayersByHubId)
+                    {
+                        if (entry.Value != null)
+                        {
+                            total += entry.Value.Count;
+                        }
+                    }
+
+                    foreach (var entry in MissionPlayersByMapName)
+                    {
+                        if (entry.Value != null)
+                        {
+                            total += entry.Value.Count;
+                        }
+                    }
+
+                    return total;
+                }
+            }
+        }
+
+        private Dictionary<int, ActStatusBucket> BuildActBuckets(List<StatusPlayerRecord> players)
+        {
+            var result = new Dictionary<int, ActStatusBucket>();
+            if (players == null || players.Count == 0)
+            {
+                return result;
+            }
+
+            var playersByAccount = new Dictionary<Guid, StatusPlayerRecord>();
+            for (var i = 0; i < players.Count; i++)
+            {
+                var record = players[i];
+                if (record != null && record.AccountId != Guid.Empty)
+                {
+                    playersByAccount[record.AccountId] = record;
+                }
+            }
+
+            for (var i = 0; i < players.Count; i++)
+            {
+                var player = players[i];
+                if (player == null)
+                {
+                    continue;
+                }
+
+                var locationSource = player;
+                Guid hostId;
+                if (player.AccountId != Guid.Empty
+                    && PartyHubFollowRegistry.TryGetHostForMember(player.AccountId, out hostId)
+                    && hostId != Guid.Empty
+                    && hostId != player.AccountId)
+                {
+                    StatusPlayerRecord host;
+                    if (playersByAccount.TryGetValue(hostId, out host) && host != null)
+                    {
+                        locationSource = host;
+                    }
+                }
+
+                var act = ResolveActNumber(locationSource.Chapter);
+                ActStatusBucket bucket;
+                if (!result.TryGetValue(act, out bucket) || bucket == null)
+                {
+                    bucket = new ActStatusBucket();
+                    result[act] = bucket;
+                }
+
+                if (!IsNullOrWhiteSpace(locationSource.MissionMapName))
+                {
+                    List<StatusPlayerRecord> missionPlayers;
+                    if (!bucket.MissionPlayersByMapName.TryGetValue(locationSource.MissionMapName, out missionPlayers) || missionPlayers == null)
+                    {
+                        missionPlayers = new List<StatusPlayerRecord>();
+                        bucket.MissionPlayersByMapName[locationSource.MissionMapName] = missionPlayers;
+                    }
+
+                    missionPlayers.Add(player);
+                    continue;
+                }
+
+                var hubId = NormalizeHubStatusContainerName(locationSource.HubId);
+                List<StatusPlayerRecord> hubPlayers;
+                if (!bucket.HubPlayersByHubId.TryGetValue(hubId, out hubPlayers) || hubPlayers == null)
+                {
+                    hubPlayers = new List<StatusPlayerRecord>();
+                    bucket.HubPlayersByHubId[hubId] = hubPlayers;
+                }
+
+                hubPlayers.Add(player);
+            }
+
+            return result;
+        }
+
+        private List<StatusPlayerRecord> BuildOnlineStatusPlayers()
+        {
+            var onlineAccountIds = AccountTransportLivenessRegistry.SnapshotOnlineAccountIds();
+            if (onlineAccountIds == null || onlineAccountIds.Length == 0)
+            {
+                return new List<StatusPlayerRecord>();
+            }
+
+            var deduplicatedOnlineIds = new Dictionary<Guid, bool>();
+            for (var i = 0; i < onlineAccountIds.Length; i++)
+            {
+                var accountId = onlineAccountIds[i];
+                if (accountId != Guid.Empty)
+                {
+                    deduplicatedOnlineIds[accountId] = true;
+                }
+            }
+
+            var hubParticipants = _hubPresenceRegistry != null
+                ? BuildStatusPlayerEntries(_hubPresenceRegistry.SnapshotParticipants())
+                : new List<HubPresenceRegistry.Participant>();
+            var hubByAccountId = new Dictionary<Guid, HubPresenceRegistry.Participant>();
+            for (var i = 0; i < hubParticipants.Count; i++)
+            {
+                var participant = hubParticipants[i];
+                if (participant != null && participant.AccountId != Guid.Empty)
+                {
+                    hubByAccountId[participant.AccountId] = participant;
+                }
+            }
+
+            var missionByAccountId = new Dictionary<Guid, MissionRuntimeRegistry.MissionRuntimeParticipant>();
+            var missionParticipants = MissionRuntimeRegistry.SnapshotParticipants();
+            if (missionParticipants != null)
+            {
+                for (var i = 0; i < missionParticipants.Length; i++)
+                {
+                    var missionParticipant = missionParticipants[i];
+                    if (missionParticipant.AccountId == Guid.Empty)
+                    {
+                        continue;
+                    }
+
+                    MissionRuntimeRegistry.MissionRuntimeParticipant existing;
+                    if (!missionByAccountId.TryGetValue(missionParticipant.AccountId, out existing)
+                        || IsNullOrWhiteSpace(existing.MapName) && !IsNullOrWhiteSpace(missionParticipant.MapName))
+                    {
+                        missionByAccountId[missionParticipant.AccountId] = missionParticipant;
+                    }
+                }
+            }
+
+            var result = new List<StatusPlayerRecord>(deduplicatedOnlineIds.Count);
+            foreach (var kvp in deduplicatedOnlineIds)
+            {
+                var accountId = kvp.Key;
+                var identityHash = accountId.ToString("D");
+
+                HubPresenceRegistry.Participant hubParticipant;
+                hubByAccountId.TryGetValue(accountId, out hubParticipant);
+
+                MissionRuntimeRegistry.MissionRuntimeParticipant missionParticipant;
+                var inMission = missionByAccountId.TryGetValue(accountId, out missionParticipant);
+
+                var slot = TryResolvePreferredCareerSlot(identityHash);
+                var characterName = ResolveCharacterNameForStatus(hubParticipant, slot);
+                var accountDisplayName = ResolveAccountDisplayNameForIdentity(identityHash, accountId);
+                var chapter = slot != null ? slot.MainCampaignCurrentChapter : 0;
+                var hubId = ResolveHubIdForStatus(hubParticipant, slot);
+
+                result.Add(new StatusPlayerRecord
+                {
+                    AccountId = accountId,
+                    IdentityHash = identityHash,
+                    CharacterName = characterName,
+                    AccountDisplayName = accountDisplayName,
+                    Chapter = chapter,
+                    HubId = hubId,
+                    MissionMapName = inMission ? missionParticipant.MapName : null,
+                });
+            }
+
+            result.Sort(delegate(StatusPlayerRecord a, StatusPlayerRecord b)
+            {
+                return string.Compare(BuildStatusPlayerEntry(a), BuildStatusPlayerEntry(b), StringComparison.OrdinalIgnoreCase);
+            });
+
+            return result;
+        }
+
+        private CareerSlot TryResolvePreferredCareerSlot(string identityHash)
+        {
+            if (_userStore == null || IsNullOrWhiteSpace(identityHash))
+            {
+                return null;
+            }
+
+            List<CareerSlot> careers;
+            int lastCareerIndex;
+            try
+            {
+                careers = _userStore.GetCareers(identityHash);
+                lastCareerIndex = _userStore.GetLastCareerIndex(identityHash);
+            }
+            catch
+            {
+                return null;
+            }
+
+            if (careers == null || careers.Count == 0)
+            {
+                return null;
+            }
+
+            CareerSlot fallback = null;
+            for (var i = 0; i < careers.Count; i++)
+            {
+                var slot = careers[i];
+                if (slot == null)
+                {
+                    continue;
+                }
+
+                if (fallback == null)
+                {
+                    fallback = slot;
+                }
+
+                if (!slot.IsOccupied)
+                {
+                    continue;
+                }
+
+                if (slot.Index == lastCareerIndex)
+                {
+                    return slot;
+                }
+
+                if (fallback == null || !fallback.IsOccupied)
+                {
+                    fallback = slot;
+                }
+            }
+
+            return fallback;
+        }
+
+        private string ResolveCharacterNameForStatus(HubPresenceRegistry.Participant hubParticipant, CareerSlot slot)
+        {
+            if (hubParticipant != null && !IsNullOrWhiteSpace(hubParticipant.CharacterName))
+            {
+                return hubParticipant.CharacterName.Trim();
+            }
+
+            if (slot != null && !IsNullOrWhiteSpace(slot.CharacterName))
+            {
+                return slot.CharacterName.Trim();
+            }
+
+            return "Unknown Character";
+        }
+
+        private string ResolveHubIdForStatus(HubPresenceRegistry.Participant hubParticipant, CareerSlot slot)
+        {
+            if (hubParticipant != null && !IsNullOrWhiteSpace(hubParticipant.HubId))
+            {
+                return hubParticipant.HubId.Trim();
+            }
+
+            if (slot != null && !IsNullOrWhiteSpace(slot.HubId))
+            {
+                return slot.HubId.Trim();
+            }
+
+            return "Unknown Hub";
+        }
+
+        private string ResolveAccountDisplayNameForIdentity(string identityHash, Guid accountId)
+        {
+            string resolved;
+            try
+            {
+                resolved = _userStore != null ? _userStore.GetDisplayName(identityHash) : null;
+            }
+            catch
+            {
+                resolved = null;
+            }
+
+            if (!IsNullOrWhiteSpace(resolved))
+            {
+                return resolved.Trim();
+            }
+
+            return accountId != Guid.Empty ? accountId.ToString("D") : "Unknown Account";
+        }
+
+        private void AppendGroupedPlayersHtml(StringBuilder html, List<StatusPlayerRecord> players)
+        {
+            if (html == null)
+            {
+                return;
+            }
+
+            if (players == null || players.Count == 0)
+            {
+                html.Append("<div class=\"muted\">No players in this location.</div>");
+                return;
+            }
+
+            var partyGroups = new Dictionary<Guid, List<StatusPlayerRecord>>();
+            var soloPlayers = new List<StatusPlayerRecord>();
+
+            for (var i = 0; i < players.Count; i++)
+            {
+                var player = players[i];
+                if (player == null)
+                {
+                    continue;
+                }
+
+                Guid hostId;
+                if (player.AccountId != Guid.Empty && PartyHubFollowRegistry.TryGetHostForMember(player.AccountId, out hostId))
+                {
+                    List<StatusPlayerRecord> group;
+                    if (!partyGroups.TryGetValue(hostId, out group) || group == null)
+                    {
+                        group = new List<StatusPlayerRecord>();
+                        partyGroups[hostId] = group;
+                    }
+
+                    group.Add(player);
+                    continue;
+                }
+
+                soloPlayers.Add(player);
+            }
+
+            for (var i = soloPlayers.Count - 1; i >= 0; i--)
+            {
+                var player = soloPlayers[i];
+                if (player != null && player.AccountId != Guid.Empty && partyGroups.ContainsKey(player.AccountId))
+                {
+                    partyGroups[player.AccountId].Insert(0, player);
+                    soloPlayers.RemoveAt(i);
+                }
+            }
+
+            var sortedGroupKeys = new List<Guid>(partyGroups.Keys);
+            for (var i = 0; i < sortedGroupKeys.Count; i++)
+            {
+                var hostKey = sortedGroupKeys[i];
+                var members = partyGroups[hostKey];
+                members.Sort(delegate(StatusPlayerRecord a, StatusPlayerRecord b)
+                {
+                    return string.Compare(BuildStatusPlayerEntry(a), BuildStatusPlayerEntry(b), StringComparison.OrdinalIgnoreCase);
+                });
+
+                for (var m = 0; m < members.Count; m++)
+                {
+                    if (members[m].AccountId == hostKey && m > 0)
+                    {
+                        var leader = members[m];
+                        members.RemoveAt(m);
+                        members.Insert(0, leader);
+                        break;
+                    }
+                }
+            }
+
+            sortedGroupKeys.Sort(delegate(Guid a, Guid b)
+            {
+                var ga = partyGroups[a];
+                var gb = partyGroups[b];
+                var nameA = ga.Count > 0 ? BuildStatusPlayerEntry(ga[0]) : string.Empty;
+                var nameB = gb.Count > 0 ? BuildStatusPlayerEntry(gb[0]) : string.Empty;
+                return string.Compare(nameA, nameB, StringComparison.OrdinalIgnoreCase);
+            });
+
+            soloPlayers.Sort(delegate(StatusPlayerRecord a, StatusPlayerRecord b)
+            {
+                return string.Compare(BuildStatusPlayerEntry(a), BuildStatusPlayerEntry(b), StringComparison.OrdinalIgnoreCase);
+            });
+
+            for (var g = 0; g < sortedGroupKeys.Count; g++)
+            {
+                var hostId = sortedGroupKeys[g];
+                var members = partyGroups[hostId];
+                html.Append("<div class=\"party\"><ul style=\"margin-top:4px;\">");
+                for (var m = 0; m < members.Count; m++)
+                {
+                    var member = members[m];
+                    html.Append("<li>");
+                    html.Append(HtmlEncode(BuildStatusPlayerEntry(member)));
+                    if (member.AccountId == hostId)
+                    {
+                        html.Append("<span class=\"leader\">&#9733;</span>");
+                    }
+                    html.Append("</li>");
+                }
+                html.Append("</ul></div>");
+            }
+
+            if (soloPlayers.Count > 0)
+            {
+                html.Append("<ul>");
+                for (var i = 0; i < soloPlayers.Count; i++)
+                {
+                    html.Append("<li>");
+                    html.Append(HtmlEncode(BuildStatusPlayerEntry(soloPlayers[i])));
+                    html.Append("</li>");
+                }
+                html.Append("</ul>");
+            }
+        }
+
+        private string BuildStatusPlayerEntry(StatusPlayerRecord player)
+        {
+            if (player == null)
+            {
+                return "Unknown Character (Unknown Account)";
+            }
+
+            var characterName = !IsNullOrWhiteSpace(player.CharacterName)
+                ? player.CharacterName.Trim()
+                : "Unknown Character";
+            var accountDisplayName = !IsNullOrWhiteSpace(player.AccountDisplayName)
+                ? player.AccountDisplayName.Trim()
+                : (player.AccountId != Guid.Empty ? player.AccountId.ToString("D") : "Unknown Account");
+            return characterName + " (" + accountDisplayName + ")";
+        }
+
+        private static int ResolveActNumber(int chapter)
+        {
+            if (chapter < 6)
+            {
+                return 1;
+            }
+
+            if (chapter <= 16)
+            {
+                return 2;
+            }
+
+            if (chapter <= 32)
+            {
+                return 3;
+            }
+
+            return 4;
+        }
+
+        private static string GetActDisplayName(int actNumber)
+        {
+            switch (actNumber)
+            {
+                case 1:
+                    return "Act 1";
+                case 2:
+                    return "Act 2";
+                case 3:
+                    return "Act 3";
+                default:
+                    return "Act 4";
+            }
+        }
+
+        private static string NormalizeHubStatusContainerName(string hubId)
+        {
+            if (!IsNullOrWhiteSpace(hubId) && hubId.StartsWith("Matrix_", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Matrix";
+            }
+
+            return "Hub";
+        }
+
+        private string ResolveMissionDisplayName(string mapName)
+        {
+            if (IsNullOrWhiteSpace(mapName))
+            {
+                return "Unknown Mission";
+            }
+
+            var missionNames = GetMissionEnglishNameMap();
+            string resolved;
+            if (missionNames != null && missionNames.TryGetValue(mapName, out resolved) && !IsNullOrWhiteSpace(resolved))
+            {
+                return resolved;
+            }
+
+            return mapName;
+        }
+
+        private Dictionary<string, string> GetMissionEnglishNameMap()
+        {
+            var now = DateTime.UtcNow;
+            if (_cachedMissionEnglishNames != null && now - _cachedMissionEnglishNamesLoadedUtc < MissionNameCacheDuration)
+            {
+                return _cachedMissionEnglishNames;
+            }
+
+            lock (_missionNameCacheLock)
+            {
+                now = DateTime.UtcNow;
+                if (_cachedMissionEnglishNames != null && now - _cachedMissionEnglishNamesLoadedUtc < MissionNameCacheDuration)
+                {
+                    return _cachedMissionEnglishNames;
+                }
+
+                _cachedMissionEnglishNames = LoadMissionEnglishNameMap();
+                _cachedMissionEnglishNamesLoadedUtc = now;
+                return _cachedMissionEnglishNames;
+            }
+        }
+
+        private Dictionary<string, string> LoadMissionEnglishNameMap()
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            Dictionary<string, string> missionToDisplayKey;
+            Dictionary<string, string> englishTable;
+            try
+            {
+                missionToDisplayKey = LoadMissionDisplayKeyMap();
+                englishTable = LoadEnglishLocalizationTable();
+            }
+            catch
+            {
+                return result;
+            }
+
+            if (missionToDisplayKey == null || missionToDisplayKey.Count == 0)
+            {
+                return result;
+            }
+
+            foreach (var entry in missionToDisplayKey)
+            {
+                var mapName = entry.Key;
+                var displayKey = entry.Value;
+                if (IsNullOrWhiteSpace(mapName))
+                {
+                    continue;
+                }
+
+                string localized;
+                if (!IsNullOrWhiteSpace(displayKey)
+                    && englishTable != null
+                    && englishTable.TryGetValue(displayKey, out localized)
+                    && !IsNullOrWhiteSpace(localized))
+                {
+                    result[mapName] = localized;
+                }
+            }
+
+            return result;
+        }
+
+        private Dictionary<string, string> LoadMissionDisplayKeyMap()
+        {
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (_options == null || IsNullOrWhiteSpace(_options.StaticDataDir))
+            {
+                return map;
+            }
+
+            var globalsPath = Path.Combine(_options.StaticDataDir, "globals.json");
+            if (!File.Exists(globalsPath))
+            {
+                return map;
+            }
+
+            var json = File.ReadAllText(globalsPath);
+            if (IsNullOrWhiteSpace(json))
+            {
+                return map;
+            }
+
+            var root = Json.DeserializeObject(json) as IDictionary;
+            if (root == null || !root.Contains("Components"))
+            {
+                return map;
+            }
+
+            var components = root["Components"] as IList;
+            if (components == null)
+            {
+                return map;
+            }
+
+            for (var i = 0; i < components.Count; i++)
+            {
+                var component = components[i] as IDictionary;
+                if (component == null || !component.Contains("MissionDefinitions"))
+                {
+                    continue;
+                }
+
+                var missionDefinitions = component["MissionDefinitions"] as IList;
+                if (missionDefinitions == null)
+                {
+                    continue;
+                }
+
+                for (var m = 0; m < missionDefinitions.Count; m++)
+                {
+                    var mission = missionDefinitions[m] as IDictionary;
+                    if (mission == null)
+                    {
+                        continue;
+                    }
+
+                    var mapName = GetString(mission, "Name");
+                    if (IsNullOrWhiteSpace(mapName))
+                    {
+                        continue;
+                    }
+
+                    var displayKey = GetString(mission, "DisplayName");
+                    if (!IsNullOrWhiteSpace(displayKey))
+                    {
+                        map[mapName] = displayKey;
+                    }
+                }
+            }
+
+            return map;
+        }
+
+        private Dictionary<string, string> LoadEnglishLocalizationTable()
+        {
+            var table = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (_options == null || IsNullOrWhiteSpace(_options.StreamingAssetsDir))
+            {
+                return table;
+            }
+
+            var englishPath = Path.Combine(Path.Combine(_options.StreamingAssetsDir, "localization"), "English.csv");
+            if (!File.Exists(englishPath))
+            {
+                return table;
+            }
+
+            var lines = File.ReadAllLines(englishPath);
+            for (var i = 0; i < lines.Length; i++)
+            {
+                var line = lines[i];
+                if (IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                if (i == 0 && line.StartsWith("id;", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var separatorIndex = line.IndexOf(';');
+                if (separatorIndex <= 0 || separatorIndex + 1 >= line.Length)
+                {
+                    continue;
+                }
+
+                var key = line.Substring(0, separatorIndex).Trim();
+                var value = line.Substring(separatorIndex + 1).Trim();
+                if (IsNullOrWhiteSpace(key) || IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                table[key] = value.Replace("\\n", " ");
+            }
+
+            return table;
         }
 
         private string GetCachedServerStatusPageHtml()
