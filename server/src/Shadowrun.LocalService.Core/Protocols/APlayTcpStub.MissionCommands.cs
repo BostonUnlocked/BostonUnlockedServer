@@ -189,6 +189,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
+            RemoveHubPresenceWithBroadcast(peer, null, "mission-start-solo");
             MissionRuntimeRegistry.MarkSoloMissionStarted(peer);
             SendMissionStartForClients(stream, peer, responseMsgNoBase, missionInstanceEntityId, "sent MissionInstanceCommunicationObject StartMissionForClients");
         }
@@ -264,6 +265,18 @@ namespace Shadowrun.LocalService.Core.Protocols
             if (!started)
             {
                 return;
+            }
+
+            var coopParticipants = GetCoopMissionParticipantsSnapshot(currentCoopGroupName);
+            for (var i = 0; i < coopParticipants.Length; i++)
+            {
+                var participant = coopParticipants[i];
+                if (participant == null || IsNullOrWhiteSpace(participant.Peer))
+                {
+                    continue;
+                }
+
+                RemoveHubPresenceWithBroadcast(participant.Peer, null, "mission-start-coop");
             }
 
             MissionRuntimeRegistry.MarkCoopMissionStarted(currentCoopGroupName);
