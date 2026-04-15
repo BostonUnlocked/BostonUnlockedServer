@@ -732,18 +732,32 @@ namespace Shadowrun.LocalService.Core.Http
                 hasHubPresence = _hubPresenceRegistry.TryGetParticipantForAccount(accountId, out participant);
             }
 
+            var runtimeInMission = false;
+            if (runtimeOnline)
+            {
+                var missionParticipants = MissionRuntimeRegistry.SnapshotParticipants();
+                if (missionParticipants != null)
+                {
+                    for (var i = 0; i < missionParticipants.Length; i++)
+                    {
+                        if (missionParticipants[i].AccountId == accountId)
+                        {
+                            runtimeInMission = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
             string previousOnline;
             var hadOnline = playerInfo.TryGetValue("Online", out previousOnline);
             var runtimeOnlineText = runtimeOnline.ToString();
             playerInfo["Online"] = runtimeOnlineText;
 
-            var forceNotInMission = !runtimeOnline || hasHubPresence;
             string previousInMission;
             var hadInMission = playerInfo.TryGetValue("InMission", out previousInMission);
-            if (forceNotInMission)
-            {
-                playerInfo["InMission"] = bool.FalseString;
-            }
+            var runtimeInMissionText = runtimeInMission.ToString();
+            playerInfo["InMission"] = runtimeInMissionText;
 
             if (!logOverrides)
             {
@@ -751,7 +765,7 @@ namespace Shadowrun.LocalService.Core.Http
             }
 
             var onlineChanged = !hadOnline || !string.Equals(previousOnline, runtimeOnlineText, StringComparison.OrdinalIgnoreCase);
-            var inMissionChanged = forceNotInMission && (!hadInMission || !string.Equals(previousInMission, bool.FalseString, StringComparison.OrdinalIgnoreCase));
+            var inMissionChanged = !hadInMission || !string.Equals(previousInMission, runtimeInMissionText, StringComparison.OrdinalIgnoreCase);
 
             if (!onlineChanged && !inMissionChanged)
             {
@@ -766,8 +780,8 @@ namespace Shadowrun.LocalService.Core.Http
                 gameName = gameName,
                 source = source,
                 runtimeOnline = runtimeOnline,
+                runtimeInMission = runtimeInMission,
                 hasHubPresence = hasHubPresence,
-                forceNotInMission = forceNotInMission,
                 previousOnline = hadOnline ? previousOnline : null,
                 previousInMission = hadInMission ? previousInMission : null,
                 appliedOnline = runtimeOnlineText,
