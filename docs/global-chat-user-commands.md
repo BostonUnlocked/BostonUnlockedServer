@@ -35,6 +35,20 @@ Usage:
 Example:
 /setaccountname NeonRunner
 
+### /resetskills
+Resets your active character skill tree and refunds all spent karma.
+
+Usage:
+/resetskills
+
+Result:
+- Purchased skills are cleared and reset to initial skills.
+- Refunded karma is added back to current karma.
+- Spent karma tracking is set to 0.
+- For non-admins, a per-career cooldown of 28 days applies.
+- On success, the server returns the next UTC timestamp when this command is available again.
+- If used during cooldown, the server returns the next UTC timestamp when it can be used again.
+
 ## Notes
 
 - Command names are case-insensitive.
