@@ -903,6 +903,8 @@ namespace Shadowrun.LocalService.Core.Persistence
         public long LastRepeatableMissionResetUtcTicks;
         // UTC date ticks for last player-derived henchman rotation.
         public long LastHenchmanRotationUtcTicks;
+        // UTC ticks for last successful /resetskills execution.
+        public long LastResetSkillsUtcTicks;
 
         // Minimal persistent inventory for hub shops (items bought/sold).
         // Key format: "{ItemId}|{Quality}|{Flavour}" (quality/flavour default to 0/-1).
@@ -964,6 +966,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             dict["RepeatableUnlockSequencePositions"] = RepeatableUnlockSequencePositions ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             dict["LastRepeatableMissionResetUtcTicks"] = LastRepeatableMissionResetUtcTicks;
             dict["LastHenchmanRotationUtcTicks"] = LastHenchmanRotationUtcTicks;
+            dict["LastResetSkillsUtcTicks"] = LastResetSkillsUtcTicks;
             dict["ItemPossessions"] = ItemPossessions ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             dict["AppliedCouponItemPackages"] = AppliedCouponItemPackages ?? new List<string>();
             return dict;
@@ -1148,10 +1151,23 @@ namespace Shadowrun.LocalService.Core.Persistence
                 slot.LastHenchmanRotationUtcTicks = 0L;
             }
 
+            try
+            {
+                if (dict.Contains("LastResetSkillsUtcTicks") && dict["LastResetSkillsUtcTicks"] != null)
+                {
+                    slot.LastResetSkillsUtcTicks = Convert.ToInt64(dict["LastResetSkillsUtcTicks"], CultureInfo.InvariantCulture);
+                }
+            }
+            catch
+            {
+                slot.LastResetSkillsUtcTicks = 0L;
+            }
+
             slot.CharacterIdentifier = dict.Contains("CharacterIdentifier") ? (dict["CharacterIdentifier"] as string) : null;
 
             if (slot.LastRepeatableMissionResetUtcTicks < 0L) slot.LastRepeatableMissionResetUtcTicks = 0L;
             if (slot.LastHenchmanRotationUtcTicks < 0L) slot.LastHenchmanRotationUtcTicks = 0L;
+            if (slot.LastResetSkillsUtcTicks < 0L) slot.LastResetSkillsUtcTicks = 0L;
             try
             {
                 if (dict.Contains("Karma") && dict["Karma"] != null) slot.Karma = Convert.ToInt32(dict["Karma"]);

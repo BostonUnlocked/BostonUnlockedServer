@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
@@ -25,6 +26,8 @@ namespace Shadowrun.LocalService.Core.Protocols
     private static string _mainCampaignStorylineSourceDir;
     private const int SlashCommandFeedbackMaxLinesPerPage = 12;
     private const int SlashCommandFeedbackMaxCharsPerPage = 1200;
+    private const int ResetSkillsCooldownDays = 28;
+    private const long ResetSkillsCooldownTicks = 28L * 24L * 60L * 60L * 10000000L;
 
         private static ServiceEnvelopeRequest ParseServiceEnvelopeRequest(byte[] payload)
         {
@@ -2441,13 +2444,53 @@ namespace Shadowrun.LocalService.Core.Protocols
             return true;
         }
 
-        private bool TryResetSkillsForTarget(ChatCommandTarget target, out int refundedKarma, out string message)
+        private static string FormatUtcTicksIso(long utcTicks)
+        {
+            if (utcTicks <= DateTime.MinValue.Ticks)
+            {
+                return DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc).ToString("o", CultureInfo.InvariantCulture);
+            }
+
+            if (utcTicks >= DateTime.MaxValue.Ticks)
+            {
+                return DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc).ToString("o", CultureInfo.InvariantCulture);
+            }
+
+            return new DateTime(utcTicks, DateTimeKind.Utc).ToString("o", CultureInfo.InvariantCulture);
+        }
+
+        private bool TryResetSkillsForTarget(ChatCommandTarget target, bool bypassCooldown, out int refundedKarma, out string nextAllowedResetUtc, out string message)
         {
             refundedKarma = 0;
+            nextAllowedResetUtc = string.Empty;
             message = "Unable to resolve active character.";
 
             if (target == null || target.ActiveCareerSlot == null || _userStore == null || IsNullOrEmpty(target.IdentityHash))
             {
+                return false;
+            }
+
+            var nowUtc = DateTime.UtcNow;
+            var nowTicks = nowUtc.Ticks;
+            var lastResetTicks = target.ActiveCareerSlot.LastResetSkillsUtcTicks;
+            if (lastResetTicks < 0L)
+            {
+                lastResetTicks = 0L;
+            }
+
+            var nextAllowedTicks = nowTicks;
+            if (lastResetTicks > 0L)
+            {
+                var maxSafeStart = long.MaxValue - ResetSkillsCooldownTicks;
+                nextAllowedTicks = lastResetTicks > maxSafeStart
+                    ? long.MaxValue
+                    : lastResetTicks + ResetSkillsCooldownTicks;
+            }
+
+            if (!bypassCooldown && lastResetTicks > 0L && nowTicks < nextAllowedTicks)
+            {
+                nextAllowedResetUtc = FormatUtcTicksIso(nextAllowedTicks);
+                message = "You can use /resetskills again on " + nextAllowedResetUtc + ".";
                 return false;
             }
 
@@ -2466,6 +2509,14 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             refundedKarma = result.KarmaRefunded;
+            if (!bypassCooldown)
+            {
+                target.ActiveCareerSlot.LastResetSkillsUtcTicks = nowTicks;
+                nextAllowedTicks = nowTicks > long.MaxValue - ResetSkillsCooldownTicks
+                    ? long.MaxValue
+                    : nowTicks + ResetSkillsCooldownTicks;
+                nextAllowedResetUtc = FormatUtcTicksIso(nextAllowedTicks);
+            }
             _userStore.UpsertCareer(target.IdentityHash, target.ActiveCareerSlot);
 
             if (_characterStatePushBroker != null)
@@ -2479,6 +2530,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                 + ", career slot " + target.ActiveCareerIndex.ToString()
                 + ". Refunded karma: " + refundedKarma.ToString()
                 + ". Spent karma is now 0.";
+            if (!bypassCooldown)
+            {
+                message += " You can use /resetskills again on " + nextAllowedResetUtc + ".";
+            }
             return true;
         }
 
@@ -2916,7 +2971,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     return ChatCommandResult.OkMany(BuildPagedFeedbackMessages("Admin commands:", lines));
                 }
 
-                return ChatCommandResult.Ok("Commands: /help, /bug {message}, /setaccountname {name}");
+                return ChatCommandResult.Ok("Commands: /help, /bug {message}, /setaccountname {name}, /resetskills (28-day cooldown per career)");
             }
         }
 
@@ -3521,7 +3576,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             public string Name { get { return _name; } }
-            public bool RequiresAdmin { get { return true; } }
+            public bool RequiresAdmin { get { return _targetMode == ChatCommandTargetMode.OtherByAccountId; } }
 
             public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
             {
@@ -3557,8 +3612,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
 
                 int refundedKarma;
+                string nextAllowedResetUtc;
                 string message;
-                var success = owner.TryResetSkillsForTarget(target, out refundedKarma, out message);
+                var isAdmin = owner.IsChatCommandAuthorized(context.SenderAccountId);
+                var success = owner.TryResetSkillsForTarget(target, isAdmin, out refundedKarma, out nextAllowedResetUtc, out message);
                 if (_targetMode == ChatCommandTargetMode.OtherByAccountId)
                 {
                     owner.LogAdminEvent(new
@@ -3577,6 +3634,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                         targetCharacterName = target != null ? (target.CharacterName ?? string.Empty) : string.Empty,
                         targetHubId = target != null ? (target.HubId ?? string.Empty) : string.Empty,
                         refundedKarma = refundedKarma,
+                        cooldownDays = ResetSkillsCooldownDays,
+                        nextAllowedResetUtc = nextAllowedResetUtc ?? string.Empty,
+                        adminBypass = isAdmin,
                         success = success,
                     });
                 }

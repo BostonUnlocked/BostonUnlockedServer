@@ -80,17 +80,6 @@ Sets your active character nuyen.
 Usage:
 /setnuyen {X}
 
-### /resetskills
-Resets your active character skill tree and refunds all spent karma.
-
-Usage:
-/resetskills
-
-Result:
-- Purchased skills are cleared and reset to initial skills.
-- Refunded karma is added back to current karma.
-- Spent karma tracking is set to 0.
-
 ### /additem {ItemCode} [Variant]
 Adds one item to your active character inventory.
 
