@@ -266,6 +266,8 @@ namespace Shadowrun.LocalService.Core.Protocols
         private readonly PortedSkillPurchaseService _skillPurchaseService;
         private readonly PortedShopInventoryService _shopInventoryService;
         private readonly PortedHubInstanceManager _portedHubInstanceManager;
+        private readonly HashSet<Guid> _chatAdminAccountIds;
+        private readonly bool _chatAdminOpenMode;
 
         // APlay DirectSystem messages include an 8-byte message number the client may use for ordering/dedup.
         // For MetaGameplay pushes we must keep these monotonic even if the client repeats a request with a lower MsgNo.
@@ -411,7 +413,17 @@ namespace Shadowrun.LocalService.Core.Protocols
             _shopInventoryService = new PortedShopInventoryService(_options, _userStore);
             _portedHubInstanceManager = new PortedHubInstanceManager(new PortedHubRepository(new PortedHubLoader(_options != null ? _options.StreamingAssetsDir : null)), false);
             _hubPresenceRegistry = hubPresenceRegistry ?? new HubPresenceRegistry();
+            _chatAdminAccountIds = CheatAuthorizationPolicy.LoadChatAdminAccountIds(options, null);
+            _chatAdminOpenMode = CheatAuthorizationPolicy.ResolveAdminOpenMode(_chatAdminAccountIds);
             _missionCleanupTimer = new Timer(SweepDisconnectedMissionSessions, null, MissionCleanupInterval, MissionCleanupInterval);
+        }
+
+        private bool IsCheatAuthorized(Guid accountId)
+        {
+            return CheatAuthorizationPolicy.IsAccountAuthorized(
+                accountId,
+                _chatAdminAccountIds,
+                _chatAdminOpenMode);
         }
 
         private void TryFlushPendingCharacterStatePushes(Guid identityGuid, string identityHash, int activeCareerIndex, string peer, NetworkStream stream)
@@ -2020,6 +2032,20 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         continue;
                                     }
 
+                                    if (requestedChanges.ApplyReset && !IsCheatAuthorized(activeIdentityGuid))
+                                    {
+                                        _logger.Log(new
+                                        {
+                                            ts = RequestLogger.UtcNowIso(),
+                                            type = "metagameplay-cheat-blocked",
+                                            peer = peer,
+                                            accountId = activeIdentityGuid != Guid.Empty ? activeIdentityGuid.ToString("D") : null,
+                                            operation = "ChangeSkillTrees",
+                                            reason = "apply-reset-requires-admin",
+                                        });
+                                        continue;
+                                    }
+
                                     var slotIndex = activeCareerIndex;
                                     if (slotIndex < 0)
                                     {
@@ -2546,6 +2572,23 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 flushPendingPostCreateStoryprogress(direct.Value.MsgNo, "metagameplay-message");
 
                                 var rawMessage = payloadStrings[0];
+
+                                if (isMetaGameplayWrappedMessage
+                                    && CheatAuthorizationPolicy.LooksLikeBlockedCheatMessage(rawMessage)
+                                    && !IsCheatAuthorized(activeIdentityGuid))
+                                {
+                                    _logger.Log(new
+                                    {
+                                        ts = RequestLogger.UtcNowIso(),
+                                        type = "metagameplay-cheat-blocked",
+                                        peer = peer,
+                                        accountId = activeIdentityGuid != Guid.Empty ? activeIdentityGuid.ToString("D") : null,
+                                        operation = "SendMessage",
+                                        reason = "cheat-message-requires-admin",
+                                        preview = rawMessage != null && rawMessage.Length > 180 ? rawMessage.Substring(0, 180) : rawMessage,
+                                    });
+                                    continue;
+                                }
 
                                 // Diagnostics: decode MetaGameplayCommunicationObject.SendMessage(...) payloads.
                                 if (isMetaGameplayWrappedMessage && rawMessage != null)

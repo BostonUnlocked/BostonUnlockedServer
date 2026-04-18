@@ -997,9 +997,10 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         private bool IsChatCommandAuthorized(Guid accountId)
         {
-            return accountId != Guid.Empty
-                && _chatAdminAccountIds != null
-                && _chatAdminAccountIds.Contains(accountId);
+            return CheatAuthorizationPolicy.IsAccountAuthorized(
+                accountId,
+                _chatAdminAccountIds,
+                _chatAdminOpenMode);
         }
 
         private static bool IsGlobalChannelName(string channelName)
@@ -1388,113 +1389,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         private HashSet<Guid> LoadChatAdminAccountIds(LocalServiceOptions options)
         {
-            var result = new HashSet<Guid>();
-            if (options == null)
-            {
-                return result;
-            }
-
-            var path = options.ChatAdminConfigPath;
-            if (string.IsNullOrEmpty(path))
-            {
-                if (!string.IsNullOrEmpty(options.DataDir))
-                {
-                    path = Path.Combine(options.DataDir, "chat-admins.json");
-                }
-                else
-                {
-                    return result;
-                }
-            }
-
-            try
-            {
-                var dir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(dir))
-                {
-                    Directory.CreateDirectory(dir);
-                }
-
-                if (!File.Exists(path))
-                {
-                    File.WriteAllText(path, "{\r\n  \"admins\": []\r\n}\r\n");
-                    LogAdminEvent(new
-                    {
-                        ts = RequestLogger.UtcNowIso(),
-                        type = "chat-admin-config",
-                        action = "created-placeholder",
-                        path = path,
-                    });
-                    return result;
-                }
-
-                var json = File.ReadAllText(path);
-                if (string.IsNullOrEmpty(json) || json.Trim().Length == 0)
-                {
-                    File.WriteAllText(path, "{\r\n  \"admins\": []\r\n}\r\n");
-                    LogAdminEvent(new
-                    {
-                        ts = RequestLogger.UtcNowIso(),
-                        type = "chat-admin-config",
-                        action = "rewrote-empty-placeholder",
-                        path = path,
-                    });
-                    return result;
-                }
-
-                var serializer = new JavaScriptSerializer();
-                var root = serializer.DeserializeObject(json);
-
-                object[] adminsArray = null;
-                var dict = root as Dictionary<string, object>;
-                if (dict != null)
-                {
-                    object adminsRaw;
-                    if (dict.TryGetValue("admins", out adminsRaw))
-                    {
-                        adminsArray = adminsRaw as object[];
-                    }
-                }
-                else
-                {
-                    adminsArray = root as object[];
-                }
-
-                if (adminsArray != null)
-                {
-                    for (var i = 0; i < adminsArray.Length; i++)
-                    {
-                        var value = adminsArray[i] as string;
-                        Guid parsed;
-                        if (TryParseGuid(value, out parsed) && parsed != Guid.Empty)
-                        {
-                            result.Add(parsed);
-                        }
-                    }
-                }
-
-                LogAdminEvent(new
-                {
-                    ts = RequestLogger.UtcNowIso(),
-                    type = "chat-admin-config",
-                    action = "loaded",
-                    path = path,
-                    count = result.Count,
-                });
-            }
-            catch (Exception ex)
-            {
-                LogAdminEvent(new
-                {
-                    ts = RequestLogger.UtcNowIso(),
-                    type = "chat-admin-config",
-                    action = "load-failed",
-                    path = path,
-                    error = ex.Message,
-                });
-            }
-
-            return result;
+            return CheatAuthorizationPolicy.LoadChatAdminAccountIds(options, LogAdminEvent);
         }
 
         private static bool TryParseGuid(string value, out Guid parsed)
