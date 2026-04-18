@@ -525,6 +525,24 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
+            if (CheatAuthorizationPolicy.IsLiveModeCheatSkill(request.SkillId.Value)
+                && !IsCheatAuthorized(activeIdentityGuid))
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "aplay-mission-command",
+                    peer = peer,
+                    status = "rejected",
+                    reason = "cheat-skill-requires-admin",
+                    command = request.Kind.ToString(),
+                    skillId = request.SkillId.Value,
+                    agentId = request.AgentId.Value,
+                    accountId = activeIdentityGuid != Guid.Empty ? activeIdentityGuid.ToString("D") : null,
+                });
+                return;
+            }
+
             var fallbackSeeds = AllocateMissionSeeds("mission-command-fallback", peer, null, currentCoopGroupName);
             var seed0 = fallbackSeeds.Seed0;
             var seed1 = fallbackSeeds.Seed1;

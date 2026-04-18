@@ -188,6 +188,7 @@
     <Compile Include="Protocols\APlayTcpStub.StaticData.cs" />
     <Compile Include="Protocols\APlayTcpStub.StoryProgression.cs" />
     <Compile Include="Protocols\AccountTransportLivenessRegistry.cs" />
+    <Compile Include="Protocols\CheatAuthorizationPolicy.cs" />
     <Compile Include="Protocols\ConnectedPeerRegistry.cs" />
     <Compile Include="Protocols\CoopGroupHostRegistry.cs" />
     <Compile Include="Protocols\HubPresenceRegistry.cs" />
