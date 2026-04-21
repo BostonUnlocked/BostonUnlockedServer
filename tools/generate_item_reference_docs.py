@@ -46,6 +46,7 @@ CYBERWARE_ITEM_TYPES = {
 
 ARMOR_ITEM_TYPE = 196821
 CONSUMABLE_ITEM_TYPE = 196820
+FIREARM_WEAPON_TYPES = {"Automatics", "Pistol", "Shotgun"}
 
 
 def icon_basename(icon_path: str | None) -> str:
@@ -244,6 +245,15 @@ def weapon_icon_path(item: dict[str, Any], weapon_data_map: dict[str, dict[str, 
     return (visual.get("SmallIcon") or visual.get("Icon") or "")
 
 
+def weapon_ammo_capacity(item: dict[str, Any], weapon_data_map: dict[str, dict[str, Any]]) -> Any:
+    weapon_ref = str(item.get("MissionWeaponReference", ""))
+    weapon_data = weapon_data_map.get(weapon_ref, {})
+    ammo = weapon_data.get("Ammo") or {}
+    if ammo.get("MaxValue") is not None:
+        return ammo.get("MaxValue")
+    return ammo.get("InternalValue")
+
+
 def _walk(obj: Any):
     if isinstance(obj, dict):
         yield obj
@@ -351,14 +361,16 @@ def build_weapons_doc(
         weapon_ref = str(item.get("MissionWeaponReference", ""))
         weapon_data = weapon_data_map.get(weapon_ref, {})
         stats = collect_status_values(weapon_data.get("StatusValueModifiers"))
+        weapon_type = item_type_from_id(item_id)
 
-        by_type[item_type_from_id(item_id)].append(
+        by_type[weapon_type].append(
             {
                 "tier": infer_tier(item_id),
                 "name": resolve_loca(item.get("Name") or "", loca_map),
                 "id": item_id,
                 "stats": stats,
                 "icon": weapon_icon_path(item, weapon_data_map),
+                "ammo": weapon_ammo_capacity(item, weapon_data_map),
             }
         )
 
@@ -372,8 +384,12 @@ def build_weapons_doc(
     for weapon_type in sorted(by_type.keys()):
         entries = by_type[weapon_type]
         stat_ids = sorted({sid for entry in entries for sid in entry["stats"].keys()})
+        include_ammo = weapon_type in FIREARM_WEAPON_TYPES
 
-        headers = ["IconImage", "Tier", "Name", "Id"] + [short_stat_name(ids_map, sid) for sid in stat_ids]
+        headers = ["IconImage", "Tier", "Name", "Id"]
+        if include_ammo:
+            headers.append("Ammo")
+        headers.extend(short_stat_name(ids_map, sid) for sid in stat_ids)
         rows: list[list[str]] = []
 
         entries.sort(key=lambda x: (x["tier"] is None, x["tier"] if x["tier"] is not None else 999, x["name"], x["id"]))
@@ -385,6 +401,8 @@ def build_weapons_doc(
                 fmt_value(entry["name"]),
                 entry["id"],
             ]
+            if include_ammo:
+                row.append(fmt_value(entry.get("ammo")))
             row.extend(fmt_value(entry["stats"].get(sid, 0)) for sid in stat_ids)
             rows.append(row)
 

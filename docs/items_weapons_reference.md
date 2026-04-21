@@ -4,41 +4,41 @@ Generated from `server/static-data/metagameplay.json`, `server/static-data/weapo
 
 ## Automatics
 
-| IconImage | Tier | Name | Id | MaximumChanceToHit | CriticalChance | DamageMinimum | DamageMaxmimum | Range | CriticalDamageMultiplier | PointBlankRange |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| ![icon_small_IngramSmartgun_Tier_00](assets/item-icons/icon_small_IngramSmartgun_Tier_00.png) | 0 | Used Ingram Smartgun | Automatics_IngramSmartgun_Tier_00 | 0.8 | 0.05 | 3 | 4 | 10 | 1.2 | 3 |
-| ![icon_small_IngramSmartgun_Tier_01](assets/item-icons/icon_small_IngramSmartgun_Tier_01.png) | 1 | Ingram Smartgun | Automatics_IngramSmartgun_Tier_01 | 0.8 | 0.05 | 5 | 6 | 10 | 1.2 | 3 |
-| ![icon_small_Exclusive_IngramSmartgunSL_Tier_01](assets/item-icons/icon_small_Exclusive_IngramSmartgunSL_Tier_01.png) | 1 | Ingram Smartgun SL | Automatics_Exclusive_IngramSmartgunSL_Tier_01 | 0.85 | 0.05 | 5 | 6 | 11 | 1.2 | 3 |
-| ![icon_small_Exclusive_Mag5Mg_Tier_01](assets/item-icons/icon_small_Exclusive_Mag5Mg_Tier_01.png) | 1 | Prototype MAG-5 | Automatics_Exclusive_Mag5Mg_Tier_01 | 0.8 | 0.05 | 3 | 5 | 10 | 1.3 | 3 |
-| ![icon_small_FnP93Praetor_Tier_01](assets/item-icons/icon_small_FnP93Praetor_Tier_01.png) | 1 | Used FN-P93 Praetor | Automatics_FnP93Praetor_Tier_01 | 0.8 | 0.15 | 4 | 6 | 10 | 1.2 | 3 |
-| ![icon_small_FnP93Praetor_Tier_02](assets/item-icons/icon_small_FnP93Praetor_Tier_02.png) | 2 | FN-P93 Praetor | Automatics_FnP93Praetor_Tier_02 | 0.8 | 0.15 | 5 | 8 | 10 | 1.2 | 3 |
-| ![icon_small_IngramSmartgun_Tier_02](assets/item-icons/icon_small_IngramSmartgun_Tier_02.png) | 2 | Ingram Smartgun X | Automatics_IngramSmartgun_Tier_02 | 0.8 | 0.05 | 6 | 8 | 10 | 1.2 | 3 |
-| ![icon_small_IngramSmartgun_Tier_03](assets/item-icons/icon_small_IngramSmartgun_Tier_03.png) | 3 | Ingram Smartgun XA | Automatics_IngramSmartgun_Tier_03 | 0.7 | 0.05 | 7 | 14 | 9 | 1.3 | 3 |
-| ![icon_small_FnP93Praetor_Tier_03](assets/item-icons/icon_small_FnP93Praetor_Tier_03.png) | 3 | Used FN-P93 Praetor EF | Automatics_FnP93Praetor_Tier_03 | 0.85 | 0.05 | 9 | 11 | 11 | 1.2 | 3 |
-| ![icon_small_FnP93Praetor_Tier_04](assets/item-icons/icon_small_FnP93Praetor_Tier_04.png) | 4 | FN-P93 Praetor EF | Automatics_FnP93Praetor_Tier_04 | 0.85 | 0.05 | 9 | 12 | 11 | 1.2 | 3 |
-| ![icon_small_AresExecutiveProtector_Tier_04](assets/item-icons/icon_small_AresExecutiveProtector_Tier_04.png) | 4 | Used Ares Executive Protector | Automatics_AresExecutiveProtector_Tier_04 | 0.7 | 0.05 | 8 | 15 | 9 | 1.3 | 3 |
-| ![icon_small_HkG38_Tier_04](assets/item-icons/icon_small_HkG38_Tier_04.png) | 4 | Used HK-G38 | Automatics_HkG38_Tier_04 | 0.8 | 0.07 | 10 | 13 | 8 | 1.25 | 3 |
-| ![icon_small_Mag5Mg_Tier_04](assets/item-icons/icon_small_Mag5Mg_Tier_04.png) | 4 | Used Mag-5 MG | Automatics_Mag5Mg_Tier_04 | 0.8 | 0.05 | 9 | 13 | 10 | 1.3 | 3 |
-| ![icon_small_AresExecutiveProtector_Tier_05](assets/item-icons/icon_small_AresExecutiveProtector_Tier_05.png) | 5 | Ares Executive Protector IV | Automatics_AresExecutiveProtector_Tier_05 | 0.7 | 0.05 | 10 | 19 | 9 | 1.3 | 3 |
-| ![icon_small_FnP93Praetor_Tier_05](assets/item-icons/icon_small_FnP93Praetor_Tier_05.png) | 5 | FN-P93 Praetor II | Automatics_FnP93Praetor_Tier_05 | 0.85 | 0.05 | 12 | 15 | 11 | 1.2 | 3 |
-| ![icon_small_HkG38_Tier_05](assets/item-icons/icon_small_HkG38_Tier_05.png) | 5 | HK-G38 | Automatics_HkG38_Tier_05 | 0.8 | 0.07 | 12 | 16 | 8 | 1.25 | 3 |
-| ![icon_small_Mag5Mg_Tier_05](assets/item-icons/icon_small_Mag5Mg_Tier_05.png) | 5 | Mag-5 MG | Automatics_Mag5Mg_Tier_05 | 0.8 | 0.05 | 12 | 17 | 10 | 1.3 | 3 |
-| ![icon_small_SkuaDmr_Tier_05](assets/item-icons/icon_small_SkuaDmr_Tier_05.png) | 5 | Skua DMR | Automatics_SkuaDmr_Tier_05 | 0.8 | 0.3 | 16 | 22 | 13 | 1.2 | 3 |
-| ![icon_small_SkuaDmr_Tier_05](assets/item-icons/icon_small_SkuaDmr_Tier_05.png) | 5 | Used Skua DMR | Automatics_SkuaDmr_Coupon_Tier_05 | 0.8 | 0.3 | 8 | 11 | 13 | 1.2 | 3 |
-| ![icon_small_AresExecutiveProtector_Tier_07](assets/item-icons/icon_small_AresExecutiveProtector_Tier_07.png) | 7 | Ares Executive Protector V | Automatics_AresExecutiveProtector_Tier_07 | 0.7 | 0.05 | 13 | 25 | 9 | 1.3 | 3 |
-| ![icon_small_Automatics_ModSkua_Tier_07](assets/item-icons/icon_small_Automatics_ModSkua_Tier_07.png) | 7 | Modded Skua | Automatics_ModSkua_Tier_07 | 0.95 | 0.05 | 18 | 22 | 11 | 1.2 | 4 |
-| ![icon_small_HkG38_Tier_07](assets/item-icons/icon_small_HkG38_Tier_07.png) | 7 | Modified HK-G38 | Automatics_HkG38_Tier_07 | 0.8 | 0.07 | 16 | 21 | 8 | 1.25 | 3 |
-| ![icon_small_Mag5Mg_Tier_07](assets/item-icons/icon_small_Mag5Mg_Tier_07.png) | 7 | Modified Mag-5 MG | Automatics_Mag5Mg_Tier_07 | 0.8 | 0.05 | 15 | 22 | 10 | 1.3 | 3 |
-| ![icon_small_Automatics_ModSkua_Blue_Tier_07](assets/item-icons/icon_small_Automatics_ModSkua_Blue_Tier_07.png) | 7 | Rare Modded Skua | Automatics_ModSkua_Blue_Tier_07 | 0.8 | 0.05 | 20 | 26 | 10 | 1.35 | 3 |
-| ![icon_small_FnP93Praetor_Tier_08](assets/item-icons/icon_small_FnP93Praetor_Tier_08.png) | 8 | Custom FN-P93 Praetor  | Automatics_FnP93Praetor_Tier_08 | 0.85 | 0.05 | 15 | 20 | 11 | 1.2 | 3 |
-| ![icon_small_SkuaDmr_Tier_08](assets/item-icons/icon_small_SkuaDmr_Tier_08.png) | 8 | Skua DMR MK 2 | Automatics_SkuaDmr_Tier_08 | 0.8 | 0.3 | 19 | 25 | 13 | 1.2 | 3 |
-| ![icon_small_IngramSmartgun_Tier_08](assets/item-icons/icon_small_IngramSmartgun_Tier_08.png) | 8 | Used Ingram Warrior  | Automatics_IngramSmartgun_Tier_08 | 0.65 | 0.05 | 14 | 26 | 9 | 1.3 | 3 |
-| ![icon_small_FnP93Praetor_Tier_09](assets/item-icons/icon_small_FnP93Praetor_Tier_09.png) | 9 | Custom FN-P93 Praetor II | Automatics_FnP93Praetor_Tier_09 | 0.85 | 0.05 | 18 | 22 | 11 | 1.2 | 3 |
-| ![icon_small_IngramSmartgun_Tier_09](assets/item-icons/icon_small_IngramSmartgun_Tier_09.png) | 9 | Ingram Warrior | Automatics_IngramSmartgun_Tier_09 | 0.7 | 0.05 | 15 | 29 | 9 | 1.3 | 3 |
-| ![icon_small_SkuaDmr_Tier_09](assets/item-icons/icon_small_SkuaDmr_Tier_09.png) | 9 | Skua DMR MK 2 Pro | Automatics_SkuaDmr_Tier_09 | 0.8 | 0.3 | 21 | 29 | 13 | 1.2 | 3 |
-| ![icon_small_FnP93Praetor_Tier_10](assets/item-icons/icon_small_FnP93Praetor_Tier_10.png) | 10 | Improved FN-P93 Praetor III | Automatics_FnP93Praetor_Tier_10 | 0.85 | 0.05 | 19 | 23 | 11 | 1.2 | 3 |
-| ![icon_small_IngramSmartgun_Tier_10](assets/item-icons/icon_small_IngramSmartgun_Tier_10.png) | 10 | Ingram Warrior X | Automatics_IngramSmartgun_Tier_10 | 0.7 | 0.05 | 16 | 30 | 9 | 1.3 | 3 |
-| ![icon_small_SkuaDmr_Tier_10](assets/item-icons/icon_small_SkuaDmr_Tier_10.png) | 10 | Skua DMR MK 2 Elite | Automatics_SkuaDmr_Tier_10 | 0.8 | 0.3 | 22 | 30 | 13 | 1.2 | 3 |
+| IconImage | Tier | Name | Id | Ammo | MaximumChanceToHit | CriticalChance | DamageMinimum | DamageMaxmimum | Range | CriticalDamageMultiplier | PointBlankRange |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ![icon_small_IngramSmartgun_Tier_00](assets/item-icons/icon_small_IngramSmartgun_Tier_00.png) | 0 | Used Ingram Smartgun | Automatics_IngramSmartgun_Tier_00 | 5 | 0.8 | 0.05 | 3 | 4 | 10 | 1.2 | 3 |
+| ![icon_small_IngramSmartgun_Tier_01](assets/item-icons/icon_small_IngramSmartgun_Tier_01.png) | 1 | Ingram Smartgun | Automatics_IngramSmartgun_Tier_01 | 5 | 0.8 | 0.05 | 5 | 6 | 10 | 1.2 | 3 |
+| ![icon_small_Exclusive_IngramSmartgunSL_Tier_01](assets/item-icons/icon_small_Exclusive_IngramSmartgunSL_Tier_01.png) | 1 | Ingram Smartgun SL | Automatics_Exclusive_IngramSmartgunSL_Tier_01 | 5 | 0.85 | 0.05 | 5 | 6 | 11 | 1.2 | 3 |
+| ![icon_small_Exclusive_Mag5Mg_Tier_01](assets/item-icons/icon_small_Exclusive_Mag5Mg_Tier_01.png) | 1 | Prototype MAG-5 | Automatics_Exclusive_Mag5Mg_Tier_01 | 5 | 0.8 | 0.05 | 3 | 5 | 10 | 1.3 | 3 |
+| ![icon_small_FnP93Praetor_Tier_01](assets/item-icons/icon_small_FnP93Praetor_Tier_01.png) | 1 | Used FN-P93 Praetor | Automatics_FnP93Praetor_Tier_01 | 5 | 0.8 | 0.15 | 4 | 6 | 10 | 1.2 | 3 |
+| ![icon_small_FnP93Praetor_Tier_02](assets/item-icons/icon_small_FnP93Praetor_Tier_02.png) | 2 | FN-P93 Praetor | Automatics_FnP93Praetor_Tier_02 | 5 | 0.8 | 0.15 | 5 | 8 | 10 | 1.2 | 3 |
+| ![icon_small_IngramSmartgun_Tier_02](assets/item-icons/icon_small_IngramSmartgun_Tier_02.png) | 2 | Ingram Smartgun X | Automatics_IngramSmartgun_Tier_02 | 5 | 0.8 | 0.05 | 6 | 8 | 10 | 1.2 | 3 |
+| ![icon_small_IngramSmartgun_Tier_03](assets/item-icons/icon_small_IngramSmartgun_Tier_03.png) | 3 | Ingram Smartgun XA | Automatics_IngramSmartgun_Tier_03 | 5 | 0.7 | 0.05 | 7 | 14 | 9 | 1.3 | 3 |
+| ![icon_small_FnP93Praetor_Tier_03](assets/item-icons/icon_small_FnP93Praetor_Tier_03.png) | 3 | Used FN-P93 Praetor EF | Automatics_FnP93Praetor_Tier_03 | 5 | 0.85 | 0.05 | 9 | 11 | 11 | 1.2 | 3 |
+| ![icon_small_FnP93Praetor_Tier_04](assets/item-icons/icon_small_FnP93Praetor_Tier_04.png) | 4 | FN-P93 Praetor EF | Automatics_FnP93Praetor_Tier_04 | 5 | 0.85 | 0.05 | 9 | 12 | 11 | 1.2 | 3 |
+| ![icon_small_AresExecutiveProtector_Tier_04](assets/item-icons/icon_small_AresExecutiveProtector_Tier_04.png) | 4 | Used Ares Executive Protector | Automatics_AresExecutiveProtector_Tier_04 | 5 | 0.7 | 0.05 | 8 | 15 | 9 | 1.3 | 3 |
+| ![icon_small_HkG38_Tier_04](assets/item-icons/icon_small_HkG38_Tier_04.png) | 4 | Used HK-G38 | Automatics_HkG38_Tier_04 | 5 | 0.8 | 0.07 | 10 | 13 | 8 | 1.25 | 3 |
+| ![icon_small_Mag5Mg_Tier_04](assets/item-icons/icon_small_Mag5Mg_Tier_04.png) | 4 | Used Mag-5 MG | Automatics_Mag5Mg_Tier_04 | 5 | 0.8 | 0.05 | 9 | 13 | 10 | 1.3 | 3 |
+| ![icon_small_AresExecutiveProtector_Tier_05](assets/item-icons/icon_small_AresExecutiveProtector_Tier_05.png) | 5 | Ares Executive Protector IV | Automatics_AresExecutiveProtector_Tier_05 | 5 | 0.7 | 0.05 | 10 | 19 | 9 | 1.3 | 3 |
+| ![icon_small_FnP93Praetor_Tier_05](assets/item-icons/icon_small_FnP93Praetor_Tier_05.png) | 5 | FN-P93 Praetor II | Automatics_FnP93Praetor_Tier_05 | 5 | 0.85 | 0.05 | 12 | 15 | 11 | 1.2 | 3 |
+| ![icon_small_HkG38_Tier_05](assets/item-icons/icon_small_HkG38_Tier_05.png) | 5 | HK-G38 | Automatics_HkG38_Tier_05 | 5 | 0.8 | 0.07 | 12 | 16 | 8 | 1.25 | 3 |
+| ![icon_small_Mag5Mg_Tier_05](assets/item-icons/icon_small_Mag5Mg_Tier_05.png) | 5 | Mag-5 MG | Automatics_Mag5Mg_Tier_05 | 5 | 0.8 | 0.05 | 12 | 17 | 10 | 1.3 | 3 |
+| ![icon_small_SkuaDmr_Tier_05](assets/item-icons/icon_small_SkuaDmr_Tier_05.png) | 5 | Skua DMR | Automatics_SkuaDmr_Tier_05 | 3 | 0.8 | 0.3 | 16 | 22 | 13 | 1.2 | 3 |
+| ![icon_small_SkuaDmr_Tier_05](assets/item-icons/icon_small_SkuaDmr_Tier_05.png) | 5 | Used Skua DMR | Automatics_SkuaDmr_Coupon_Tier_05 | 3 | 0.8 | 0.3 | 8 | 11 | 13 | 1.2 | 3 |
+| ![icon_small_AresExecutiveProtector_Tier_07](assets/item-icons/icon_small_AresExecutiveProtector_Tier_07.png) | 7 | Ares Executive Protector V | Automatics_AresExecutiveProtector_Tier_07 | 5 | 0.7 | 0.05 | 13 | 25 | 9 | 1.3 | 3 |
+| ![icon_small_Automatics_ModSkua_Tier_07](assets/item-icons/icon_small_Automatics_ModSkua_Tier_07.png) | 7 | Modded Skua | Automatics_ModSkua_Tier_07 | 5 | 0.95 | 0.05 | 18 | 22 | 11 | 1.2 | 4 |
+| ![icon_small_HkG38_Tier_07](assets/item-icons/icon_small_HkG38_Tier_07.png) | 7 | Modified HK-G38 | Automatics_HkG38_Tier_07 | 5 | 0.8 | 0.07 | 16 | 21 | 8 | 1.25 | 3 |
+| ![icon_small_Mag5Mg_Tier_07](assets/item-icons/icon_small_Mag5Mg_Tier_07.png) | 7 | Modified Mag-5 MG | Automatics_Mag5Mg_Tier_07 | 5 | 0.8 | 0.05 | 15 | 22 | 10 | 1.3 | 3 |
+| ![icon_small_Automatics_ModSkua_Blue_Tier_07](assets/item-icons/icon_small_Automatics_ModSkua_Blue_Tier_07.png) | 7 | Rare Modded Skua | Automatics_ModSkua_Blue_Tier_07 | 5 | 0.8 | 0.05 | 20 | 26 | 10 | 1.35 | 3 |
+| ![icon_small_FnP93Praetor_Tier_08](assets/item-icons/icon_small_FnP93Praetor_Tier_08.png) | 8 | Custom FN-P93 Praetor  | Automatics_FnP93Praetor_Tier_08 | 5 | 0.85 | 0.05 | 15 | 20 | 11 | 1.2 | 3 |
+| ![icon_small_SkuaDmr_Tier_08](assets/item-icons/icon_small_SkuaDmr_Tier_08.png) | 8 | Skua DMR MK 2 | Automatics_SkuaDmr_Tier_08 | 3 | 0.8 | 0.3 | 19 | 25 | 13 | 1.2 | 3 |
+| ![icon_small_IngramSmartgun_Tier_08](assets/item-icons/icon_small_IngramSmartgun_Tier_08.png) | 8 | Used Ingram Warrior  | Automatics_IngramSmartgun_Tier_08 | 5 | 0.65 | 0.05 | 14 | 26 | 9 | 1.3 | 3 |
+| ![icon_small_FnP93Praetor_Tier_09](assets/item-icons/icon_small_FnP93Praetor_Tier_09.png) | 9 | Custom FN-P93 Praetor II | Automatics_FnP93Praetor_Tier_09 | 5 | 0.85 | 0.05 | 18 | 22 | 11 | 1.2 | 3 |
+| ![icon_small_IngramSmartgun_Tier_09](assets/item-icons/icon_small_IngramSmartgun_Tier_09.png) | 9 | Ingram Warrior | Automatics_IngramSmartgun_Tier_09 | 5 | 0.7 | 0.05 | 15 | 29 | 9 | 1.3 | 3 |
+| ![icon_small_SkuaDmr_Tier_09](assets/item-icons/icon_small_SkuaDmr_Tier_09.png) | 9 | Skua DMR MK 2 Pro | Automatics_SkuaDmr_Tier_09 | 3 | 0.8 | 0.3 | 21 | 29 | 13 | 1.2 | 3 |
+| ![icon_small_FnP93Praetor_Tier_10](assets/item-icons/icon_small_FnP93Praetor_Tier_10.png) | 10 | Improved FN-P93 Praetor III | Automatics_FnP93Praetor_Tier_10 | 5 | 0.85 | 0.05 | 19 | 23 | 11 | 1.2 | 3 |
+| ![icon_small_IngramSmartgun_Tier_10](assets/item-icons/icon_small_IngramSmartgun_Tier_10.png) | 10 | Ingram Warrior X | Automatics_IngramSmartgun_Tier_10 | 5 | 0.7 | 0.05 | 16 | 30 | 9 | 1.3 | 3 |
+| ![icon_small_SkuaDmr_Tier_10](assets/item-icons/icon_small_SkuaDmr_Tier_10.png) | 10 | Skua DMR MK 2 Elite | Automatics_SkuaDmr_Tier_10 | 3 | 0.8 | 0.3 | 22 | 30 | 13 | 1.2 | 3 |
 
 ## Blade
 
@@ -166,38 +166,38 @@ Generated from `server/static-data/metagameplay.json`, `server/static-data/weapo
 
 ## Pistol
 
-| IconImage | Tier | Name | Id | MaximumChanceToHit | CriticalChance | DamageMinimum | DamageMaxmimum | Range | CriticalDamageMultiplier | PointBlankRange |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| ![icon_small_AresLightfire_Tier_00](assets/item-icons/icon_small_AresLightfire_Tier_00.png) | 0 | Ares Lightfire 60 | Pistol_AresLightfire_Tier_00 | 0.75 | 0.15 | 3 | 3 | 8 | 1.2 | 2 |
-| ![icon_small_AresLightfire_Tier_01](assets/item-icons/icon_small_AresLightfire_Tier_01.png) | 1 | Ares Lightfire 70 | Pistol_AresLightfire_Tier_01 | 0.75 | 0.15 | 4 | 5 | 8 | 1.2 | 2 |
-| ![icon_small_Exclusive_Haemmerli620s_Tier_01](assets/item-icons/icon_small_Exclusive_Haemmerli620s_Tier_01.png) | 1 | Haemmerli 620 ST | Pistol_Exclusive_Haemmerli620s_Tier_01 | 0.75 | 0.15 | 3 | 4 | 8 | 1.3 | 2 |
-| ![icon_small_AresPredator_Tier_01](assets/item-icons/icon_small_AresPredator_Tier_01.png) | 1 | Used Ares Predator | Pistol_AresPredator_Tier_01 | 0.8 | 0.15 | 5 | 5 | 9 | 1.2 | 2 |
-| ![icon_small_AresLightfire_Tier_02](assets/item-icons/icon_small_AresLightfire_Tier_02.png) | 2 | Ares Lightfire 70S | Pistol_AresLightfire_Tier_02 | 0.75 | 0.15 | 6 | 7 | 8 | 1.2 | 2 |
-| ![icon_small_SuperWarhawk_Tier_02](assets/item-icons/icon_small_SuperWarhawk_Tier_02.png) | 2 | Used Ruger Super Warhawk | Pistol_SuperWarhawk_Tier_02 | 0.75 | 0.15 | 6 | 8 | 8 | 1.3 | 2 |
-| ![icon_small_AresPredator_Tier_03](assets/item-icons/icon_small_AresPredator_Tier_03.png) | 3 | Ares Predator IV | Pistol_AresPredator_Tier_03 | 0.75 | 0.15 | 8 | 9 | 11 | 1.2 | 2 |
-| ![icon_small_AresLightfire_Tier_03](assets/item-icons/icon_small_AresLightfire_Tier_03.png) | 3 | Modified Ares Lightfire 70 | Pistol_AresLightfire_Tier_03 | 0.75 | 0.25 | 7 | 9 | 9 | 1.35 | 2 |
-| ![icon_small_SuperWarhawk_Tier_03](assets/item-icons/icon_small_SuperWarhawk_Tier_03.png) | 3 | Ruger Super Warhawk | Pistol_SuperWarhawk_Tier_03 | 0.75 | 0.15 | 8 | 10 | 8 | 1.3 | 2 |
-| ![icon_small_Haemmerli620s_Tier_04](assets/item-icons/icon_small_Haemmerli620s_Tier_04.png) | 4 | Haemmerli 620s V | Pistol_Haemmerli620s_Tier_04 | 0.75 | 0.25 | 7 | 10 | 9 | 1.35 | 2 |
-| ![icon_small_SkSpraydown_Tier_04](assets/item-icons/icon_small_SkSpraydown_Tier_04.png) | 4 | SK Spraydown V | Pistol_SkSpraydown_Tier_04 | 0.75 | 0.15 | 8 | 10 | 11 | 1.2 | 2 |
-| ![icon_small_SkSpraydown_Tier_04](assets/item-icons/icon_small_SkSpraydown_Tier_04.png) | 4 | Used SK Spraydown | Pistol_SkSpraydown_Coupon_Tier_04 | 0.75 | 0.15 | 6 | 8 | 8 | 1.3 | 2 |
-| ![icon_small_AresPredator_Tier_05](assets/item-icons/icon_small_AresPredator_Tier_05.png) | 5 | Ares Predator V | Pistol_AresPredator_Tier_05 | 0.75 | 0.15 | 11 | 13 | 11 | 1.2 | 2 |
-| ![icon_small_SuperWarhawk_Tier_05](assets/item-icons/icon_small_SuperWarhawk_Tier_05.png) | 5 | Ruger Super Warhawk RC | Pistol_SuperWarhawk_Tier_05 | 0.75 | 0.15 | 11 | 14 | 8 | 1.3 | 2 |
-| ![icon_small_CavalierDeputy_Tier_05](assets/item-icons/icon_small_CavalierDeputy_Tier_05.png) | 5 | Used Cavalier Deputy | Pistol_CavalierDeputy_Tier_05 | 0.75 | 0.25 | 10 | 12 | 9 | 1.35 | 2 |
-| ![icon_small_CavalierDeputy_Tier_06](assets/item-icons/icon_small_CavalierDeputy_Tier_06.png) | 6 | Cavalier Deputy | Pistol_CavalierDeputy_Tier_06 | 0.75 | 0.25 | 11 | 14 | 9 | 1.35 | 2 |
-| ![icon_small_AresPredator_Tier_06](assets/item-icons/icon_small_AresPredator_Tier_06.png) | 6 | Custom Ares Predator V | Pistol_AresPredator_Tier_06 | 0.75 | 0.15 | 12 | 15 | 11 | 1.2 | 2 |
-| ![icon_small_SuperWarhawk_Tier_06](assets/item-icons/icon_small_SuperWarhawk_Tier_06.png) | 6 | Custom Ruger Super Warhawk | Pistol_SuperWarhawk_Tier_06 | 0.75 | 0.15 | 13 | 16 | 8 | 1.3 | 2 |
-| ![icon_small_CavalierDeputy_Tier_07](assets/item-icons/icon_small_CavalierDeputy_Tier_07.png) | 7 | Custom Cavalier Deputy | Pistol_CavalierDeputy_Tier_07 | 0.75 | 0.27 | 12 | 17 | 8 | 1.3 | 2 |
-| ![icon_small_Pistol_Mod_Haemmerli_Tier_07](assets/item-icons/icon_small_Pistol_Mod_Haemmerli_Tier_07.png) | 7 | Modded Haemmerli | Pistol_Mod_Haemmerli_Tier_07 | 0.9 | 0.15 | 17 | 18 | 9 | 1.2 | 3 |
-| ![icon_small_Pistol_Mod_Haemmerli_Blue_Tier_07](assets/item-icons/icon_small_Pistol_Mod_Haemmerli_Blue_Tier_07.png) | 7 | Rare Modded Haemmerli | Pistol_Mod_Haemmerli_Blue_Tier_07 | 0.75 | 0.15 | 19 | 21 | 8 | 1.35 | 2 |
-| ![icon_small_AresPredator_Tier_08](assets/item-icons/icon_small_AresPredator_Tier_08.png) | 8 | Ares Predator V Steel  | Pistol_AresPredator_Tier_08 | 0.75 | 0.15 | 14 | 18 | 11 | 1.2 | 2 |
-| ![icon_small_SuperWarhawk_Tier_08](assets/item-icons/icon_small_SuperWarhawk_Tier_08.png) | 8 | Ruger Super Warhawk SM  | Pistol_SuperWarhawk_Tier_08 | 0.75 | 0.15 | 17 | 20 | 8 | 1.25 | 2 |
-| ![icon_small_AresLightfire_Tier_08](assets/item-icons/icon_small_AresLightfire_Tier_08.png) | 8 | Used Armtech MGL-6  | Pistol_AresLightfire_Tier_08 | 0.75 | 0.27 | 14 | 19 | 8 | 1.3 | 2 |
-| ![icon_small_AresPredator_Tier_09](assets/item-icons/icon_small_AresPredator_Tier_09.png) | 9 | Ares Predator V Gold  | Pistol_AresPredator_Tier_09 | 0.75 | 0.15 | 16 | 20 | 11 | 1.2 | 2 |
-| ![icon_small_AresLightfire_Tier_09](assets/item-icons/icon_small_AresLightfire_Tier_09.png) | 9 | New Armtech MGL-6  | Pistol_AresLightfire_Tier_09 | 0.75 | 0.27 | 14 | 20 | 8 | 1.3 | 2 |
-| ![icon_small_SuperWarhawk_Tier_09](assets/item-icons/icon_small_SuperWarhawk_Tier_09.png) | 9 | Ruger Super Warhawk SM+ | Pistol_SuperWarhawk_Tier_09 | 0.75 | 0.15 | 18 | 21 | 8 | 1.25 | 2 |
-| ![icon_small_AresPredator_Tier_10](assets/item-icons/icon_small_AresPredator_Tier_10.png) | 10 | Ares Predator V Platinum  | Pistol_AresPredator_Tier_10 | 0.75 | 0.15 | 18 | 22 | 12 | 1.2 | 2 |
-| ![icon_small_AresLightfire_Tier_10](assets/item-icons/icon_small_AresLightfire_Tier_10.png) | 10 | Custom Armtech MGL-6  | Pistol_AresLightfire_Tier_10 | 0.75 | 0.27 | 16 | 21 | 8 | 1.35 | 2 |
-| ![icon_small_SuperWarhawk_Tier_10](assets/item-icons/icon_small_SuperWarhawk_Tier_10.png) | 10 | Ruger Super Warhawk SME | Pistol_SuperWarhawk_Tier_10 | 0.75 | 0.15 | 18 | 22 | 8 | 1.25 | 2 |
+| IconImage | Tier | Name | Id | Ammo | MaximumChanceToHit | CriticalChance | DamageMinimum | DamageMaxmimum | Range | CriticalDamageMultiplier | PointBlankRange |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ![icon_small_AresLightfire_Tier_00](assets/item-icons/icon_small_AresLightfire_Tier_00.png) | 0 | Ares Lightfire 60 | Pistol_AresLightfire_Tier_00 | 4 | 0.75 | 0.15 | 3 | 3 | 8 | 1.2 | 2 |
+| ![icon_small_AresLightfire_Tier_01](assets/item-icons/icon_small_AresLightfire_Tier_01.png) | 1 | Ares Lightfire 70 | Pistol_AresLightfire_Tier_01 | 4 | 0.75 | 0.15 | 4 | 5 | 8 | 1.2 | 2 |
+| ![icon_small_Exclusive_Haemmerli620s_Tier_01](assets/item-icons/icon_small_Exclusive_Haemmerli620s_Tier_01.png) | 1 | Haemmerli 620 ST | Pistol_Exclusive_Haemmerli620s_Tier_01 | 4 | 0.75 | 0.15 | 3 | 4 | 8 | 1.3 | 2 |
+| ![icon_small_AresPredator_Tier_01](assets/item-icons/icon_small_AresPredator_Tier_01.png) | 1 | Used Ares Predator | Pistol_AresPredator_Tier_01 | 4 | 0.8 | 0.15 | 5 | 5 | 9 | 1.2 | 2 |
+| ![icon_small_AresLightfire_Tier_02](assets/item-icons/icon_small_AresLightfire_Tier_02.png) | 2 | Ares Lightfire 70S | Pistol_AresLightfire_Tier_02 | 4 | 0.75 | 0.15 | 6 | 7 | 8 | 1.2 | 2 |
+| ![icon_small_SuperWarhawk_Tier_02](assets/item-icons/icon_small_SuperWarhawk_Tier_02.png) | 2 | Used Ruger Super Warhawk | Pistol_SuperWarhawk_Tier_02 | 4 | 0.75 | 0.15 | 6 | 8 | 8 | 1.3 | 2 |
+| ![icon_small_AresPredator_Tier_03](assets/item-icons/icon_small_AresPredator_Tier_03.png) | 3 | Ares Predator IV | Pistol_AresPredator_Tier_03 | 4 | 0.75 | 0.15 | 8 | 9 | 11 | 1.2 | 2 |
+| ![icon_small_AresLightfire_Tier_03](assets/item-icons/icon_small_AresLightfire_Tier_03.png) | 3 | Modified Ares Lightfire 70 | Pistol_AresLightfire_Tier_03 | 4 | 0.75 | 0.25 | 7 | 9 | 9 | 1.35 | 2 |
+| ![icon_small_SuperWarhawk_Tier_03](assets/item-icons/icon_small_SuperWarhawk_Tier_03.png) | 3 | Ruger Super Warhawk | Pistol_SuperWarhawk_Tier_03 | 4 | 0.75 | 0.15 | 8 | 10 | 8 | 1.3 | 2 |
+| ![icon_small_Haemmerli620s_Tier_04](assets/item-icons/icon_small_Haemmerli620s_Tier_04.png) | 4 | Haemmerli 620s V | Pistol_Haemmerli620s_Tier_04 | 4 | 0.75 | 0.25 | 7 | 10 | 9 | 1.35 | 2 |
+| ![icon_small_SkSpraydown_Tier_04](assets/item-icons/icon_small_SkSpraydown_Tier_04.png) | 4 | SK Spraydown V | Pistol_SkSpraydown_Tier_04 | 4 | 0.75 | 0.15 | 8 | 10 | 11 | 1.2 | 2 |
+| ![icon_small_SkSpraydown_Tier_04](assets/item-icons/icon_small_SkSpraydown_Tier_04.png) | 4 | Used SK Spraydown | Pistol_SkSpraydown_Coupon_Tier_04 | 4 | 0.75 | 0.15 | 6 | 8 | 8 | 1.3 | 2 |
+| ![icon_small_AresPredator_Tier_05](assets/item-icons/icon_small_AresPredator_Tier_05.png) | 5 | Ares Predator V | Pistol_AresPredator_Tier_05 | 4 | 0.75 | 0.15 | 11 | 13 | 11 | 1.2 | 2 |
+| ![icon_small_SuperWarhawk_Tier_05](assets/item-icons/icon_small_SuperWarhawk_Tier_05.png) | 5 | Ruger Super Warhawk RC | Pistol_SuperWarhawk_Tier_05 | 4 | 0.75 | 0.15 | 11 | 14 | 8 | 1.3 | 2 |
+| ![icon_small_CavalierDeputy_Tier_05](assets/item-icons/icon_small_CavalierDeputy_Tier_05.png) | 5 | Used Cavalier Deputy | Pistol_CavalierDeputy_Tier_05 | 4 | 0.75 | 0.25 | 10 | 12 | 9 | 1.35 | 2 |
+| ![icon_small_CavalierDeputy_Tier_06](assets/item-icons/icon_small_CavalierDeputy_Tier_06.png) | 6 | Cavalier Deputy | Pistol_CavalierDeputy_Tier_06 | 4 | 0.75 | 0.25 | 11 | 14 | 9 | 1.35 | 2 |
+| ![icon_small_AresPredator_Tier_06](assets/item-icons/icon_small_AresPredator_Tier_06.png) | 6 | Custom Ares Predator V | Pistol_AresPredator_Tier_06 | 4 | 0.75 | 0.15 | 12 | 15 | 11 | 1.2 | 2 |
+| ![icon_small_SuperWarhawk_Tier_06](assets/item-icons/icon_small_SuperWarhawk_Tier_06.png) | 6 | Custom Ruger Super Warhawk | Pistol_SuperWarhawk_Tier_06 | 4 | 0.75 | 0.15 | 13 | 16 | 8 | 1.3 | 2 |
+| ![icon_small_CavalierDeputy_Tier_07](assets/item-icons/icon_small_CavalierDeputy_Tier_07.png) | 7 | Custom Cavalier Deputy | Pistol_CavalierDeputy_Tier_07 | 4 | 0.75 | 0.27 | 12 | 17 | 8 | 1.3 | 2 |
+| ![icon_small_Pistol_Mod_Haemmerli_Tier_07](assets/item-icons/icon_small_Pistol_Mod_Haemmerli_Tier_07.png) | 7 | Modded Haemmerli | Pistol_Mod_Haemmerli_Tier_07 | 4 | 0.9 | 0.15 | 17 | 18 | 9 | 1.2 | 3 |
+| ![icon_small_Pistol_Mod_Haemmerli_Blue_Tier_07](assets/item-icons/icon_small_Pistol_Mod_Haemmerli_Blue_Tier_07.png) | 7 | Rare Modded Haemmerli | Pistol_Mod_Haemmerli_Blue_Tier_07 | 4 | 0.75 | 0.15 | 19 | 21 | 8 | 1.35 | 2 |
+| ![icon_small_AresPredator_Tier_08](assets/item-icons/icon_small_AresPredator_Tier_08.png) | 8 | Ares Predator V Steel  | Pistol_AresPredator_Tier_08 | 4 | 0.75 | 0.15 | 14 | 18 | 11 | 1.2 | 2 |
+| ![icon_small_SuperWarhawk_Tier_08](assets/item-icons/icon_small_SuperWarhawk_Tier_08.png) | 8 | Ruger Super Warhawk SM  | Pistol_SuperWarhawk_Tier_08 | 4 | 0.75 | 0.15 | 17 | 20 | 8 | 1.25 | 2 |
+| ![icon_small_AresLightfire_Tier_08](assets/item-icons/icon_small_AresLightfire_Tier_08.png) | 8 | Used Armtech MGL-6  | Pistol_AresLightfire_Tier_08 | 4 | 0.75 | 0.27 | 14 | 19 | 8 | 1.3 | 2 |
+| ![icon_small_AresPredator_Tier_09](assets/item-icons/icon_small_AresPredator_Tier_09.png) | 9 | Ares Predator V Gold  | Pistol_AresPredator_Tier_09 | 4 | 0.75 | 0.15 | 16 | 20 | 11 | 1.2 | 2 |
+| ![icon_small_AresLightfire_Tier_09](assets/item-icons/icon_small_AresLightfire_Tier_09.png) | 9 | New Armtech MGL-6  | Pistol_AresLightfire_Tier_09 | 4 | 0.75 | 0.27 | 14 | 20 | 8 | 1.3 | 2 |
+| ![icon_small_SuperWarhawk_Tier_09](assets/item-icons/icon_small_SuperWarhawk_Tier_09.png) | 9 | Ruger Super Warhawk SM+ | Pistol_SuperWarhawk_Tier_09 | 4 | 0.75 | 0.15 | 18 | 21 | 8 | 1.25 | 2 |
+| ![icon_small_AresPredator_Tier_10](assets/item-icons/icon_small_AresPredator_Tier_10.png) | 10 | Ares Predator V Platinum  | Pistol_AresPredator_Tier_10 | 4 | 0.75 | 0.15 | 18 | 22 | 12 | 1.2 | 2 |
+| ![icon_small_AresLightfire_Tier_10](assets/item-icons/icon_small_AresLightfire_Tier_10.png) | 10 | Custom Armtech MGL-6  | Pistol_AresLightfire_Tier_10 | 4 | 0.75 | 0.27 | 16 | 21 | 8 | 1.35 | 2 |
+| ![icon_small_SuperWarhawk_Tier_10](assets/item-icons/icon_small_SuperWarhawk_Tier_10.png) | 10 | Ruger Super Warhawk SME | Pistol_SuperWarhawk_Tier_10 | 4 | 0.75 | 0.15 | 18 | 22 | 8 | 1.25 | 2 |
 
 ## Rigging
 
@@ -226,28 +226,28 @@ Generated from `server/static-data/metagameplay.json`, `server/static-data/weapo
 
 ## Shotgun
 
-| IconImage | Tier | Name | Id | MaximumChanceToHit | CriticalChance | DamageMinimum | DamageMaxmimum | Range | CriticalDamageMultiplier | PointBlankRange |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| ![icon_small_RemingtonSportsman_Tier_00](assets/item-icons/icon_small_RemingtonSportsman_Tier_00.png) | 0 | Used Remington Sportsman | Shotgun_RemingtonSportsman_Tier_00 | 0.75 | 0.1 | 3 | 5 | 5 | 1.4 | 2 |
-| ![icon_small_RemingtonSportsman_Tier_01](assets/item-icons/icon_small_RemingtonSportsman_Tier_01.png) | 1 | Remington Sportsman | Shotgun_RemingtonSportsman_Tier_01 | 0.8 | 0.1 | 6 | 7 | 6 | 1.4 | 2 |
-| ![icon_small_Spas22_Tier_01](assets/item-icons/icon_small_Spas22_Tier_01.png) | 1 | Used SPAS 22 | Shotgun_Spas22_Tier_01 | 0.75 | 0.1 | 6 | 8 | 5 | 1.5 | 2 |
-| ![icon_small_RemingtonSportsman_Tier_02](assets/item-icons/icon_small_RemingtonSportsman_Tier_02.png) | 2 | Modified Remington Sportsman | Shotgun_RemingtonSportsman_Tier_02 | 0.8 | 0.1 | 8 | 10 | 6 | 1.4 | 2 |
-| ![icon_small_Spas22_Tier_03](assets/item-icons/icon_small_Spas22_Tier_03.png) | 3 | SPAS 22 | Shotgun_Spas22_Tier_03 | 0.75 | 0.1 | 10 | 14 | 5 | 1.5 | 2 |
-| ![icon_small_RemingtonRoomsweeper_Tier_03](assets/item-icons/icon_small_RemingtonRoomsweeper_Tier_03.png) | 3 | Used Remington Roomsweeper | Shotgun_RemingtonRoomsweeper_Tier_03 | 0.75 | 0.1 | 8 | 11 | 5 | 1.4 | 2 |
-| ![icon_small_RemingtonRoomsweeper_Tier_04](assets/item-icons/icon_small_RemingtonRoomsweeper_Tier_04.png) | 4 | Remington Roomsweeper | Shotgun_RemingtonRoomsweeper_Tier_04 | 0.75 | 0.1 | 8 | 12 | 5 | 1.4 | 2 |
-| ![icon_small_Spas22_Tier_04](assets/item-icons/icon_small_Spas22_Tier_04.png) | 4 | Used SPAS 22-II | Shotgun_Spas22_Tier_04 | 0.75 | 0.1 | 10 | 15 | 5 | 1.5 | 2 |
-| ![icon_small_Spas22_Tier_05](assets/item-icons/icon_small_Spas22_Tier_05.png) | 5 | SPAS 22-II | Shotgun_Spas22_Tier_05 | 0.75 | 0.1 | 13 | 19 | 5 | 1.5 | 2 |
-| ![icon_small_RemingtonRoomsweeper_Tier_05](assets/item-icons/icon_small_RemingtonRoomsweeper_Tier_05.png) | 5 | Used Remington Roomsweeper MK2 | Shotgun_RemingtonRoomsweeper_Tier_05 | 0.75 | 0.1 | 11 | 15 | 5 | 1.4 | 2 |
-| ![icon_small_Spas22_Tier_06](assets/item-icons/icon_small_Spas22_Tier_06.png) | 6 | Custom SPAS 22 | Shotgun_Spas22_Tier_06 | 0.75 | 0.1 | 15 | 22 | 5 | 1.5 | 2 |
-| ![icon_small_RemingtonRoomsweeper_Tier_06](assets/item-icons/icon_small_RemingtonRoomsweeper_Tier_06.png) | 6 | Remington Roomsweeper MK2 | Shotgun_RemingtonRoomsweeper_Tier_06 | 0.75 | 0.1 | 12 | 17 | 5 | 1.4 | 2 |
-| ![icon_small_Shotgun_Mossberg_AM_CMDT_Blue_Tier_07](assets/item-icons/icon_small_Shotgun_Mossberg_AM_CMDT_Blue_Tier_07.png) | 7 | Modded Mossberg AM-CMDT | Shotgun_Mossberg_AM_CMDT_Blue_Tier_07 | 0.75 | 0.05 | 19 | 25 | 5 | 1.4 | 2 |
-| ![icon_small_Shotgun_Mossberg_AM_CMDT_Tier_07](assets/item-icons/icon_small_Shotgun_Mossberg_AM_CMDT_Tier_07.png) | 7 | Mossberg AM-CMDT | Shotgun_Mossberg_AM_CMDT_Tier_07 | 0.9 | 0.1 | 20 | 25 | 6 | 1.4 | 3 |
-| ![icon_small_Spas22_Tier_08](assets/item-icons/icon_small_Spas22_Tier_08.png) | 8 | Mossberg CMDT | Shotgun_Spas22_Tier_08 | 0.75 | 0.1 | 15 | 20 | 5 | 1.4 | 2 |
-| ![icon_small_RemingtonRoomsweeper_Tier_08](assets/item-icons/icon_small_RemingtonRoomsweeper_Tier_08.png) | 8 | Remington Roomsweeper MK 2-X  | Shotgun_RemingtonSportsman_Tier_08 | 0.75 | 0.1 | 20 | 28 | 5 | 1.45 | 2 |
-| ![icon_small_Spas22_Tier_09](assets/item-icons/icon_small_Spas22_Tier_09.png) | 9 | Payday's Mossberg Streetsweeper  | Shotgun_Spas22_Tier_09 | 0.75 | 0.1 | 16 | 23 | 5 | 1.4 | 2 |
-| ![icon_small_RemingtonRoomsweeper_Tier_09](assets/item-icons/icon_small_RemingtonRoomsweeper_Tier_09.png) | 9 | Remington Roomsweeper Elite  | Shotgun_RemingtonSportsman_Tier_09 | 0.75 | 0.1 | 20 | 29 | 5 | 1.5 | 2 |
-| ![icon_small_Spas22_Tier_10](assets/item-icons/icon_small_Spas22_Tier_10.png) | 10 | Custom Mossberg Streetsweeper  | Shotgun_Spas22_Tier_10 | 0.75 | 0.1 | 17 | 24 | 5 | 1.4 | 2 |
-| ![icon_small_RemingtonRoomsweeper_Tier_10](assets/item-icons/icon_small_RemingtonRoomsweeper_Tier_10.png) | 10 | Remington Roomsweeper Elite X | Shotgun_RemingtonSportsman_Tier_10 | 0.75 | 0.1 | 21 | 30 | 5 | 1.5 | 2 |
+| IconImage | Tier | Name | Id | Ammo | MaximumChanceToHit | CriticalChance | DamageMinimum | DamageMaxmimum | Range | CriticalDamageMultiplier | PointBlankRange |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ![icon_small_RemingtonSportsman_Tier_00](assets/item-icons/icon_small_RemingtonSportsman_Tier_00.png) | 0 | Used Remington Sportsman | Shotgun_RemingtonSportsman_Tier_00 | 2 | 0.75 | 0.1 | 3 | 5 | 5 | 1.4 | 2 |
+| ![icon_small_RemingtonSportsman_Tier_01](assets/item-icons/icon_small_RemingtonSportsman_Tier_01.png) | 1 | Remington Sportsman | Shotgun_RemingtonSportsman_Tier_01 | 2 | 0.8 | 0.1 | 6 | 7 | 6 | 1.4 | 2 |
+| ![icon_small_Spas22_Tier_01](assets/item-icons/icon_small_Spas22_Tier_01.png) | 1 | Used SPAS 22 | Shotgun_Spas22_Tier_01 | 2 | 0.75 | 0.1 | 6 | 8 | 5 | 1.5 | 2 |
+| ![icon_small_RemingtonSportsman_Tier_02](assets/item-icons/icon_small_RemingtonSportsman_Tier_02.png) | 2 | Modified Remington Sportsman | Shotgun_RemingtonSportsman_Tier_02 | 2 | 0.8 | 0.1 | 8 | 10 | 6 | 1.4 | 2 |
+| ![icon_small_Spas22_Tier_03](assets/item-icons/icon_small_Spas22_Tier_03.png) | 3 | SPAS 22 | Shotgun_Spas22_Tier_03 | 2 | 0.75 | 0.1 | 10 | 14 | 5 | 1.5 | 2 |
+| ![icon_small_RemingtonRoomsweeper_Tier_03](assets/item-icons/icon_small_RemingtonRoomsweeper_Tier_03.png) | 3 | Used Remington Roomsweeper | Shotgun_RemingtonRoomsweeper_Tier_03 | 4 | 0.75 | 0.1 | 8 | 11 | 5 | 1.4 | 2 |
+| ![icon_small_RemingtonRoomsweeper_Tier_04](assets/item-icons/icon_small_RemingtonRoomsweeper_Tier_04.png) | 4 | Remington Roomsweeper | Shotgun_RemingtonRoomsweeper_Tier_04 | 4 | 0.75 | 0.1 | 8 | 12 | 5 | 1.4 | 2 |
+| ![icon_small_Spas22_Tier_04](assets/item-icons/icon_small_Spas22_Tier_04.png) | 4 | Used SPAS 22-II | Shotgun_Spas22_Tier_04 | 2 | 0.75 | 0.1 | 10 | 15 | 5 | 1.5 | 2 |
+| ![icon_small_Spas22_Tier_05](assets/item-icons/icon_small_Spas22_Tier_05.png) | 5 | SPAS 22-II | Shotgun_Spas22_Tier_05 | 2 | 0.75 | 0.1 | 13 | 19 | 5 | 1.5 | 2 |
+| ![icon_small_RemingtonRoomsweeper_Tier_05](assets/item-icons/icon_small_RemingtonRoomsweeper_Tier_05.png) | 5 | Used Remington Roomsweeper MK2 | Shotgun_RemingtonRoomsweeper_Tier_05 | 4 | 0.75 | 0.1 | 11 | 15 | 5 | 1.4 | 2 |
+| ![icon_small_Spas22_Tier_06](assets/item-icons/icon_small_Spas22_Tier_06.png) | 6 | Custom SPAS 22 | Shotgun_Spas22_Tier_06 | 2 | 0.75 | 0.1 | 15 | 22 | 5 | 1.5 | 2 |
+| ![icon_small_RemingtonRoomsweeper_Tier_06](assets/item-icons/icon_small_RemingtonRoomsweeper_Tier_06.png) | 6 | Remington Roomsweeper MK2 | Shotgun_RemingtonRoomsweeper_Tier_06 | 4 | 0.75 | 0.1 | 12 | 17 | 5 | 1.4 | 2 |
+| ![icon_small_Shotgun_Mossberg_AM_CMDT_Blue_Tier_07](assets/item-icons/icon_small_Shotgun_Mossberg_AM_CMDT_Blue_Tier_07.png) | 7 | Modded Mossberg AM-CMDT | Shotgun_Mossberg_AM_CMDT_Blue_Tier_07 | 4 | 0.75 | 0.05 | 19 | 25 | 5 | 1.4 | 2 |
+| ![icon_small_Shotgun_Mossberg_AM_CMDT_Tier_07](assets/item-icons/icon_small_Shotgun_Mossberg_AM_CMDT_Tier_07.png) | 7 | Mossberg AM-CMDT | Shotgun_Mossberg_AM_CMDT_Tier_07 | 2 | 0.9 | 0.1 | 20 | 25 | 6 | 1.4 | 3 |
+| ![icon_small_Spas22_Tier_08](assets/item-icons/icon_small_Spas22_Tier_08.png) | 8 | Mossberg CMDT | Shotgun_Spas22_Tier_08 | 4 | 0.75 | 0.1 | 15 | 20 | 5 | 1.4 | 2 |
+| ![icon_small_RemingtonRoomsweeper_Tier_08](assets/item-icons/icon_small_RemingtonRoomsweeper_Tier_08.png) | 8 | Remington Roomsweeper MK 2-X  | Shotgun_RemingtonSportsman_Tier_08 | 2 | 0.75 | 0.1 | 20 | 28 | 5 | 1.45 | 2 |
+| ![icon_small_Spas22_Tier_09](assets/item-icons/icon_small_Spas22_Tier_09.png) | 9 | Payday's Mossberg Streetsweeper  | Shotgun_Spas22_Tier_09 | 4 | 0.75 | 0.1 | 16 | 23 | 5 | 1.4 | 2 |
+| ![icon_small_RemingtonRoomsweeper_Tier_09](assets/item-icons/icon_small_RemingtonRoomsweeper_Tier_09.png) | 9 | Remington Roomsweeper Elite  | Shotgun_RemingtonSportsman_Tier_09 | 2 | 0.75 | 0.1 | 20 | 29 | 5 | 1.5 | 2 |
+| ![icon_small_Spas22_Tier_10](assets/item-icons/icon_small_Spas22_Tier_10.png) | 10 | Custom Mossberg Streetsweeper  | Shotgun_Spas22_Tier_10 | 4 | 0.75 | 0.1 | 17 | 24 | 5 | 1.4 | 2 |
+| ![icon_small_RemingtonRoomsweeper_Tier_10](assets/item-icons/icon_small_RemingtonRoomsweeper_Tier_10.png) | 10 | Remington Roomsweeper Elite X | Shotgun_RemingtonSportsman_Tier_10 | 2 | 0.75 | 0.1 | 21 | 30 | 5 | 1.5 | 2 |
 
 ## Spellcasting
 
