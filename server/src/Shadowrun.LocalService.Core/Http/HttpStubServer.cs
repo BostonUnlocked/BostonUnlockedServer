@@ -629,6 +629,9 @@ namespace Shadowrun.LocalService.Core.Http
             html.Append(".section{margin-top:8px;padding:10px;background:#1a232d;border:1px solid #304052;border-radius:8px;}");
             html.Append(".party{background:#1a232d;border:1px solid #304052;border-radius:8px;padding:8px 12px;margin:8px 0;}");
             html.Append(".leader{color:#f0c040;font-size:12px;margin-left:6px;}");
+            html.Append(".player-entry[data-account-id]{cursor:pointer;border-radius:4px;padding:2px 4px;margin-left:-4px;}");
+            html.Append(".player-entry[data-account-id]:hover,.player-entry[data-account-id]:focus{background:#263442;outline:none;}");
+            html.Append(".player-entry.copied{color:#7ee787;}");
             html.Append("ul{margin:10px 0 0 18px;padding:0;}");
             html.Append("li{margin:5px 0;}");
             html.Append("a{color:#8dc7ff;text-decoration:none;}a:hover{text-decoration:underline;}");
@@ -711,6 +714,9 @@ namespace Shadowrun.LocalService.Core.Http
             html.Append("<div class=\"muted\" style=\"margin-top:14px;\">Rendered: ");
             html.Append(HtmlEncode(renderedAtUtc));
             html.Append(" | Refresh the page to update values.</div>");
+            html.Append("<script>");
+            html.Append("(function(){function fallbackCopy(text){var area=document.createElement('textarea');area.value=text;area.setAttribute('readonly','');area.style.position='fixed';area.style.left='-9999px';document.body.appendChild(area);area.select();try{document.execCommand('copy');}finally{document.body.removeChild(area);}}function copy(text){if(navigator.clipboard&&navigator.clipboard.writeText){return navigator.clipboard.writeText(text).catch(function(){fallbackCopy(text);});}fallbackCopy(text);return Promise.resolve();}function flash(el){el.className+=' copied';window.setTimeout(function(){el.className=el.className.replace(/(?:^|\\s)copied(?!\\S)/g,'');},900);}document.addEventListener('click',function(event){var el=event.target;while(el&&el!==document&&(!el.getAttribute||!el.getAttribute('data-account-id'))){el=el.parentNode;}if(!el||el===document){return;}var accountId=el.getAttribute('data-account-id');if(!accountId){return;}copy(accountId).then(function(){flash(el);});});document.addEventListener('keydown',function(event){if(event.key!=='Enter'&&event.key!==' '){return;}var el=event.target;if(!el||!el.getAttribute||!el.getAttribute('data-account-id')){return;}event.preventDefault();copy(el.getAttribute('data-account-id')).then(function(){flash(el);});});})();");
+            html.Append("</script>");
             html.Append("</div></div></body></html>");
             return html.ToString();
         }
@@ -1124,13 +1130,7 @@ namespace Shadowrun.LocalService.Core.Http
                 for (var m = 0; m < members.Count; m++)
                 {
                     var member = members[m];
-                    html.Append("<li>");
-                    html.Append(HtmlEncode(BuildStatusPlayerEntry(member)));
-                    if (member.AccountId == hostId)
-                    {
-                        html.Append("<span class=\"leader\">&#9733;</span>");
-                    }
-                    html.Append("</li>");
+                    AppendStatusPlayerEntryHtml(html, member, member != null && member.AccountId == hostId);
                 }
                 html.Append("</ul></div>");
             }
@@ -1140,15 +1140,43 @@ namespace Shadowrun.LocalService.Core.Http
                 html.Append("<ul>");
                 for (var i = 0; i < soloPlayers.Count; i++)
                 {
-                    html.Append("<li>");
-                    html.Append(HtmlEncode(BuildStatusPlayerEntry(soloPlayers[i])));
-                    html.Append("</li>");
+                    AppendStatusPlayerEntryHtml(html, soloPlayers[i], false);
                 }
                 html.Append("</ul>");
             }
         }
 
-        private string BuildStatusPlayerEntry(StatusPlayerRecord player)
+        private static void AppendStatusPlayerEntryHtml(StringBuilder html, StatusPlayerRecord player, bool isLeader)
+        {
+            if (html == null)
+            {
+                return;
+            }
+
+            var accountId = player != null && player.AccountId != Guid.Empty
+                ? player.AccountId.ToString("D")
+                : null;
+
+            if (!IsNullOrWhiteSpace(accountId))
+            {
+                html.Append("<li class=\"player-entry\" data-account-id=\"");
+                html.Append(HtmlEncode(accountId));
+                html.Append("\" tabindex=\"0\" role=\"button\" title=\"Copy accountId\">");
+            }
+            else
+            {
+                html.Append("<li>");
+            }
+
+            html.Append(HtmlEncode(BuildStatusPlayerEntry(player)));
+            if (isLeader)
+            {
+                html.Append("<span class=\"leader\">&#9733;</span>");
+            }
+            html.Append("</li>");
+        }
+
+        private static string BuildStatusPlayerEntry(StatusPlayerRecord player)
         {
             if (player == null)
             {

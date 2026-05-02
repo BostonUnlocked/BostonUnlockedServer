@@ -33,6 +33,11 @@ namespace Shadowrun.LocalService.Core.Http
                 }
                 return _store.TryGetIdentityForSession(sessionHash, out identityHash);
             }
+
+            public int RemoveIdentity(string identityHash)
+            {
+                return _store != null ? _store.RemoveSessionsForIdentity(identityHash) : 0;
+            }
         }
 
         private sealed class LocalUserStorePlayerInfoRepository : IPlayerInfoRepository
@@ -108,6 +113,34 @@ namespace Shadowrun.LocalService.Core.Http
                 lock (_lock)
                 {
                     return _sessionToIdentity.TryGetValue(NormalizeGuidish(sessionHash), out identityHash);
+                }
+            }
+
+            public int RemoveIdentity(string identityHash)
+            {
+                var normalizedIdentity = NormalizeGuidish(identityHash);
+                if (IsNullOrWhiteSpace(normalizedIdentity))
+                {
+                    return 0;
+                }
+
+                lock (_lock)
+                {
+                    var removeKeys = new List<string>();
+                    foreach (var kvp in _sessionToIdentity)
+                    {
+                        if (string.Equals(NormalizeGuidish(kvp.Value), normalizedIdentity, StringComparison.OrdinalIgnoreCase))
+                        {
+                            removeKeys.Add(kvp.Key);
+                        }
+                    }
+
+                    for (var i = 0; i < removeKeys.Count; i++)
+                    {
+                        _sessionToIdentity.Remove(removeKeys[i]);
+                    }
+
+                    return removeKeys.Count;
                 }
             }
         }

@@ -225,5 +225,23 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return snapshot;
             }
         }
+
+        public static AccountLivenessSnapshot ForceOffline(Guid accountId)
+        {
+            var snapshot = Evaluate(accountId);
+            if (accountId == Guid.Empty)
+            {
+                return snapshot;
+            }
+
+            lock (SyncRoot)
+            {
+                StateByAccountId.Remove(accountId);
+            }
+
+            snapshot.IsSocialOnline = false;
+            snapshot.IsHardOffline = true;
+            return snapshot;
+        }
     }
 }

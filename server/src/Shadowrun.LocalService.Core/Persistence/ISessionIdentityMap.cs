@@ -6,5 +6,6 @@ namespace Shadowrun.LocalService.Core.Persistence
     {
         void SetIdentityForSession(string sessionHash, string identityHash);
         bool TryGetIdentityForSession(string sessionHash, out string identityHash);
+        int RemoveIdentity(string identityHash);
     }
 }

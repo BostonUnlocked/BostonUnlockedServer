@@ -187,6 +187,7 @@
     <Compile Include="Protocols\APlayTcpStub.SocketHost.cs" />
     <Compile Include="Protocols\APlayTcpStub.StaticData.cs" />
     <Compile Include="Protocols\APlayTcpStub.StoryProgression.cs" />
+    <Compile Include="Protocols\AccountConnectionTerminator.cs" />
     <Compile Include="Protocols\AccountTransportLivenessRegistry.cs" />
     <Compile Include="Protocols\CheatAuthorizationPolicy.cs" />
     <Compile Include="Protocols\ConnectedPeerRegistry.cs" />

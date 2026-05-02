@@ -10,6 +10,8 @@ internal sealed class DiscordBotHostedService(
     SupervisorOperations operations,
     SupervisorAuditLogger auditLogger) : BackgroundService
 {
+    private const string DefaultSaveFileExportPath = @"C:\Windows\System32\config\systemprofile\AppData\Local\ShadowrunLocalService\data\localservice.sqlite";
+
     private readonly SupervisorOptions _settings = options.Value;
     private DiscordSocketClient? _client;
 
@@ -100,6 +102,12 @@ internal sealed class DiscordBotHostedService(
             return;
         }
 
+        if (string.Equals(command.CommandName, "exportsavefile", StringComparison.OrdinalIgnoreCase))
+        {
+            await HandleExportSaveFileCommandAsync(command, requesterId);
+            return;
+        }
+
         await command.DeferAsync(ephemeral: true);
 
         var timeoutSeconds = _settings.CommandTimeoutSeconds > 0 ? _settings.CommandTimeoutSeconds : 900;
@@ -140,6 +148,49 @@ internal sealed class DiscordBotHostedService(
         {
             auditLogger.Log("command-failed", new { requesterId, command = command.CommandName, error = ex.Message });
             await command.ModifyOriginalResponseAsync(msg => msg.Content = "Command failed: " + ex.Message);
+        }
+    }
+
+    private async Task HandleExportSaveFileCommandAsync(SocketSlashCommand command, string requesterId)
+    {
+        try
+        {
+            await command.DeferAsync(ephemeral: false);
+
+            var saveFileExportPath = string.IsNullOrWhiteSpace(_settings.SaveFileExportPath)
+                ? DefaultSaveFileExportPath
+                : _settings.SaveFileExportPath;
+
+            if (!File.Exists(saveFileExportPath))
+            {
+                auditLogger.Log("save-export-failed", new { requesterId, saveFilePath = saveFileExportPath, error = "file-not-found" });
+                await command.FollowupAsync("Save file export failed: localservice.sqlite was not found.", ephemeral: false);
+                return;
+            }
+
+            var timestamp = DateTimeOffset.UtcNow;
+            var message = $"Save file export timestamp (UTC): {timestamp:yyyy-MM-dd HH:mm:ss} ({timestamp:O})";
+            await command.FollowupWithFileAsync(saveFileExportPath, text: message, ephemeral: false);
+
+            auditLogger.Log("save-export-completed", new
+            {
+                requesterId,
+                saveFilePath = saveFileExportPath,
+                timestampUtc = timestamp
+            });
+        }
+        catch (Exception ex)
+        {
+            auditLogger.Log("save-export-failed", new { requesterId, saveFilePath = _settings.SaveFileExportPath ?? DefaultSaveFileExportPath, error = ex.Message });
+
+            if (command.HasResponded)
+            {
+                await command.FollowupAsync("Save file export failed: " + ex.Message, ephemeral: false);
+            }
+            else
+            {
+                await command.RespondAsync("Save file export failed: " + ex.Message, ephemeral: false);
+            }
         }
     }
 
@@ -207,6 +258,11 @@ internal sealed class DiscordBotHostedService(
                 .WithRequired(false))
             .Build();
 
-        return [status, restart, patch, logs];
+        var exportSaveFile = new SlashCommandBuilder()
+            .WithName("exportsavefile")
+            .WithDescription("Upload the local service SQLite save file")
+            .Build();
+
+        return [status, restart, patch, logs, exportSaveFile];
     }
 }

@@ -26,6 +26,7 @@ public sealed partial class PhotonProxyTcpStub
     private readonly Dictionary<string, IChatCommand> _chatCommands;
     private readonly CharacterStatePushBroker _characterStatePushBroker;
     private readonly HubPresenceRegistry _hubPresenceRegistry;
+    private readonly AccountConnectionTerminator _accountConnectionTerminator;
 
     private readonly ClientSerializer _serializer = new ClientSerializer();
 
@@ -45,6 +46,11 @@ public sealed partial class PhotonProxyTcpStub
     }
 
     public PhotonProxyTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap, CharacterStatePushBroker characterStatePushBroker, HubPresenceRegistry hubPresenceRegistry)
+        : this(options, logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry, null)
+    {
+    }
+
+    public PhotonProxyTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap, CharacterStatePushBroker characterStatePushBroker, HubPresenceRegistry hubPresenceRegistry, AccountConnectionTerminator accountConnectionTerminator)
     {
         _options = options;
         _logger = logger;
@@ -52,6 +58,7 @@ public sealed partial class PhotonProxyTcpStub
         _sessionIdentityMap = sessionIdentityMap;
         _characterStatePushBroker = characterStatePushBroker ?? CharacterStatePushBroker.Shared;
         _hubPresenceRegistry = hubPresenceRegistry ?? new HubPresenceRegistry();
+        _accountConnectionTerminator = accountConnectionTerminator;
 
         _friendsStore = new FriendsStore(options, logger);
         _chatAndFriends = new ChatAndFriendsState(this);
@@ -154,6 +161,7 @@ public sealed partial class PhotonProxyTcpStub
                         ConnectionId = Guid.NewGuid(),
                         ConnectionHash = connectionHash,
                         Endpoint = endpoint,
+                        Client = client,
                         Stream = stream,
                     };
 
@@ -449,6 +457,11 @@ public sealed partial class PhotonProxyTcpStub
             }
             finally
             {
+                if (_accountConnectionTerminator != null)
+                {
+                    _accountConnectionTerminator.Unregister("photon", connectionHash);
+                }
+
                 _logger.ClearConnectionContext("photon", endpoint, connectionHash);
             }
         }

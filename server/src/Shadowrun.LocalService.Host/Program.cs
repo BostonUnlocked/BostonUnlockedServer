@@ -410,9 +410,10 @@ namespace Shadowrun.LocalService.Host
 			var sessionIdentityMap = new ExpiringSessionIdentityMap();
 			var characterStatePushBroker = new CharacterStatePushBroker();
 			var hubPresenceRegistry = new HubPresenceRegistry();
+			var accountConnectionTerminator = new AccountConnectionTerminator();
 			var httpServer = new HttpStubServer(_options, _logger, userStore, sessionIdentityMap, null, hubPresenceRegistry);
-			var aplayStub = new APlayTcpStub(_options, _logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry);
-			var photonStub = new PhotonProxyTcpStub(_options, _logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry);
+			var aplayStub = new APlayTcpStub(_options, _logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry, accountConnectionTerminator);
+			var photonStub = new PhotonProxyTcpStub(_options, _logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry, accountConnectionTerminator);
 
 			_httpThread = new Thread(delegate ()
 			{

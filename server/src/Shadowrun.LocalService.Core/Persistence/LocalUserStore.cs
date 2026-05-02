@@ -449,6 +449,64 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        public int RemoveSessionsForIdentity(string identityHash)
+        {
+            return _sessionStore != null ? _sessionStore.RemoveIdentity(identityHash) : 0;
+        }
+
+        public bool DeleteAccount(string identityHash, out AccountDeletionResult result, out string errorMessage)
+        {
+            result = new AccountDeletionResult();
+            errorMessage = null;
+
+            if (!IsGuidish(identityHash))
+            {
+                errorMessage = "Unable to resolve account identity.";
+                return false;
+            }
+
+            var normalizedIdentity = NormalizeGuidish(identityHash);
+            try
+            {
+                lock (_lock)
+                {
+                    if (_accountStore != null)
+                    {
+                        result.Merge(_accountStore.DeleteAccount(normalizedIdentity));
+                    }
+
+                    if (_sqliteStore == null || !_sqliteStore.IsEnabled)
+                    {
+                        if (_playerInfoStore != null)
+                        {
+                            result.PlayerInfoRowsDeleted += _playerInfoStore.DeleteIdentity(normalizedIdentity);
+                        }
+
+                        var accountId = new Guid(normalizedIdentity);
+                        var friendsStore = new FriendsStore(_options, _logger);
+                        result.FriendshipRowsDeleted += friendsStore.RemoveAllForAccount(accountId);
+                    }
+
+                    result.SessionRowsDeleted += RemoveSessionsForIdentity(normalizedIdentity);
+                }
+
+                if (result.Failed)
+                {
+                    errorMessage = result.ErrorMessage;
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                errorMessage = ex.Message;
+                result.Failed = true;
+                result.ErrorMessage = ex.Message;
+                return false;
+            }
+        }
+
         public Dictionary<string, string> GetPlayerInfo(string gameName)
         {
             return GetPlayerInfo(GetOrCreateIdentityHash(), gameName);
@@ -768,6 +826,43 @@ namespace Shadowrun.LocalService.Core.Persistence
         public Dictionary<string, string> Added { get; private set; }
         public Dictionary<string, string> Updated { get; private set; }
         public List<string> Deleted { get; private set; }
+    }
+
+    public sealed class AccountDeletionResult
+    {
+        public int AccountRowsDeleted;
+        public int SteamIdentityRowsDeleted;
+        public int CredentialIdentityRowsDeleted;
+        public int PlayerInfoRowsDeleted;
+        public int FriendshipRowsDeleted;
+        public int SessionRowsDeleted;
+        public bool Failed;
+        public string ErrorMessage;
+
+        public void Merge(AccountDeletionResult other)
+        {
+            if (other == null)
+            {
+                return;
+            }
+
+            AccountRowsDeleted += other.AccountRowsDeleted;
+            SteamIdentityRowsDeleted += other.SteamIdentityRowsDeleted;
+            CredentialIdentityRowsDeleted += other.CredentialIdentityRowsDeleted;
+            PlayerInfoRowsDeleted += other.PlayerInfoRowsDeleted;
+            FriendshipRowsDeleted += other.FriendshipRowsDeleted;
+            SessionRowsDeleted += other.SessionRowsDeleted;
+            Failed = Failed || other.Failed;
+            if (!IsNullOrWhiteSpace(other.ErrorMessage))
+            {
+                ErrorMessage = other.ErrorMessage;
+            }
+        }
+
+        private static bool IsNullOrWhiteSpace(string value)
+        {
+            return value == null || value.Trim().Length == 0;
+        }
     }
 
     public sealed class OccupiedCareerReference

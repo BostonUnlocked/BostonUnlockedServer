@@ -425,6 +425,47 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        public AccountDeletionResult DeleteAccount(string identityHash)
+        {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.DeleteAccountAndRelated(identityHash);
+            }
+
+            var result = new AccountDeletionResult();
+            if (!IsGuidish(identityHash))
+            {
+                return result;
+            }
+
+            var normalizedIdentity = NormalizeGuidish(identityHash);
+            lock (_syncRoot)
+            {
+                var store = LoadAccountStoreNoThrow(true);
+                var accounts = GetOrCreateDict(store, AccountStoreAccountsKey);
+                if (accounts.Contains(normalizedIdentity))
+                {
+                    accounts.Remove(normalizedIdentity);
+                    result.AccountRowsDeleted++;
+                }
+
+                var steamIdentities = GetDict(store, AccountStoreSteamIdentitiesKey);
+                if (steamIdentities != null)
+                {
+                    result.SteamIdentityRowsDeleted += RemoveMappingsForIdentity(steamIdentities, normalizedIdentity);
+                }
+
+                var credentialIdentities = GetDict(store, AccountStoreCredentialIdentitiesKey);
+                if (credentialIdentities != null)
+                {
+                    result.CredentialIdentityRowsDeleted += RemoveMappingsForIdentity(credentialIdentities, normalizedIdentity);
+                }
+
+                SaveAccountStoreNoThrow(store);
+                return result;
+            }
+        }
+
         public string GetDisplayName(string identityHash)
         {
             if (_sqliteStore != null && _sqliteStore.IsEnabled)
@@ -731,6 +772,31 @@ namespace Shadowrun.LocalService.Core.Persistence
 
             try { store.Remove(AccountStoreActiveIdentityHashKey); } catch { }
             try { store.Remove(AccountStoreLegacyIdentityHashKey); } catch { }
+        }
+
+        private static int RemoveMappingsForIdentity(IDictionary mappings, string normalizedIdentity)
+        {
+            if (mappings == null || IsNullOrWhiteSpace(normalizedIdentity))
+            {
+                return 0;
+            }
+
+            var removeKeys = new List<object>();
+            foreach (DictionaryEntry entry in mappings)
+            {
+                var mappedIdentity = entry.Value as string;
+                if (IsGuidish(mappedIdentity) && string.Equals(NormalizeGuidish(mappedIdentity), normalizedIdentity, StringComparison.OrdinalIgnoreCase))
+                {
+                    removeKeys.Add(entry.Key);
+                }
+            }
+
+            for (var i = 0; i < removeKeys.Count; i++)
+            {
+                mappings.Remove(removeKeys[i]);
+            }
+
+            return removeKeys.Count;
         }
 
         private static IDictionary BuildFreshAccountForIdentity(string identityHash)
