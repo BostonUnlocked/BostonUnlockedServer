@@ -8,6 +8,7 @@
     ],
     "CommandTimeoutSeconds": 900,
     "DefaultLogRootPath": "C:\\Users\\Drumm\\git\\BostonUnlockedServer\\server\\src\\Shadowrun.LocalService.Host\\bin\\Release\\logs",
+    "SaveFileExportPath": "C:\\Windows\\System32\\config\\systemprofile\\AppData\\Local\\ShadowrunLocalService\\data\\localservice.sqlite",
     "GithubOwner": "BostonUnlocked",
     "GithubRepo": "BostonUnlockedServer",
     "GithubAssetName": "ServerPatch.zip",
