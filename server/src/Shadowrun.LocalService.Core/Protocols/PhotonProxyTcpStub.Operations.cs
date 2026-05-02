@@ -5,7 +5,9 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Web.Script.Serialization;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay.Changes;
@@ -28,6 +30,11 @@ namespace Shadowrun.LocalService.Core.Protocols
     private const int SlashCommandFeedbackMaxCharsPerPage = 1200;
     private const int ResetSkillsCooldownDays = 28;
     private const long ResetSkillsCooldownTicks = 28L * 24L * 60L * 60L * 10000000L;
+    private const int DeleteAccountPinExpiryMinutes = 10;
+    private static readonly RNGCryptoServiceProvider DeleteAccountPinRng = new RNGCryptoServiceProvider();
+
+    private readonly object _deleteAccountPinsLock = new object();
+    private readonly Dictionary<Guid, PendingDeleteAccountPin> _deleteAccountPinsByAccountId = new Dictionary<Guid, PendingDeleteAccountPin>();
 
         private static ServiceEnvelopeRequest ParseServiceEnvelopeRequest(byte[] payload)
         {
@@ -802,6 +809,32 @@ namespace Shadowrun.LocalService.Core.Protocols
                 text = trimmed,
             });
 
+            if (result != null && result.PostFeedbackAction != null)
+            {
+                var postFeedbackAction = result.PostFeedbackAction;
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    try
+                    {
+                        postFeedbackAction();
+                    }
+                    catch (Exception ex)
+                    {
+                        if (_logger != null)
+                        {
+                            _logger.Log(new
+                            {
+                                ts = RequestLogger.UtcNowIso(),
+                                type = "chat-command-post-feedback-error",
+                                senderAccountId = state.AccountId,
+                                commandText = trimmed,
+                                error = ex.Message,
+                            });
+                        }
+                    }
+                });
+            }
+
             return true;
         }
 
@@ -809,6 +842,7 @@ namespace Shadowrun.LocalService.Core.Protocols
         {
             var context = new ChatCommandContext();
             context.SenderAccountId = state != null ? state.AccountId : Guid.Empty;
+            context.ConnectionHash = state != null ? state.ConnectionHash : null;
             context.ChannelName = channelName;
             context.RawCommandText = rawCommandText;
 
@@ -1420,6 +1454,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             RegisterChatCommand(map, new HelpChatCommand());
             RegisterChatCommand(map, new BugReportChatCommand());
             RegisterChatCommand(map, new SetAccountNameCommand());
+            RegisterChatCommand(map, new DeleteAccountCommand());
             RegisterChatCommand(map, new AnnounceChatCommand());
             RegisterChatCommand(map, new ActiveMissionsChatCommand());
             RegisterChatCommand(map, new TotalAccountsChatCommand());
@@ -1460,6 +1495,205 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             message = "Account display name set to '" + normalizedDisplayName + "'.";
+            return true;
+        }
+
+        private DeleteAccountPinIssue CreateDeleteAccountPin(Guid accountId)
+        {
+            var issue = new DeleteAccountPinIssue();
+            if (accountId == Guid.Empty)
+            {
+                return issue;
+            }
+
+            var now = DateTime.UtcNow;
+            issue.Pin = GenerateDeleteAccountPin();
+            issue.ExpiresUtc = now.AddMinutes(DeleteAccountPinExpiryMinutes);
+
+            lock (_deleteAccountPinsLock)
+            {
+                _deleteAccountPinsByAccountId[accountId] = new PendingDeleteAccountPin
+                {
+                    Pin = issue.Pin,
+                    CreatedUtc = now,
+                    ExpiresUtc = issue.ExpiresUtc,
+                };
+            }
+
+            return issue;
+        }
+
+        private bool TryConsumeDeleteAccountPin(Guid accountId, string pin, out string message)
+        {
+            message = null;
+            if (accountId == Guid.Empty)
+            {
+                message = "Unable to resolve active account.";
+                return false;
+            }
+
+            if (!IsFourDigitPin(pin))
+            {
+                message = "Usage: /deleteaccount 1234";
+                return false;
+            }
+
+            lock (_deleteAccountPinsLock)
+            {
+                PendingDeleteAccountPin pending;
+                if (!_deleteAccountPinsByAccountId.TryGetValue(accountId, out pending) || pending == null)
+                {
+                    message = "No account deletion PIN is active. Run /deleteaccount to generate a new PIN.";
+                    return false;
+                }
+
+                if (pending.ExpiresUtc <= DateTime.UtcNow)
+                {
+                    _deleteAccountPinsByAccountId.Remove(accountId);
+                    message = "That account deletion PIN has expired. Run /deleteaccount to generate a new PIN.";
+                    return false;
+                }
+
+                if (!string.Equals(pending.Pin, pin, StringComparison.Ordinal))
+                {
+                    message = "Invalid account deletion PIN. Run /deleteaccount to generate a new PIN if needed.";
+                    return false;
+                }
+
+                _deleteAccountPinsByAccountId.Remove(accountId);
+                return true;
+            }
+        }
+
+        private void ExecuteConfirmedAccountDeletion(Guid accountId, string identityHash, string connectionHash)
+        {
+            if (accountId == Guid.Empty || IsNullOrEmpty(identityHash))
+            {
+                return;
+            }
+
+            AccountConnectionTerminator.TerminationResult termination = null;
+            AccountTransportLivenessRegistry.AccountLivenessSnapshot previousLiveness;
+            AccountDeletionResult deletionResult = null;
+            string errorMessage = null;
+
+            try
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "account-deletion-started",
+                    accountId = accountId,
+                    identityHash = identityHash,
+                    connectionHash = connectionHash ?? string.Empty,
+                });
+            }
+            catch
+            {
+            }
+
+            var transientSessionsRemoved = 0;
+            try
+            {
+                if (_sessionIdentityMap != null)
+                {
+                    transientSessionsRemoved = _sessionIdentityMap.RemoveIdentity(identityHash);
+                }
+            }
+            catch
+            {
+            }
+
+            previousLiveness = AccountTransportLivenessRegistry.ForceOffline(accountId);
+
+            try
+            {
+                if (_accountConnectionTerminator != null)
+                {
+                    termination = _accountConnectionTerminator.TerminateAccount(accountId);
+                }
+            }
+            catch
+            {
+                termination = null;
+            }
+
+            try
+            {
+                AccountTransportLivenessRegistry.NotifyHardOffline(accountId);
+            }
+            catch
+            {
+            }
+
+            var success = false;
+            try
+            {
+                success = _userStore != null && _userStore.DeleteAccount(identityHash, out deletionResult, out errorMessage);
+            }
+            catch (Exception ex)
+            {
+                errorMessage = ex.Message;
+                deletionResult = new AccountDeletionResult { Failed = true, ErrorMessage = ex.Message };
+                success = false;
+            }
+
+            try
+            {
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = success ? "account-deletion-completed" : "account-deletion-failed",
+                    accountId = accountId,
+                    identityHash = identityHash,
+                    connectionHash = connectionHash ?? string.Empty,
+                    previousPhotonConnections = previousLiveness.PhotonConnections,
+                    previousAPlayConnections = previousLiveness.APlayConnections,
+                    terminationRequested = termination != null ? termination.Requested : 0,
+                    terminationClosed = termination != null ? termination.Closed : 0,
+                    transientSessionsRemoved = transientSessionsRemoved,
+                    persistentSessionsRemoved = deletionResult != null ? deletionResult.SessionRowsDeleted : 0,
+                    accountsDeleted = deletionResult != null ? deletionResult.AccountRowsDeleted : 0,
+                    steamIdentitiesDeleted = deletionResult != null ? deletionResult.SteamIdentityRowsDeleted : 0,
+                    credentialIdentitiesDeleted = deletionResult != null ? deletionResult.CredentialIdentityRowsDeleted : 0,
+                    playerInfoRowsDeleted = deletionResult != null ? deletionResult.PlayerInfoRowsDeleted : 0,
+                    friendshipRowsDeleted = deletionResult != null ? deletionResult.FriendshipRowsDeleted : 0,
+                    error = errorMessage ?? string.Empty,
+                });
+            }
+            catch
+            {
+            }
+        }
+
+        private static string GenerateDeleteAccountPin()
+        {
+            var bytes = new byte[4];
+            DeleteAccountPinRng.GetBytes(bytes);
+            var value = ((int)bytes[0] << 24) | ((int)bytes[1] << 16) | ((int)bytes[2] << 8) | bytes[3];
+            if (value < 0)
+            {
+                value = ~value;
+            }
+
+            return (value % 10000).ToString("D4", CultureInfo.InvariantCulture);
+        }
+
+        private static bool IsFourDigitPin(string value)
+        {
+            if (value == null || value.Length != 4)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < value.Length; i++)
+            {
+                if (value[i] < '0' || value[i] > '9')
+                {
+                    return false;
+                }
+            }
+
             return true;
         }
 
@@ -2012,6 +2246,10 @@ namespace Shadowrun.LocalService.Core.Protocols
             {
                 var wasOnline = _chatAndFriends != null && _chatAndFriends.IsAccountOnline(accountId);
                 _chatAndFriends.RegisterOrUpdatePeer(state.ConnectionId, accountId, state.Endpoint, state.Stream);
+                if (_accountConnectionTerminator != null)
+                {
+                    _accountConnectionTerminator.Register(accountId, "photon", state.ConnectionHash, state.Endpoint, state.Client, state.Stream);
+                }
                 var isOnline = _chatAndFriends != null && _chatAndFriends.IsAccountOnline(accountId);
                 if (!wasOnline && isOnline)
                 {
@@ -2815,6 +3053,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             public Guid ConnectionId;
             public string ConnectionHash;
             public string Endpoint;
+            public TcpClient Client;
             public NetworkStream Stream;
             public bool RequestedDisconnect;
 
@@ -2834,6 +3073,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             public string SenderIdentityHash;
             public int ActiveCareerIndex;
             public CareerSlot ActiveCareerSlot;
+            public string ConnectionHash;
             public string ChannelName;
             public string RawCommandText;
         }
@@ -2868,6 +3108,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             public bool Success;
             public string FeedbackMessage;
             public string[] FeedbackMessages;
+            public Action PostFeedbackAction;
 
             public static ChatCommandResult Ok(string message)
             {
@@ -2883,6 +3124,13 @@ namespace Shadowrun.LocalService.Core.Protocols
                     FeedbackMessage = normalized.Length > 0 ? normalized[0] : string.Empty,
                     FeedbackMessages = normalized,
                 };
+            }
+
+            public static ChatCommandResult OkWithPostFeedbackAction(string message, Action postFeedbackAction)
+            {
+                var result = Ok(message);
+                result.PostFeedbackAction = postFeedbackAction;
+                return result;
             }
 
             public static ChatCommandResult Fail(string message)
@@ -2929,6 +3177,19 @@ namespace Shadowrun.LocalService.Core.Protocols
             ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args);
         }
 
+        private sealed class PendingDeleteAccountPin
+        {
+            public string Pin;
+            public DateTime CreatedUtc;
+            public DateTime ExpiresUtc;
+        }
+
+        private sealed class DeleteAccountPinIssue
+        {
+            public string Pin;
+            public DateTime ExpiresUtc;
+        }
+
         private sealed class HelpChatCommand : IChatCommand
         {
             public string Name { get { return "help"; } }
@@ -2949,6 +3210,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                         "/help",
                         "/bug {message}",
                         "/setaccountname {name}",
+                        "/deleteaccount",
                         "/announce {message}",
                         "/activemissions",
                         "/totalaccounts",
@@ -2971,7 +3233,48 @@ namespace Shadowrun.LocalService.Core.Protocols
                     return ChatCommandResult.OkMany(BuildPagedFeedbackMessages("Admin commands:", lines));
                 }
 
-                return ChatCommandResult.Ok("Commands: /help, /bug {message}, /setaccountname {name}, /resetskills (28-day cooldown per career)");
+                return ChatCommandResult.Ok("Commands: /help, /bug {message}, /setaccountname {name}, /resetskills (28-day cooldown per career), /deleteaccount");
+            }
+        }
+
+        private sealed class DeleteAccountCommand : IChatCommand
+        {
+            public string Name { get { return "deleteaccount"; } }
+            public bool RequiresAdmin { get { return false; } }
+
+            public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
+            {
+                if (owner == null || context == null || context.SenderAccountId == Guid.Empty || IsNullOrEmpty(context.SenderIdentityHash))
+                {
+                    return ChatCommandResult.Fail("Unable to resolve active account.");
+                }
+
+                if (args == null || args.Length == 0)
+                {
+                    var issue = owner.CreateDeleteAccountPin(context.SenderAccountId);
+                    return ChatCommandResult.OkMany(
+                        "WARNING: Account deletion is irreversible and deletes all characters for this account.",
+                        "It will remove this account from all friend lists and disconnect all active sessions.",
+                        "To confirm, run /deleteaccount " + issue.Pin + " within " + DeleteAccountPinExpiryMinutes.ToString(CultureInfo.InvariantCulture) + " minutes. Running /deleteaccount again will replace this PIN.");
+                }
+
+                if (args.Length != 1)
+                {
+                    return ChatCommandResult.Fail("Usage: /deleteaccount 1234");
+                }
+
+                string message;
+                if (!owner.TryConsumeDeleteAccountPin(context.SenderAccountId, args[0], out message))
+                {
+                    return ChatCommandResult.Fail(message);
+                }
+
+                var accountId = context.SenderAccountId;
+                var identityHash = context.SenderIdentityHash;
+                var connectionHash = context.ConnectionHash;
+                return ChatCommandResult.OkWithPostFeedbackAction(
+                    "Account deletion confirmed. This account is being deleted and all active sessions will be disconnected.",
+                    delegate { owner.ExecuteConfirmedAccountDeletion(accountId, identityHash, connectionHash); });
             }
         }
 

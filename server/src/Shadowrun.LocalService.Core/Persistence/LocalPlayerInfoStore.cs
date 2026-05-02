@@ -143,6 +143,33 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        public int DeleteIdentity(string identityHash)
+        {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.DeletePlayerInfoForIdentity(identityHash);
+            }
+
+            var normalizedIdentity = NormalizeGuidish(identityHash);
+            if (IsNullOrWhiteSpace(normalizedIdentity))
+            {
+                return 0;
+            }
+
+            lock (_lock)
+            {
+                var root = LoadPlayerInfoNoThrow();
+                if (root == null || !root.Contains(normalizedIdentity))
+                {
+                    return 0;
+                }
+
+                root.Remove(normalizedIdentity);
+                SavePlayerInfoNoThrow(root);
+                return 1;
+            }
+        }
+
         public List<KeyValuePair<string, Dictionary<string, string>>> Search(string gameName, string searchString)
         {
             if (_sqliteStore != null && _sqliteStore.IsEnabled)

@@ -49,6 +49,27 @@ Result:
 - On success, the server returns the next UTC timestamp when this command is available again.
 - If used during cooldown, the server returns the next UTC timestamp when it can be used again.
 
+### /deleteaccount
+Starts or confirms irreversible account deletion.
+
+Usage:
+/deleteaccount
+/deleteaccount {PIN}
+
+Flow:
+- Run `/deleteaccount` to generate a 4-digit confirmation PIN.
+- The PIN expires after 10 minutes.
+- Running `/deleteaccount` again generates a new PIN and makes the old PIN unusable.
+- Run `/deleteaccount {PIN}` to confirm deletion.
+
+Result after confirmation:
+- Deletes all characters for the account.
+- Removes the account from all other players' friend lists.
+- Disconnects all active sessions for the account.
+- The next reconnect behaves like the account has never connected before.
+
+Warning: account deletion is irreversible.
+
 ## Notes
 
 - Command names are case-insensitive.

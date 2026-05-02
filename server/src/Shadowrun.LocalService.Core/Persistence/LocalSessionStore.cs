@@ -95,6 +95,40 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        public int RemoveIdentity(string identityHash)
+        {
+            var normalizedIdentity = NormalizeGuidish(identityHash);
+            if (IsNullOrWhiteSpace(normalizedIdentity))
+            {
+                return 0;
+            }
+
+            lock (_lock)
+            {
+                var sessions = LoadSessionsNoThrow();
+                var removeKeys = new List<string>();
+                foreach (var kvp in sessions)
+                {
+                    if (string.Equals(NormalizeGuidish(kvp.Value), normalizedIdentity, StringComparison.OrdinalIgnoreCase))
+                    {
+                        removeKeys.Add(kvp.Key);
+                    }
+                }
+
+                for (var i = 0; i < removeKeys.Count; i++)
+                {
+                    sessions.Remove(removeKeys[i]);
+                }
+
+                if (removeKeys.Count > 0)
+                {
+                    SaveSessionsNoThrow(sessions);
+                }
+
+                return removeKeys.Count;
+            }
+        }
+
         private Dictionary<string, string> LoadSessionsNoThrow()
         {
             try

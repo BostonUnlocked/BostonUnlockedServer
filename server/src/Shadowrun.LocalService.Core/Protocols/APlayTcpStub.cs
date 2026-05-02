@@ -268,6 +268,7 @@ namespace Shadowrun.LocalService.Core.Protocols
         private readonly PortedHubInstanceManager _portedHubInstanceManager;
         private readonly HashSet<Guid> _chatAdminAccountIds;
         private readonly bool _chatAdminOpenMode;
+        private readonly AccountConnectionTerminator _accountConnectionTerminator;
 
         // APlay DirectSystem messages include an 8-byte message number the client may use for ordering/dedup.
         // For MetaGameplay pushes we must keep these monotonic even if the client repeats a request with a lower MsgNo.
@@ -399,6 +400,11 @@ namespace Shadowrun.LocalService.Core.Protocols
         }
 
         public APlayTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap, CharacterStatePushBroker characterStatePushBroker, HubPresenceRegistry hubPresenceRegistry)
+            : this(options, logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry, null)
+        {
+        }
+
+        public APlayTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap, CharacterStatePushBroker characterStatePushBroker, HubPresenceRegistry hubPresenceRegistry, AccountConnectionTerminator accountConnectionTerminator)
         {
             _options = options;
             _logger = logger;
@@ -413,6 +419,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             _shopInventoryService = new PortedShopInventoryService(_options, _userStore);
             _portedHubInstanceManager = new PortedHubInstanceManager(new PortedHubRepository(new PortedHubLoader(_options != null ? _options.StreamingAssetsDir : null)), false);
             _hubPresenceRegistry = hubPresenceRegistry ?? new HubPresenceRegistry();
+            _accountConnectionTerminator = accountConnectionTerminator;
             _chatAdminAccountIds = CheatAuthorizationPolicy.LoadChatAdminAccountIds(options, null);
             _chatAdminOpenMode = CheatAuthorizationPolicy.ResolveAdminOpenMode(_chatAdminAccountIds);
             _missionCleanupTimer = new Timer(SweepDisconnectedMissionSessions, null, MissionCleanupInterval, MissionCleanupInterval);
@@ -1713,7 +1720,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                             if (isRegularConnect && !sentRegularConnectReply)
                             {
-                                if (HandleRegularConnect(
+                                var shouldCloseAfterRegularConnect = HandleRegularConnect(
                                     stream,
                                     peer,
                                     direct.Value,
@@ -1728,7 +1735,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     ref gameClientEntityId,
                                     ref activeIdentityHash,
                                     ref activeIdentityGuid,
-                                    ref aplayTransportAccountId))
+                                    ref aplayTransportAccountId);
+
+                                if (_accountConnectionTerminator != null && activeIdentityGuid != Guid.Empty)
+                                {
+                                    _accountConnectionTerminator.Register(activeIdentityGuid, "aplay", connectionHash, peer, client, stream);
+                                }
+
+                                if (shouldCloseAfterRegularConnect)
                                 {
                                     return;
                                 }
@@ -3191,6 +3205,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
                 finally
                 {
+                    if (_accountConnectionTerminator != null)
+                    {
+                        _accountConnectionTerminator.Unregister("aplay", connectionHash);
+                    }
+
                     if (aplayTransportAccountId != Guid.Empty)
                     {
                         AccountTransportLivenessRegistry.MarkDisconnected(aplayTransportAccountId, AccountTransportLivenessRegistry.TransportAPlay);

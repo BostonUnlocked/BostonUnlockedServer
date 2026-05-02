@@ -1153,6 +1153,104 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        public AccountDeletionResult DeleteAccountAndRelated(string identityHash)
+        {
+            var result = new AccountDeletionResult();
+            if (!IsEnabled || !IsGuidish(identityHash))
+            {
+                return result;
+            }
+
+            var normalizedIdentity = NormalizeGuidish(identityHash);
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                using (var connection = OpenConnection())
+                using (var transaction = connection.BeginTransaction())
+                {
+                    result.SteamIdentityRowsDeleted = ExecuteNonQueryCount(connection, transaction,
+                        "DELETE FROM steam_identities WHERE identity_hash = @identityHash;",
+                        "@identityHash", normalizedIdentity);
+                    result.CredentialIdentityRowsDeleted = ExecuteNonQueryCount(connection, transaction,
+                        "DELETE FROM credential_identities WHERE identity_hash = @identityHash;",
+                        "@identityHash", normalizedIdentity);
+                    result.PlayerInfoRowsDeleted = ExecuteNonQueryCount(connection, transaction,
+                        "DELETE FROM player_info WHERE identity_hash = @identityHash;",
+                        "@identityHash", normalizedIdentity);
+                    result.FriendshipRowsDeleted = ExecuteNonQueryCount(connection, transaction,
+                        "DELETE FROM friends WHERE account_id = @identityHash OR friend_account_id = @identityHash;",
+                        "@identityHash", normalizedIdentity);
+                    result.AccountRowsDeleted = ExecuteNonQueryCount(connection, transaction,
+                        "DELETE FROM accounts WHERE identity_hash = @identityHash;",
+                        "@identityHash", normalizedIdentity);
+
+                    transaction.Commit();
+                }
+
+                LogOperation("account-delete", sw, new
+                {
+                    identityHash = normalizedIdentity,
+                    accounts = result.AccountRowsDeleted,
+                    steamIdentities = result.SteamIdentityRowsDeleted,
+                    credentialIdentities = result.CredentialIdentityRowsDeleted,
+                    playerInfo = result.PlayerInfoRowsDeleted,
+                    friendships = result.FriendshipRowsDeleted,
+                });
+            }
+            catch (Exception ex)
+            {
+                result.Failed = true;
+                result.ErrorMessage = ex.Message;
+                LogFailure("account-delete-failed", sw, ex, new { identityHash = normalizedIdentity });
+            }
+
+            return result;
+        }
+
+        public int DeletePlayerInfoForIdentity(string identityHash)
+        {
+            if (!IsEnabled || !IsGuidish(identityHash))
+            {
+                return 0;
+            }
+
+            try
+            {
+                using (var connection = OpenConnection())
+                {
+                    return ExecuteNonQueryCount(connection, null,
+                        "DELETE FROM player_info WHERE identity_hash = @identityHash;",
+                        "@identityHash", NormalizeGuidish(identityHash));
+                }
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        public int DeleteFriendshipsForAccount(Guid accountId)
+        {
+            if (!IsEnabled || accountId == Guid.Empty)
+            {
+                return 0;
+            }
+
+            try
+            {
+                using (var connection = OpenConnection())
+                {
+                    return ExecuteNonQueryCount(connection, null,
+                        "DELETE FROM friends WHERE account_id = @identityHash OR friend_account_id = @identityHash;",
+                        "@identityHash", NormalizeGuidish(accountId.ToString()));
+                }
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
         private void EnsureBootstrapped(bool migrateJsonToSqlite)
         {
             if (!IsEnabled || IsNullOrWhiteSpace(_databasePath))
@@ -1672,6 +1770,15 @@ namespace Shadowrun.LocalService.Core.Persistence
             {
                 AddParameter(command, name0, value0);
                 command.ExecuteNonQuery();
+            }
+        }
+
+        private static int ExecuteNonQueryCount(SqliteConnection connection, SqliteTransaction transaction, string sql, string name0, object value0)
+        {
+            using (var command = CreateCommand(connection, transaction, sql))
+            {
+                AddParameter(command, name0, value0);
+                return command.ExecuteNonQuery();
             }
         }
 

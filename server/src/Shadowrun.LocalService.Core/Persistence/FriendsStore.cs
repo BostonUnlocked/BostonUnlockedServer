@@ -130,6 +130,70 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        public int RemoveAllForAccount(Guid accountId)
+        {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.DeleteFriendshipsForAccount(accountId);
+            }
+
+            if (accountId == Guid.Empty)
+            {
+                return 0;
+            }
+
+            lock (_lock)
+            {
+                var removed = 0;
+                var root = LoadNoThrow();
+                var friends = GetOrCreateDict(root, "Friends");
+                var accountKey = NormalizeGuidish(accountId.ToString());
+
+                if (friends.ContainsKey(accountKey))
+                {
+                    friends.Remove(accountKey);
+                    removed++;
+                }
+
+                foreach (var key in new List<string>(friends.Keys))
+                {
+                    object raw;
+                    if (!friends.TryGetValue(key, out raw) || raw == null)
+                    {
+                        continue;
+                    }
+
+                    var list = ConvertToStringList(raw);
+                    if (list == null)
+                    {
+                        continue;
+                    }
+
+                    var before = list.Count;
+                    for (var i = list.Count - 1; i >= 0; i--)
+                    {
+                        if (string.Equals(NormalizeGuidish(list[i]), accountKey, StringComparison.OrdinalIgnoreCase))
+                        {
+                            list.RemoveAt(i);
+                        }
+                    }
+
+                    if (list.Count != before)
+                    {
+                        removed += before - list.Count;
+                        friends[key] = list;
+                    }
+                }
+
+                if (removed > 0)
+                {
+                    SaveNoThrow(root);
+                }
+
+                return removed;
+            }
+        }
+
         private static void AddOneWay(Dictionary<string, object> friends, Guid from, Guid to)
         {
             var fromKey = NormalizeGuidish(from.ToString());
