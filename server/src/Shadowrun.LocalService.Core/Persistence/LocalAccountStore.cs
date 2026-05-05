@@ -23,6 +23,8 @@ namespace Shadowrun.LocalService.Core.Persistence
         private const string AccountStoreLegacyIdentityHashKey = "IdentityHash";
         private const string AccountStoreCredentialIdentitiesKey = "CredentialIdentities";
         private const string AccountStoreHasCustomDisplayNameKey = "HasCustomDisplayName";
+        private const string AccountStoreCareerSlotLimitKey = "CareerSlotLimit";
+        private const int DefaultCareerSlotLimit = 6;
 
         private const string AccountCredentialEmailKey = "CredentialEmail";
         private const string AccountCredentialPasswordHashKey = "CredentialPasswordHash";
@@ -91,6 +93,10 @@ namespace Shadowrun.LocalService.Core.Persistence
                 if (account["Careers"] == null)
                 {
                     account["Careers"] = BuildDefaultCareers(created);
+                }
+                if (!account.Contains(AccountStoreCareerSlotLimitKey))
+                {
+                    account[AccountStoreCareerSlotLimitKey] = DefaultCareerSlotLimit;
                 }
 
                 SaveAccountNoThrow(account);
@@ -805,6 +811,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             fresh[AccountStoreLegacyIdentityHashKey] = IsGuidish(identityHash) ? NormalizeGuidish(identityHash) : null;
             fresh["DisplayName"] = BuildAnonymizedDisplayName(identityHash);
             fresh[AccountStoreHasCustomDisplayNameKey] = false;
+            fresh[AccountStoreCareerSlotLimitKey] = DefaultCareerSlotLimit;
             fresh["Careers"] = null;
             fresh["LastCareerIndex"] = 0;
             return fresh;
@@ -1108,7 +1115,7 @@ namespace Shadowrun.LocalService.Core.Persistence
         private static ArrayList BuildDefaultCareers(string identityHash)
         {
             var list = new ArrayList();
-            for (var i = 0; i < 6; i++)
+            for (var i = 0; i < DefaultCareerSlotLimit; i++)
             {
                 var slot = new CareerSlot();
                 slot.Index = i;

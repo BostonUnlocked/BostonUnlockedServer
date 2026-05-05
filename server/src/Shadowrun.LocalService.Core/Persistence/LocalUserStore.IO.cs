@@ -18,6 +18,10 @@ namespace Shadowrun.LocalService.Core.Persistence
         private const string AccountStoreSteamId64Key = "SteamId64";
         private const string AccountStoreLegacyIdentityHashKey = "IdentityHash";
         private const string AccountStoreCredentialIdentitiesKey = "CredentialIdentities";
+        private const string AccountStoreCareerSlotLimitKey = "CareerSlotLimit";
+        private const int DefaultCareerSlotLimit = 6;
+        private const int MinCareerSlotLimit = 1;
+        private const int MaxCareerSlotLimit = 8;
 
         private const string AccountCredentialEmailKey = "CredentialEmail";
         private const string AccountCredentialPasswordHashKey = "CredentialPasswordHash";
@@ -79,6 +83,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             var fresh = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
             fresh["IdentityHash"] = IsGuidish(identityHash) ? NormalizeGuidish(identityHash) : null;
             fresh["DisplayName"] = BuildAnonymizedDisplayName(identityHash);
+            fresh[AccountStoreCareerSlotLimitKey] = DefaultCareerSlotLimit;
             fresh["Careers"] = null;
             fresh["LastCareerIndex"] = 0;
             return fresh;
@@ -426,7 +431,7 @@ namespace Shadowrun.LocalService.Core.Persistence
         private static ArrayList BuildDefaultCareers(string identityHash)
         {
             var list = new ArrayList();
-            for (var i = 0; i < 6; i++)
+            for (var i = 0; i < DefaultCareerSlotLimit; i++)
             {
                 var slot = new CareerSlot();
                 slot.Index = i;

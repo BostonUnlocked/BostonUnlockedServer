@@ -15,6 +15,8 @@ namespace Shadowrun.LocalService.Core.Persistence
         private static readonly JavaScriptSerializer Json = CreateSerializer();
         private static readonly object BootstrapLock = new object();
         private static readonly Dictionary<string, bool> BootstrappedPaths = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        private const string AccountStoreCareerSlotLimitKey = "CareerSlotLimit";
+        private const int DefaultCareerSlotLimit = 6;
 
         private readonly RequestLogger _logger;
         private readonly string _databasePath;
@@ -1973,6 +1975,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             fresh["IdentityHash"] = normalizedIdentity;
             fresh["DisplayName"] = BuildAnonymizedDisplayName(normalizedIdentity);
             fresh["HasCustomDisplayName"] = false;
+            fresh[AccountStoreCareerSlotLimitKey] = DefaultCareerSlotLimit;
             fresh["Careers"] = BuildDefaultCareers(normalizedIdentity);
             fresh["LastCareerIndex"] = 0;
             return fresh;
@@ -1981,7 +1984,7 @@ namespace Shadowrun.LocalService.Core.Persistence
         private static ArrayList BuildDefaultCareers(string identityHash)
         {
             var list = new ArrayList();
-            for (var i = 0; i < 6; i++)
+            for (var i = 0; i < DefaultCareerSlotLimit; i++)
             {
                 var slot = new CareerSlot();
                 slot.Index = i;

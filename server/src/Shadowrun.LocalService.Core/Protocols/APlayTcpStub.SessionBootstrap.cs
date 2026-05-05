@@ -232,7 +232,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             _logger.UpdateConnectionAccountId("aplay", peer, null, activeIdentityGuid);
             RegisterGameClientEntityIdForIdentity(activeIdentityGuid, gameClientEntityId, peer);
 
-            var careerSummary = BuildCareerSummaryJson(_userStore != null ? _userStore.GetCareers(activeIdentityHash) : null);
+            var careerSummary = BuildCareerSummaryJsonForIdentity(activeIdentityHash);
             var welcomePayload = BuildGameClientWelcomePayload(AccountEntityId, careerSummary);
             var welcomeCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, gameClientEntityId, 4, welcomePayload), serverMsgNoBase + 4);
             SendRawFrame(stream, peer, PrefixLength(welcomeCore), "sent GameClientConnection Welcome in response to RegularConnect");
@@ -357,7 +357,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             var accountWelcomeCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 14, accountWelcomePayload), serverMsgNoBase + 4);
             SendRawFrame(stream, peer, PrefixLength(accountWelcomeCore), "sent AccountCommunicationObject Welcome after EnterCareer");
 
-            var updatePayload = BuildUtf16StringPayload(BuildCareerSummaryJson(_userStore != null ? _userStore.GetCareers(identityHash) : null));
+            var updatePayload = BuildUtf16StringPayload(BuildCareerSummaryJsonForIdentity(identityHash));
             var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 16, updatePayload), serverMsgNoBase + 5);
             SendRawFrame(stream, peer, PrefixLength(updateCore), "sent AccountCommunicationObject UpdateCareerSummaries after EnterCareer");
 
@@ -430,7 +430,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             currentHubInstanceId = null;
 
             var msgNoBase = direct.MsgNo + 20;
-            var updatePayload = BuildUtf16StringPayload(BuildCareerSummaryJson(_userStore != null && !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetCareers(activeIdentityHash) : null));
+            var updatePayload = BuildUtf16StringPayload(BuildCareerSummaryJsonForIdentity(activeIdentityHash));
             var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 16, updatePayload), msgNoBase + 1);
             SendRawFrame(stream, peer, PrefixLength(updateCore), "sent AccountCommunicationObject UpdateCareerSummaries after LeaveCurrentCareer");
 
@@ -466,8 +466,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             var msgNoBase = direct.MsgNo + 30;
-            var careers = _userStore != null && !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetCareers(activeIdentityHash) : null;
-            var summaryJson = BuildCareerSummaryJson(careers);
+            var summaryJson = BuildCareerSummaryJsonForIdentity(activeIdentityHash);
 
             var careerDeactivatedPayload = BuildUtf16StringPayload(summaryJson);
             var careerDeactivatedCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 15, careerDeactivatedPayload), msgNoBase + 1);
