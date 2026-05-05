@@ -552,6 +552,62 @@ namespace Shadowrun.LocalService.Core.Persistence
             return _careerStore != null ? _careerStore.GetCareers(identityHash) : new List<CareerSlot>();
         }
 
+        public int GetCareerSlotLimit(string identityHash)
+        {
+            lock (_lock)
+            {
+                var identity = IsGuidish(identityHash) ? NormalizeGuidish(identityHash) : GetOrCreateIdentityHash();
+                var account = LoadAccountForIdentityNoThrow(identity, true) ?? LoadAccountNoThrow();
+                return NormalizeCareerSlotLimit(GetInt(account, AccountStoreCareerSlotLimitKey, DefaultCareerSlotLimit));
+            }
+        }
+
+        public bool TrySetCareerSlotLimit(string identityHash, int limit, out int appliedLimit, out string message)
+        {
+            appliedLimit = DefaultCareerSlotLimit;
+            message = "Unable to update career slot count.";
+
+            if (!IsGuidish(identityHash))
+            {
+                message = "AccountId must be a valid GUID.";
+                return false;
+            }
+
+            if (limit < MinCareerSlotLimit || limit > MaxCareerSlotLimit)
+            {
+                message = "Career slot count must be between " + MinCareerSlotLimit.ToString(CultureInfo.InvariantCulture)
+                    + " and " + MaxCareerSlotLimit.ToString(CultureInfo.InvariantCulture) + ".";
+                return false;
+            }
+
+            lock (_lock)
+            {
+                var identity = NormalizeGuidish(identityHash);
+                var account = LoadAccountForIdentityNoThrow(identity, true) ?? LoadAccountNoThrow();
+                account[AccountStoreCareerSlotLimitKey] = limit;
+                SaveAccountNoThrow(account);
+                appliedLimit = limit;
+            }
+
+            message = "Career slot count set to " + appliedLimit.ToString(CultureInfo.InvariantCulture) + ".";
+            return true;
+        }
+
+        private static int NormalizeCareerSlotLimit(int limit)
+        {
+            if (limit < MinCareerSlotLimit)
+            {
+                return MinCareerSlotLimit;
+            }
+
+            if (limit > MaxCareerSlotLimit)
+            {
+                return MaxCareerSlotLimit;
+            }
+
+            return limit;
+        }
+
         public List<OccupiedCareerReference> GetRandomOccupiedCareerReferences(string excludedIdentityHash, int excludedCareerIndex)
         {
             lock (_lock)

@@ -135,8 +135,28 @@ namespace Shadowrun.LocalService.Core.Protocols
                 BitConverter.GetBytes((ushort)utc.Millisecond));
         }
 
+        private string BuildCareerSummaryJsonForIdentity(string identityHash)
+        {
+            if (_userStore == null || IsNullOrWhiteSpace(identityHash))
+            {
+                return BuildCareerSummaryJson(null);
+            }
+
+            return BuildCareerSummaryJson(_userStore.GetCareers(identityHash), _userStore.GetCareerSlotLimit(identityHash));
+        }
+
         private static string BuildCareerSummaryJson(List<CareerSlot> careers)
         {
+            return BuildCareerSummaryJson(careers, 6);
+        }
+
+        private static string BuildCareerSummaryJson(List<CareerSlot> careers, int careerSlotLimit)
+        {
+            if (careerSlotLimit < 0)
+            {
+                careerSlotLimit = 0;
+            }
+
             var slots = new Dictionary<int, CareerSlot>();
             if (careers != null)
             {
@@ -153,7 +173,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             var sb = new StringBuilder();
             sb.Append("[");
-            for (var idx = 0; idx < 6; idx++)
+            for (var idx = 0; idx < careerSlotLimit; idx++)
             {
                 CareerSlot s;
                 if (!slots.TryGetValue(idx, out s) || s == null)

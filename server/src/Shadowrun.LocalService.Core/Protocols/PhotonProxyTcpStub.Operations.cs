@@ -1465,12 +1465,14 @@ namespace Shadowrun.LocalService.Core.Protocols
             RegisterChatCommand(map, new GetBalanceCommand("getnuyen", false, ChatCommandTargetMode.Self));
             RegisterChatCommand(map, new SetBalanceCommand("setkarma", true, ChatCommandTargetMode.Self));
             RegisterChatCommand(map, new SetBalanceCommand("setnuyen", false, ChatCommandTargetMode.Self));
+            RegisterChatCommand(map, new SetCareerSlotsCommand("setcareerslots", ChatCommandTargetMode.Self));
             RegisterChatCommand(map, new ResetSkillsCommand("resetskills", ChatCommandTargetMode.Self));
             RegisterChatCommand(map, new AddItemCommand("additem", ChatCommandTargetMode.Self));
             RegisterChatCommand(map, new GetBalanceCommand("othergetkarma", true, ChatCommandTargetMode.OtherByAccountId));
             RegisterChatCommand(map, new GetBalanceCommand("othergetnuyen", false, ChatCommandTargetMode.OtherByAccountId));
             RegisterChatCommand(map, new SetBalanceCommand("othersetkarma", true, ChatCommandTargetMode.OtherByAccountId));
             RegisterChatCommand(map, new SetBalanceCommand("othersetnuyen", false, ChatCommandTargetMode.OtherByAccountId));
+            RegisterChatCommand(map, new SetCareerSlotsCommand("othersetcareerslots", ChatCommandTargetMode.OtherByAccountId));
             RegisterChatCommand(map, new ResetSkillsCommand("otherresetskills", ChatCommandTargetMode.OtherByAccountId));
             RegisterChatCommand(map, new AddItemCommand("otheradditem", ChatCommandTargetMode.OtherByAccountId));
             return map;
@@ -2568,6 +2570,30 @@ namespace Shadowrun.LocalService.Core.Protocols
             return true;
         }
 
+        private bool TrySetCareerSlotsForTarget(ChatCommandTarget target, int value, out int appliedLimit, out string message)
+        {
+            appliedLimit = 0;
+            message = "Unable to resolve target account.";
+            if (target == null || _userStore == null || IsNullOrEmpty(target.IdentityHash))
+            {
+                return false;
+            }
+
+            if (!_userStore.TrySetCareerSlotLimit(target.IdentityHash, value, out appliedLimit, out message))
+            {
+                return false;
+            }
+
+            if (_characterStatePushBroker != null)
+            {
+                _characterStatePushBroker.Enqueue(target.AccountId, CharacterStatePushPaths.CareerSummaries);
+            }
+
+            message = "Set career slot count to " + appliedLimit.ToString(CultureInfo.InvariantCulture)
+                + " for " + FormatChatCommandTarget(target) + ".";
+            return true;
+        }
+
         private bool TryAddItemForTarget(ChatCommandTarget target, string itemCode, int? variantValue, out int appliedVariant, out int quality, out string message)
         {
             appliedVariant = -1;
@@ -3221,12 +3247,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                         "/getnuyen",
                         "/setkarma {X}",
                         "/setnuyen {X}",
+                        "/setcareerslots {N}",
                         "/resetskills",
                         "/additem {ItemCode} [Variant]",
                         "/othergetkarma {AccountId}",
                         "/othergetnuyen {AccountId}",
                         "/othersetkarma {AccountId} {X}",
                         "/othersetnuyen {AccountId} {X}",
+                        "/othersetcareerslots {AccountId} {N}",
                         "/otherresetskills {AccountId}",
                         "/otheradditem {AccountId} {ItemCode} [Variant]",
                     };
@@ -3757,6 +3785,87 @@ namespace Shadowrun.LocalService.Core.Protocols
                         success = success,
                     });
                 }
+
+                return success ? ChatCommandResult.Ok(message) : ChatCommandResult.Fail(message);
+            }
+        }
+
+        private sealed class SetCareerSlotsCommand : IChatCommand
+        {
+            private readonly string _name;
+            private readonly ChatCommandTargetMode _targetMode;
+
+            public SetCareerSlotsCommand(string name, ChatCommandTargetMode targetMode)
+            {
+                _name = name;
+                _targetMode = targetMode;
+            }
+
+            public string Name { get { return _name; } }
+            public bool RequiresAdmin { get { return true; } }
+
+            public ChatCommandResult Execute(PhotonProxyTcpStub owner, ChatCommandContext context, string[] args)
+            {
+                if (owner == null || context == null)
+                {
+                    return ChatCommandResult.Fail("Invalid command context.");
+                }
+
+                if (_targetMode == ChatCommandTargetMode.Self)
+                {
+                    if (args == null || args.Length != 1)
+                    {
+                        return ChatCommandResult.Fail("Usage: /" + _name + " {N}");
+                    }
+                }
+                else if (args == null || args.Length != 2)
+                {
+                    return ChatCommandResult.Fail("Usage: /" + _name + " {AccountId} {N}");
+                }
+
+                var valueArgIndex = _targetMode == ChatCommandTargetMode.Self ? 0 : 1;
+                int value;
+                if (!int.TryParse(args[valueArgIndex], out value))
+                {
+                    return ChatCommandResult.Fail("Career slot count must be an integer.");
+                }
+
+                ChatCommandTarget target;
+                string error;
+                if (_targetMode == ChatCommandTargetMode.Self)
+                {
+                    if (!owner.TryResolveSenderCommandTarget(context, out target, out error))
+                    {
+                        return ChatCommandResult.Fail(error);
+                    }
+                }
+                else if (!owner.TryResolveConnectedCommandTarget(args[0], out target, out error))
+                {
+                    return ChatCommandResult.Fail(error);
+                }
+
+                int appliedLimit;
+                string message;
+                var success = owner.TrySetCareerSlotsForTarget(target, value, out appliedLimit, out message);
+                owner.LogAdminEvent(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "chat-command",
+                    action = "target-career-slot-limit-write",
+                    command = _name,
+                    senderAccountId = context.SenderAccountId,
+                    senderIdentity = context.SenderIdentityHash ?? string.Empty,
+                    senderCareerIndex = context.ActiveCareerIndex,
+                    targetAccountId = target != null && target.AccountId != Guid.Empty ? target.AccountId.ToString("D") : string.Empty,
+                    targetIdentityHash = target != null ? (target.IdentityHash ?? string.Empty) : string.Empty,
+                    targetCareerIndex = target != null ? target.ActiveCareerIndex : 0,
+                    targetCharacterId = target != null ? (target.CharacterId ?? string.Empty) : string.Empty,
+                    targetCharacterName = target != null ? (target.CharacterName ?? string.Empty) : string.Empty,
+                    targetHubId = target != null ? (target.HubId ?? string.Empty) : string.Empty,
+                    value = value,
+                    appliedLimit = appliedLimit,
+                    success = success,
+                });
 
                 return success ? ChatCommandResult.Ok(message) : ChatCommandResult.Fail(message);
             }

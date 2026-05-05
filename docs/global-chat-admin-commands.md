@@ -80,6 +80,12 @@ Sets your active character nuyen.
 Usage:
 /setnuyen {X}
 
+### /setcareerslots {N}
+Sets how many career slots are available for your account.
+
+Usage:
+/setcareerslots {N}
+
 ### /additem {ItemCode} [Variant]
 Adds one item to your active character inventory.
 
@@ -115,6 +121,12 @@ Sets nuyen for another connected account.
 Usage:
 /othersetnuyen {AccountId} {X}
 
+### /othersetcareerslots {AccountId} {N}
+Sets how many career slots are available for another connected account.
+
+Usage:
+/othersetcareerslots {AccountId} {N}
+
 ### /otherresetskills {AccountId}
 Resets another connected account's active character skill tree and refunds all spent karma.
 
@@ -138,4 +150,5 @@ Usage:
 - Command names are case-insensitive.
 - Other-account commands require the target account to be currently online.
 - Values for karma and nuyen must be non-negative integers.
+- Career slot counts must be integers from 1 to 8.
 - Item and variant validation use server static data.

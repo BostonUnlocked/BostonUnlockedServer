@@ -473,7 +473,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                 if ((paths & CharacterStatePushPaths.CareerSummaries) != 0)
                 {
-                    var updatePayload = BuildUtf16StringPayload(BuildCareerSummaryJson(_userStore.GetCareers(identityHash)));
+                    var updatePayload = BuildUtf16StringPayload(BuildCareerSummaryJsonForIdentity(identityHash));
                     var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 16, updatePayload), msgNo++);
                     SendRawFrame(stream, peer, PrefixLength(updateCore), "sent AccountCommunicationObject UpdateCareerSummaries (queued character-state push)");
                 }
@@ -2294,7 +2294,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             currentHubInstanceId = refreshedHubId;
 
                                             var msgNoBase = direct.Value.MsgNo + 2;
-                                            var summaryJson = BuildCareerSummaryJson(!IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetCareers(activeIdentityHash) : null);
+                                            var summaryJson = BuildCareerSummaryJsonForIdentity(activeIdentityHash);
                                             var updatePayload = BuildUtf16StringPayload(summaryJson);
                                             var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 16, updatePayload), msgNoBase);
                                             SendRawFrame(stream, peer, PrefixLength(updateCore), "sent AccountCommunicationObject UpdateCareerSummaries after CharacterChangeCollection");
@@ -2975,7 +2975,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                                 // Nudge client UI lists.
                                                 var msgNoBase = direct.Value.MsgNo + 2;
-                                                var summaryJson = BuildCareerSummaryJson(!IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetCareers(activeIdentityHash) : null);
+                                                var summaryJson = BuildCareerSummaryJsonForIdentity(activeIdentityHash);
                                                 var updatePayload = BuildUtf16StringPayload(summaryJson);
                                                 var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 16, updatePayload), msgNoBase);
                                                 SendRawFrame(stream, peer, PrefixLength(updateCore), "sent AccountCommunicationObject UpdateCareerSummaries after CharacterChangeCollection");
