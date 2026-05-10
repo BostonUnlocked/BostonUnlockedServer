@@ -249,6 +249,7 @@ namespace Shadowrun.LocalService.Core.Simulation
 
             // Environment entity + core components
             RegisterEnvironmentEntity(staticData, matchConfiguration, gameworldInstance.EntitySystem, gameworldInstance.Factions, levelData);
+            MissionActivityDiagnostics.Install(logger, peer, gameworldInstance);
 
             // Critical: feed player/henchman snapshots into the mission template resolver before any spawns occur.
             // If we skip this, player spawns fall back to default templates and diverge from client stats (e.g., metatype movement bonuses).
