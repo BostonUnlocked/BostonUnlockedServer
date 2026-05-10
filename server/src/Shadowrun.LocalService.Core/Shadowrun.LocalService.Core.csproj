@@ -204,6 +204,7 @@
     <Compile Include="Simulation\LocalMissionLootController.cs" />
     <Compile Include="Simulation\EncounterActivationTracker.cs" />
     <Compile Include="Simulation\NullMetagameplayrelevantChangeObserver.cs" />
+    <Compile Include="Simulation\MissionActivityDiagnostics.cs" />
     <Compile Include="Simulation\MissionEntityStateDiagnosticsListener.cs" />
     <Compile Include="Simulation\PortedAiAgent.cs" />
     <Compile Include="Simulation\PortedAiCommander.cs" />
