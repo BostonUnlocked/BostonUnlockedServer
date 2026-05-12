@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Net.Sockets;
+using System.Threading;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay.Changes;
 using Shadowrun.LocalService.Core.Metagameplay;
@@ -14,6 +15,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 {
     public sealed partial class APlayTcpStub
     {
+        private const int DynamicSpawnVisualizationBarrierDelayMs = 1250;
+
         private void HandleMissionCommandCall(
             NetworkStream stream,
             string peer,
@@ -30,6 +33,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             string activeCharacterName,
             string currentMissionMapName,
             HashSet<string> completedStoryMissions,
+            ManualResetEvent stopEvent,
             ref string currentCoopGroupName,
             ref ServerSimulationSession simulationSession,
             ref object simulationSessionSync,
@@ -100,7 +104,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                         activeCareerIndex,
                         currentCoopGroupName,
                         simulationSession,
-                        simulationSessionSync);
+                        simulationSessionSync,
+                        stopEvent);
                     return;
 
                 case MissionCommandKind.ActivateActiveSkill:
@@ -116,7 +121,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                         activeCareerIndex,
                         currentCoopGroupName,
                         simulationSession,
-                        simulationSessionSync);
+                        simulationSessionSync,
+                        stopEvent);
                     return;
             }
         }
@@ -410,7 +416,8 @@ namespace Shadowrun.LocalService.Core.Protocols
             int activeCareerIndex,
             string currentCoopGroupName,
             ServerSimulationSession simulationSession,
-            object simulationSessionSync)
+            object simulationSessionSync,
+            ManualResetEvent stopEvent)
         {
             if (request == null || !request.AgentId.HasValue || !request.TargetX.HasValue || !request.TargetY.HasValue)
             {
@@ -424,6 +431,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             var shouldBroadcast = true;
             IList<ServerSimulationSession.AiTurnAction> aiActions = null;
+            int[] entityIdsBeforeCommand = null;
+            int[] newlySpawnedEntityIds = null;
             if (simulationSession != null)
             {
                 try
@@ -432,19 +441,23 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                         lock (simulationSessionSync)
                         {
+                            entityIdsBeforeCommand = simulationSession.SnapshotMissionEntityIds();
                             shouldBroadcast = simulationSession.ExecuteFollowPath(request.AgentId.Value, request.TargetX.Value, request.TargetY.Value);
                             if (shouldBroadcast)
                             {
                                 aiActions = simulationSession.SkipAiTurnsIfNeeded();
+                                newlySpawnedEntityIds = simulationSession.DescribeNewSpawnedEntityIdsSince(entityIdsBeforeCommand);
                             }
                         }
                     }
                     else
                     {
+                        entityIdsBeforeCommand = simulationSession.SnapshotMissionEntityIds();
                         shouldBroadcast = simulationSession.ExecuteFollowPath(request.AgentId.Value, request.TargetX.Value, request.TargetY.Value);
                         if (shouldBroadcast)
                         {
                             aiActions = simulationSession.SkipAiTurnsIfNeeded();
+                            newlySpawnedEntityIds = simulationSession.DescribeNewSpawnedEntityIdsSince(entityIdsBeforeCommand);
                         }
                     }
                 }
@@ -491,7 +504,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             SendRawFrame(stream, peer, PrefixLength(followPathCore), "echoed GameworldCommunicationObject FollowPath from MissionCommand");
             BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(followPathCore), "echoed GameworldCommunicationObject FollowPath from MissionCommand (coop bcast)");
 
-            TryBroadcastAiTurnActions(stream, peer, currentCoopGroupName, gameworldEntityId, responseMsgNoBase + 3, aiActions, simulationSession);
+            TryBroadcastAiTurnActions(stream, peer, currentCoopGroupName, gameworldEntityId, responseMsgNoBase + 3, aiActions, simulationSession, newlySpawnedEntityIds, stopEvent);
             SendPendingLootPreviews(simulationSession, stream, peer, responseMsgNoBase + 900, currentCoopGroupName, activeIdentityHash, activeIdentityGuid, activeCareerIndex);
         }
 
@@ -507,7 +520,8 @@ namespace Shadowrun.LocalService.Core.Protocols
             int activeCareerIndex,
             string currentCoopGroupName,
             ServerSimulationSession simulationSession,
-            object simulationSessionSync)
+            object simulationSessionSync,
+            ManualResetEvent stopEvent)
         {
             if (request == null
                 || !request.WeaponIndex.HasValue
@@ -551,6 +565,8 @@ namespace Shadowrun.LocalService.Core.Protocols
             var seedPackage = new Cliffhanger.SRO.ServerClientCommons.Gameworld.Communication.SeedPackage(seed0, seed1, seed2, seed3);
             var shouldBroadcast = true;
             IList<ServerSimulationSession.AiTurnAction> aiActions = null;
+            int[] entityIdsBeforeCommand = null;
+            int[] newlySpawnedEntityIds = null;
 
             if (simulationSession != null)
             {
@@ -560,6 +576,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     {
                         lock (simulationSessionSync)
                         {
+                            entityIdsBeforeCommand = simulationSession.SnapshotMissionEntityIds();
                             seedPackage = simulationSession.CreateSeedPackage();
                             shouldBroadcast = simulationSession.ExecuteActivateSkill(
                                 request.WeaponIndex.Value,
@@ -572,11 +589,13 @@ namespace Shadowrun.LocalService.Core.Protocols
                             if (shouldBroadcast)
                             {
                                 aiActions = simulationSession.SkipAiTurnsIfNeeded();
+                                newlySpawnedEntityIds = simulationSession.DescribeNewSpawnedEntityIdsSince(entityIdsBeforeCommand);
                             }
                         }
                     }
                     else
                     {
+                        entityIdsBeforeCommand = simulationSession.SnapshotMissionEntityIds();
                         seedPackage = simulationSession.CreateSeedPackage();
                         shouldBroadcast = simulationSession.ExecuteActivateSkill(
                             request.WeaponIndex.Value,
@@ -589,6 +608,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                         if (shouldBroadcast)
                         {
                             aiActions = simulationSession.SkipAiTurnsIfNeeded();
+                            newlySpawnedEntityIds = simulationSession.DescribeNewSpawnedEntityIdsSince(entityIdsBeforeCommand);
                         }
                     }
                 }
@@ -647,7 +667,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             SendRawFrame(stream, peer, PrefixLength(activateCore), "echoed GameworldCommunicationObject ActivateActiveSkill from MissionCommand");
             BroadcastToCoopMissionPeers(currentCoopGroupName, peer, PrefixLength(activateCore), "echoed GameworldCommunicationObject ActivateActiveSkill from MissionCommand (coop bcast)");
 
-            TryBroadcastAiTurnActions(stream, peer, currentCoopGroupName, gameworldEntityId, responseMsgNoBase + 3, aiActions, simulationSession);
+            TryBroadcastAiTurnActions(stream, peer, currentCoopGroupName, gameworldEntityId, responseMsgNoBase + 3, aiActions, simulationSession, newlySpawnedEntityIds, stopEvent);
             SendPendingLootPreviews(simulationSession, stream, peer, responseMsgNoBase + 950, currentCoopGroupName, activeIdentityHash, activeIdentityGuid, activeCareerIndex);
         }
 
@@ -695,7 +715,9 @@ namespace Shadowrun.LocalService.Core.Protocols
             ulong gameworldEntityId,
             ulong baseMessageNumber,
             IList<ServerSimulationSession.AiTurnAction> aiActions,
-            ServerSimulationSession simulationSession)
+            ServerSimulationSession simulationSession,
+            int[] newlySpawnedEntityIds,
+            ManualResetEvent stopEvent)
         {
             if (aiActions == null || aiActions.Count == 0)
             {
@@ -704,7 +726,17 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             try
             {
-                LogMissionReplicationBatch(peer, currentCoopGroupName, aiActions, simulationSession);
+                var dynamicSpawnBarrierAgentIds = GetDynamicSpawnBarrierAgentIds(aiActions, simulationSession);
+                var dynamicSpawnBarrierApplied = ApplyDynamicSpawnVisualizationBarrierIfNeeded(
+                    peer,
+                    currentCoopGroupName,
+                    aiActions,
+                    simulationSession,
+                    newlySpawnedEntityIds,
+                    dynamicSpawnBarrierAgentIds,
+                    stopEvent);
+
+                LogMissionReplicationBatch(peer, currentCoopGroupName, aiActions, simulationSession, newlySpawnedEntityIds, dynamicSpawnBarrierAgentIds, dynamicSpawnBarrierApplied);
 
                 for (var i = 0; i < aiActions.Count; i++)
                 {
@@ -775,11 +807,87 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
+        private bool ApplyDynamicSpawnVisualizationBarrierIfNeeded(
+            string peer,
+            string currentCoopGroupName,
+            IList<ServerSimulationSession.AiTurnAction> aiActions,
+            ServerSimulationSession simulationSession,
+            int[] newlySpawnedEntityIds,
+            int[] dynamicSpawnBarrierAgentIds,
+            ManualResetEvent stopEvent)
+        {
+            if (dynamicSpawnBarrierAgentIds == null || dynamicSpawnBarrierAgentIds.Length == 0)
+            {
+                return false;
+            }
+
+            ServerSimulationSession.MissionEntityReplicationSnapshot[] snapshots = new ServerSimulationSession.MissionEntityReplicationSnapshot[0];
+            if (simulationSession != null)
+            {
+                snapshots = simulationSession.DescribeEntitiesForReplication(dynamicSpawnBarrierAgentIds)
+                    .Where(snapshot => snapshot != null && snapshot.Exists)
+                    .ToArray();
+            }
+
+            _logger.Log(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                type = "mission-dynamic-spawn-visualization-barrier",
+                peer = peer,
+                coopGroup = currentCoopGroupName,
+                delayMs = DynamicSpawnVisualizationBarrierDelayMs,
+                reason = "client-spawn-visualization-before-ai",
+                actionCount = aiActions != null ? aiActions.Count : 0,
+                newlySpawnedEntityIds = newlySpawnedEntityIds ?? new int[0],
+                delayedAgentIds = dynamicSpawnBarrierAgentIds,
+                spawnedEntities = snapshots,
+            });
+
+            if (stopEvent != null)
+            {
+                SleepWithStop(stopEvent, DynamicSpawnVisualizationBarrierDelayMs);
+            }
+            else
+            {
+                Thread.Sleep(DynamicSpawnVisualizationBarrierDelayMs);
+            }
+
+            return true;
+        }
+
+        private static int[] GetDynamicSpawnBarrierAgentIds(IList<ServerSimulationSession.AiTurnAction> aiActions, ServerSimulationSession simulationSession)
+        {
+            if (aiActions == null || aiActions.Count == 0 || simulationSession == null)
+            {
+                return new int[0];
+            }
+
+            var actionAgentIds = aiActions
+                .Where(action => action != null && action.AgentId > 0)
+                .Select(action => action.AgentId)
+                .Distinct()
+                .ToArray();
+            if (actionAgentIds.Length == 0)
+            {
+                return new int[0];
+            }
+
+            var dynamicSpawnActionAgentIds = simulationSession.DescribeEntitiesForReplication(actionAgentIds)
+                .Where(snapshot => snapshot != null && snapshot.Exists && snapshot.HasSpawnInfo && snapshot.AiControlled == true)
+                .Select(snapshot => snapshot.EntityId)
+                .Distinct()
+                .ToArray();
+            return simulationSession.ReserveDynamicSpawnVisualizationBarrierEntityIds(dynamicSpawnActionAgentIds);
+        }
+
         private void LogMissionReplicationBatch(
             string peer,
             string currentCoopGroupName,
             IList<ServerSimulationSession.AiTurnAction> aiActions,
-            ServerSimulationSession simulationSession)
+            ServerSimulationSession simulationSession,
+            int[] newlySpawnedEntityIds,
+            int[] dynamicSpawnBarrierAgentIds,
+            bool dynamicSpawnBarrierApplied)
         {
             if (simulationSession == null || aiActions == null || aiActions.Count == 0)
             {
@@ -825,6 +933,12 @@ namespace Shadowrun.LocalService.Core.Protocols
                     skillIds = skillIds.ToArray(),
                     protocolFramesImplemented = new[] { "GameworldFieldEvent:FollowPath", "GameworldFieldEvent:ActivateActiveSkill" },
                     explicitDynamicEntityIntroductionsImplemented = false,
+                    dynamicSpawnVisualizationBarrierImplemented = true,
+                    dynamicSpawnVisualizationBarrierApplied = dynamicSpawnBarrierApplied,
+                    dynamicSpawnVisualizationBarrierDelayMs = dynamicSpawnBarrierApplied ? (int?)DynamicSpawnVisualizationBarrierDelayMs : null,
+                    dynamicSpawnVisualizationBarrierReason = dynamicSpawnBarrierApplied ? "client-spawn-visualization-before-ai" : null,
+                    newlySpawnedEntityIds = newlySpawnedEntityIds ?? new int[0],
+                    dynamicSpawnBarrierAgentIds = dynamicSpawnBarrierAgentIds ?? new int[0],
                     explicitDynamicEntityHealthFramesImplemented = false,
                     explicitDynamicEntityRemovalFramesImplemented = false,
                     spawnedEntities = snapshots,
