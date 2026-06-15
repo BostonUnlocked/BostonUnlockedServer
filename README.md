@@ -8,6 +8,8 @@ The [BostonUnlockedServer GitHub repository](https://github.com/BostonUnlocked/B
 
 In short, you can run your own server to play the game and optionally set it up to invite friends to play with you.
 
+*Shadowrun is a trademark of Microsoft Corporation. This project is not affiliated with or endorsed by Microsoft.*
+
 ## [Get Started!](https://bostonunlocked.github.io/BostonUnlockedDocs/quick-start)
 
 ## Join our [Discord Server](https://discord.gg/cyuPZrC8Wr)!
