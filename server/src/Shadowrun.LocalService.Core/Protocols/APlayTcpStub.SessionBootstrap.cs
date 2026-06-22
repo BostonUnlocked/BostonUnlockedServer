@@ -255,6 +255,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             Guid activeIdentityGuid,
             ref int activeCareerIndex,
             ref string activeCharacterName,
+            ref int pendingCreationCareerIndex,
             ref string currentHubInstanceId,
             ref PortedHubInstance currentHubInstance,
             ref byte[] cachedHubStatePayload,
@@ -308,6 +309,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                 if (!isCreateCareer && slot.PendingPersistenceCreation)
                 {
                     slot.PendingPersistenceCreation = false;
+                }
+                else if (isCreateCareer && slot.PendingPersistenceCreation)
+                {
+                    pendingCreationCareerIndex = careerIndex;
                 }
 
                 if (_storyProgressionService != null)
@@ -422,9 +427,21 @@ namespace Shadowrun.LocalService.Core.Protocols
             CoreDirectSystem direct,
             string activeIdentityHash,
             Action<string> cancelHubReadyFallback,
+            ref int activeCareerIndex,
+            ref string activeCharacterName,
+            ref int pendingCreationCareerIndex,
             ref string currentHubInstanceId,
+            ref byte[] cachedCreationInfoPayload,
             ref bool sentEnterCareerUpdate)
         {
+            var abortedPendingCreation = AbortPendingCareerCreationIfNeeded(
+                peer,
+                activeIdentityHash,
+                ref activeCareerIndex,
+                ref activeCharacterName,
+                ref pendingCreationCareerIndex,
+                "leave-current-career");
+
             cancelHubReadyFallback("leave-current-career");
             RemoveHubPresenceWithBroadcast(peer);
             currentHubInstanceId = null;
@@ -433,6 +450,14 @@ namespace Shadowrun.LocalService.Core.Protocols
             var updatePayload = BuildUtf16StringPayload(BuildCareerSummaryJsonForIdentity(activeIdentityHash));
             var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 16, updatePayload), msgNoBase + 1);
             SendRawFrame(stream, peer, PrefixLength(updateCore), "sent AccountCommunicationObject UpdateCareerSummaries after LeaveCurrentCareer");
+
+            if (abortedPendingCreation && cachedCreationInfoPayload != null)
+            {
+                var creationInfoJson = "{\"PendingPersistenceCreation\":false,\"DataVersionChanged\":false}";
+                cachedCreationInfoPayload = BuildUtf16StringPayload(creationInfoJson);
+                var creationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 38, cachedCreationInfoPayload), msgNoBase + 2);
+                SendRawFrame(stream, peer, PrefixLength(creationInfoCore), "sent MetaGameplayCommunicationObject CreationInfoChanged after LeaveCurrentCareer");
+            }
 
             sentEnterCareerUpdate = false;
         }
@@ -445,6 +470,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             string activeIdentityHash,
             ref int activeCareerIndex,
             ref string activeCharacterName,
+            ref int pendingCreationCareerIndex,
             ref byte[] cachedCreationInfoPayload)
         {
             var idx = ParseInt32Payload(data);
@@ -463,6 +489,11 @@ namespace Shadowrun.LocalService.Core.Protocols
             {
                 activeCareerIndex = 0;
                 activeCharacterName = "OfflineRunner";
+            }
+
+            if (pendingCreationCareerIndex == slotIndex)
+            {
+                pendingCreationCareerIndex = -1;
             }
 
             var msgNoBase = direct.MsgNo + 30;
