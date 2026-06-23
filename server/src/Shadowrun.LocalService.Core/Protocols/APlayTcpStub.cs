@@ -250,6 +250,27 @@ namespace Shadowrun.LocalService.Core.Protocols
         private const ulong HubEntityId = 4UL;
         private const ushort GameClientConnectionTypeId = 5;
 
+        // AP Shared Field Event Field IDs for AccountEntity (ID: 2)
+        private const ushort AccountFieldAccountWelcome = 14;
+        private const ushort AccountFieldCareerDeactivated = 15;
+        private const ushort AccountFieldUpdateCareerSummaries = 16;
+
+        // AP Shared Field Event Field IDs for MetaGameplayEntity (ID: 3)
+        private const ushort MetaGameplayFieldStartMissionAccepted = 23;
+        private const ushort MetaGameplayFieldMissionCancelled = 24;
+        private const ushort MetaGameplayFieldMetaSnapshot = 26;
+        private const ushort MetaGameplayFieldHenchmanCollection = 27;
+        private const ushort MetaGameplayFieldUnknown28 = 28;
+        private const ushort MetaGameplayFieldUnknown30 = 30;
+        private const ushort MetaGameplayFieldInventoryChanged = 31;
+        private const ushort MetaGameplayFieldWalletChanged = 32;
+        private const ushort MetaGameplayFieldPlayerCharacterSnapshots = 33;
+        private const ushort MetaGameplayFieldSkillChanged = 34;
+        private const ushort MetaGameplayFieldRewardAdded = 35;
+        private const ushort MetaGameplayFieldChapterChanged = 36;
+        private const ushort MetaGameplayFieldHubState = 37;
+        private const ushort MetaGameplayFieldCreationInfoChanged = 38;
+
         private long _nextGameClientEntityId = 1000;
         private readonly object _identityEntityIdLock = new object();
         private readonly Dictionary<Guid, ulong> _gameClientEntityIdByIdentity = new Dictionary<Guid, ulong>();
