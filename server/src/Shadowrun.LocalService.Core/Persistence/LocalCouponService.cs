@@ -15,11 +15,6 @@ namespace Shadowrun.LocalService.Core.Persistence
             private static readonly object CouponItemPackageLock = new object();
             private static Dictionary<string, List<string>> CachedCouponItemPackages;
             private static string CachedCouponItemPackagesSourceDir;
-            private static readonly string[] UnobtainableWeaponsPackageItems = new[]
-            {
-                "Blade_VibroBlade_Tier_07",
-                "Club_Tonfa_Tier_07",
-            };
             private static readonly string[] UnobtainableCosmeticsPackageItems = new[]
             {
                 "Item_AstralCoat",
@@ -474,7 +469,6 @@ namespace Shadowrun.LocalService.Core.Persistence
                     return;
                 }
 
-                AddBuiltInCouponItemPackage(packages, "UnobtainableWeapons", UnobtainableWeaponsPackageItems);
                 AddBuiltInCouponItemPackage(packages, "UnobtainableCosmetics", UnobtainableCosmeticsPackageItems);
             }
 

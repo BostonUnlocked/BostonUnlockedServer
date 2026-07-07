@@ -21,7 +21,6 @@ Copy and claim these one by one in the launcher to activate the corresponding DL
     SRO-ITEM-PAX-18
     SRO-ITEM-PEGASUS
     SRO-ITEM-STARTER-GEAR
-    UnobtainableWeapons
     UnobtainableCosmetics
     SRO-KS-AWAKENED
     SRO-KS-COOP
@@ -110,11 +109,6 @@ These include exclusive backer rewards previously unavailable to most players.
 * Item_Cyberware_Wired_Reflexes_1_Beta
 * Item_ElementalEssenceSpray1
 * Item_PolymerCoating2
-
-### UnobtainableWeapons
-
-* Blade_VibroBlade_Tier_07
-* Club_Tonfa_Tier_07
 
 ### UnobtainableCosmetics
 
