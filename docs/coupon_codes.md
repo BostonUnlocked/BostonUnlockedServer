@@ -21,6 +21,7 @@ Copy and claim these one by one in the launcher to activate the corresponding DL
     SRO-ITEM-PAX-18
     SRO-ITEM-PEGASUS
     SRO-ITEM-STARTER-GEAR
+    UnobtainableCosmetics
     SRO-KS-AWAKENED
     SRO-KS-COOP
     SRO-KS-MASTER
@@ -108,6 +109,45 @@ These include exclusive backer rewards previously unavailable to most players.
 * Item_Cyberware_Wired_Reflexes_1_Beta
 * Item_ElementalEssenceSpray1
 * Item_PolymerCoating2
+
+### UnobtainableCosmetics
+
+* Item_AstralCoat
+* Item_BasicMageVest
+* Item_BeardBraided
+* Item_BeardConchita
+* Item_BeardFull
+* Item_BeardStubble
+* Item_BikerPants
+* Item_CyberdocOverall
+* Item_DefaultLowerUnderwear
+* Item_DefaultUpperUnderwear
+* Item_DocGloves
+* Item_DocOverall
+* Item_ElegantTop
+* Item_HairDreads
+* Item_HairDreadsUndercut
+* Item_HairLadyLuck
+* Item_HairLong2
+* Item_HairMohawkLimp
+* Item_HairMohawkSideburns
+* Item_HairPancake
+* Item_HipsterBoots
+* Item_HornsBasic
+* Item_KimonoTop
+* Item_LeatherBoots
+* Item_LeatherCoat
+* Item_MagicalLongsleeve
+* Item_Pack1HackerTop
+* Item_Pack1MageCoat
+* Item_Pack3Corset
+* Item_Pack4BagBoots
+* Item_Pack4HospitalGown
+* Item_RunnerLongsleeve
+* Item_Sideburns
+* Item_StreetCorset
+* Item_SuitJacket
+* Item_WesternTop
 
 ### SRO-KS-AWAKENED
 

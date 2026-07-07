@@ -37,6 +37,7 @@ namespace Shadowrun.LocalService.Core.Coupons
             AddCode(set, "SRO-ITEM-PAX-18");
             AddCode(set, "SRO-ITEM-PEGASUS");
             AddCode(set, "SRO-ITEM-STARTER-GEAR");
+            AddCode(set, "UnobtainableCosmetics");
             AddCode(set, "SRO-KS-AWAKENED");
             AddCode(set, "SRO-KS-COOP");
             AddCode(set, "SRO-KS-MASTER");

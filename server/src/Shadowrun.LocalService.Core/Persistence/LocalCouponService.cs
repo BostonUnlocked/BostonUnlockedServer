@@ -15,6 +15,45 @@ namespace Shadowrun.LocalService.Core.Persistence
             private static readonly object CouponItemPackageLock = new object();
             private static Dictionary<string, List<string>> CachedCouponItemPackages;
             private static string CachedCouponItemPackagesSourceDir;
+            private static readonly string[] UnobtainableCosmeticsPackageItems = new[]
+            {
+                "Item_AstralCoat",
+                "Item_BasicMageVest",
+                "Item_BeardBraided",
+                "Item_BeardConchita",
+                "Item_BeardFull",
+                "Item_BeardStubble",
+                "Item_BikerPants",
+                "Item_CyberdocOverall",
+                "Item_DefaultLowerUnderwear",
+                "Item_DefaultUpperUnderwear",
+                "Item_DocGloves",
+                "Item_DocOverall",
+                "Item_ElegantTop",
+                "Item_HairDreads",
+                "Item_HairDreadsUndercut",
+                "Item_HairLadyLuck",
+                "Item_HairLong2",
+                "Item_HairMohawkLimp",
+                "Item_HairMohawkSideburns",
+                "Item_HairPancake",
+                "Item_HipsterBoots",
+                "Item_HornsBasic",
+                "Item_KimonoTop",
+                "Item_LeatherBoots",
+                "Item_LeatherCoat",
+                "Item_MagicalLongsleeve",
+                "Item_Pack1HackerTop",
+                "Item_Pack1MageCoat",
+                "Item_Pack3Corset",
+                "Item_Pack4BagBoots",
+                "Item_Pack4HospitalGown",
+                "Item_RunnerLongsleeve",
+                "Item_Sideburns",
+                "Item_StreetCorset",
+                "Item_SuitJacket",
+                "Item_WesternTop",
+            };
 
             private const string CouponGameName = "SRO";
             private const string CouponPackagesPlayerInfoKey = "CouponPackages";
@@ -334,6 +373,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                         }
 
                         CachedCouponItemPackages = LoadCouponItemPackagesByTechnicalName(staticDataDir);
+                        AddBuiltInCouponItemPackages(CachedCouponItemPackages);
                         CachedCouponItemPackagesSourceDir = staticDataDir;
                         return CachedCouponItemPackages;
                     }
@@ -417,6 +457,39 @@ namespace Shadowrun.LocalService.Core.Persistence
                 }
 
                 return result;
+            }
+
+            private static void AddBuiltInCouponItemPackages(Dictionary<string, List<string>> packages)
+            {
+                if (packages == null)
+                {
+                    return;
+                }
+
+                AddBuiltInCouponItemPackage(packages, "UnobtainableCosmetics", UnobtainableCosmeticsPackageItems);
+            }
+
+            private static void AddBuiltInCouponItemPackage(Dictionary<string, List<string>> packages, string packageTechnicalName, string[] itemIds)
+            {
+                if (packages == null || LocalUserStore.IsNullOrWhiteSpace(packageTechnicalName) || itemIds == null || itemIds.Length <= 0)
+                {
+                    return;
+                }
+
+                var items = new List<string>(itemIds.Length);
+                for (var i = 0; i < itemIds.Length; i++)
+                {
+                    var itemId = itemIds[i];
+                    if (!LocalUserStore.IsNullOrWhiteSpace(itemId))
+                    {
+                        items.Add(itemId);
+                    }
+                }
+
+                if (items.Count > 0)
+                {
+                    packages[packageTechnicalName] = items;
+                }
             }
 
             private static string NormalizeCouponCode(string value)
