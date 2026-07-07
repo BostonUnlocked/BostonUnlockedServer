@@ -140,12 +140,9 @@ These include exclusive backer rewards previously unavailable to most players.
 * Item_MagicalLongsleeve
 * Item_Pack1HackerTop
 * Item_Pack1MageCoat
-* Item_Pack2SuitVest
 * Item_Pack3Corset
 * Item_Pack4BagBoots
 * Item_Pack4HospitalGown
-* Item_PuffTie
-* Item_PuffTieVest
 * Item_RunnerLongsleeve
 * Item_Sideburns
 * Item_StreetCorset
