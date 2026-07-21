@@ -255,6 +255,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             Guid activeIdentityGuid,
             ref int activeCareerIndex,
             ref string activeCharacterName,
+            ref int pendingCreationCareerIndex,
             ref string currentHubInstanceId,
             ref PortedHubInstance currentHubInstance,
             ref byte[] cachedHubStatePayload,
@@ -309,6 +310,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                 {
                     slot.PendingPersistenceCreation = false;
                 }
+                else if (isCreateCareer && slot.PendingPersistenceCreation)
+                {
+                    pendingCreationCareerIndex = careerIndex;
+                }
 
                 if (_storyProgressionService != null)
                 {
@@ -354,19 +359,19 @@ namespace Shadowrun.LocalService.Core.Protocols
                 : _careerInfoGenerator.GetZippedCareerInfo(identityGuid, careerIndex, characterName, pendingCreation);
 
             var accountWelcomePayload = BuildAccountWelcomePayload(careerIndex, zippedCareerInfo, 3);
-            var accountWelcomeCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 14, accountWelcomePayload), serverMsgNoBase + 4);
+            var accountWelcomeCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, (int)AccountEntityId, AccountFieldAccountWelcome, accountWelcomePayload), serverMsgNoBase + 4);
             SendRawFrame(stream, peer, PrefixLength(accountWelcomeCore), "sent AccountCommunicationObject Welcome after EnterCareer");
 
             var updatePayload = BuildUtf16StringPayload(BuildCareerSummaryJsonForIdentity(identityHash));
-            var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 16, updatePayload), serverMsgNoBase + 5);
+            var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, (int)AccountEntityId, AccountFieldUpdateCareerSummaries, updatePayload), serverMsgNoBase + 5);
             SendRawFrame(stream, peer, PrefixLength(updateCore), "sent AccountCommunicationObject UpdateCareerSummaries after EnterCareer");
 
             var metaSnapshotPayload = BuildUtf16StringPayload(zippedCareerInfo);
-            var metaSnapshotCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 26, metaSnapshotPayload), serverMsgNoBase + 6);
+            var metaSnapshotCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, (int)MetaGameplayEntityId, MetaGameplayFieldMetaSnapshot, metaSnapshotPayload), serverMsgNoBase + 6);
             SendRawFrame(stream, peer, PrefixLength(metaSnapshotCore), "sent MetaGameplayCommunicationObject SendMetagameplayDataSnapshotToClient");
 
             var henchmanCollectionPayload = BuildUtf16StringPayload(SerializeDefaultHenchmanCollection(identityHash, careerIndex));
-            var henchmanCollectionCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 27, henchmanCollectionPayload), serverMsgNoBase + 7);
+            var henchmanCollectionCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, (int)MetaGameplayEntityId, MetaGameplayFieldHenchmanCollection, henchmanCollectionPayload), serverMsgNoBase + 7);
             SendRawFrame(stream, peer, PrefixLength(henchmanCollectionCore), "sent MetaGameplayCommunicationObject SendHenchmanCollectionToClient");
 
             var characterIdentifier = slot != null && !IsNullOrWhiteSpace(slot.CharacterIdentifier)
@@ -399,7 +404,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             var creationInfoJson = "{\"PendingPersistenceCreation\":" + (pendingCreation ? "true" : "false") + ",\"DataVersionChanged\":false}";
             var creationInfoPayload = BuildUtf16StringPayload(creationInfoJson);
             cachedCreationInfoPayload = creationInfoPayload;
-            var creationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 38, creationInfoPayload), serverMsgNoBase + 9);
+            var creationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, (int)MetaGameplayEntityId, MetaGameplayFieldCreationInfoChanged, creationInfoPayload), serverMsgNoBase + 9);
             var sentCreationInfo = false;
             if (!ShouldSuppressDuplicateHubPush(peer, true, creationInfoPayload))
             {
@@ -422,17 +427,37 @@ namespace Shadowrun.LocalService.Core.Protocols
             CoreDirectSystem direct,
             string activeIdentityHash,
             Action<string> cancelHubReadyFallback,
+            ref int activeCareerIndex,
+            ref string activeCharacterName,
+            ref int pendingCreationCareerIndex,
             ref string currentHubInstanceId,
+            ref byte[] cachedCreationInfoPayload,
             ref bool sentEnterCareerUpdate)
         {
+            var abortedPendingCreation = AbortPendingCareerCreationIfNeeded(
+                peer,
+                activeIdentityHash,
+                ref activeCareerIndex,
+                ref activeCharacterName,
+                ref pendingCreationCareerIndex,
+                "leave-current-career");
+
             cancelHubReadyFallback("leave-current-career");
             RemoveHubPresenceWithBroadcast(peer);
             currentHubInstanceId = null;
 
             var msgNoBase = direct.MsgNo + 20;
             var updatePayload = BuildUtf16StringPayload(BuildCareerSummaryJsonForIdentity(activeIdentityHash));
-            var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 16, updatePayload), msgNoBase + 1);
+            var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, (int)AccountEntityId, AccountFieldUpdateCareerSummaries, updatePayload), msgNoBase + 1);
             SendRawFrame(stream, peer, PrefixLength(updateCore), "sent AccountCommunicationObject UpdateCareerSummaries after LeaveCurrentCareer");
+
+            if (abortedPendingCreation && cachedCreationInfoPayload != null)
+            {
+                var creationInfoJson = "{\"PendingPersistenceCreation\":false,\"DataVersionChanged\":false}";
+                cachedCreationInfoPayload = BuildUtf16StringPayload(creationInfoJson);
+                var creationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, (int)MetaGameplayEntityId, MetaGameplayFieldCreationInfoChanged, cachedCreationInfoPayload), msgNoBase + 2);
+                SendRawFrame(stream, peer, PrefixLength(creationInfoCore), "sent MetaGameplayCommunicationObject CreationInfoChanged after LeaveCurrentCareer");
+            }
 
             sentEnterCareerUpdate = false;
         }
@@ -445,6 +470,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             string activeIdentityHash,
             ref int activeCareerIndex,
             ref string activeCharacterName,
+            ref int pendingCreationCareerIndex,
             ref byte[] cachedCreationInfoPayload)
         {
             var idx = ParseInt32Payload(data);
@@ -465,22 +491,27 @@ namespace Shadowrun.LocalService.Core.Protocols
                 activeCharacterName = "OfflineRunner";
             }
 
+            if (pendingCreationCareerIndex == slotIndex)
+            {
+                pendingCreationCareerIndex = -1;
+            }
+
             var msgNoBase = direct.MsgNo + 30;
             var summaryJson = BuildCareerSummaryJsonForIdentity(activeIdentityHash);
 
             var careerDeactivatedPayload = BuildUtf16StringPayload(summaryJson);
-            var careerDeactivatedCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 15, careerDeactivatedPayload), msgNoBase + 1);
+            var careerDeactivatedCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, (int)AccountEntityId, AccountFieldCareerDeactivated, careerDeactivatedPayload), msgNoBase + 1);
             SendRawFrame(stream, peer, PrefixLength(careerDeactivatedCore), "sent AccountCommunicationObject CareerDeactivated after DeactivateCareer");
 
             var updatePayload = BuildUtf16StringPayload(summaryJson);
-            var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 16, updatePayload), msgNoBase + 2);
+            var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, (int)AccountEntityId, AccountFieldUpdateCareerSummaries, updatePayload), msgNoBase + 2);
             SendRawFrame(stream, peer, PrefixLength(updateCore), "sent AccountCommunicationObject UpdateCareerSummaries after DeactivateCareer");
 
             if (cachedCreationInfoPayload != null)
             {
                 var creationInfoJson = "{\"PendingPersistenceCreation\":false,\"DataVersionChanged\":false}";
                 cachedCreationInfoPayload = BuildUtf16StringPayload(creationInfoJson);
-                var creationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 38, cachedCreationInfoPayload), msgNoBase + 2);
+                var creationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, (int)MetaGameplayEntityId, MetaGameplayFieldCreationInfoChanged, cachedCreationInfoPayload), msgNoBase + 2);
                 SendRawFrame(stream, peer, PrefixLength(creationInfoCore), "sent MetaGameplayCommunicationObject CreationInfoChanged after DeactivateCareer");
             }
         }

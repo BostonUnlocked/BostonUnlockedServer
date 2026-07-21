@@ -250,6 +250,27 @@ namespace Shadowrun.LocalService.Core.Protocols
         private const ulong HubEntityId = 4UL;
         private const ushort GameClientConnectionTypeId = 5;
 
+        // AP Shared Field Event Field IDs for AccountEntity (ID: 2)
+        private const ushort AccountFieldAccountWelcome = 14;
+        private const ushort AccountFieldCareerDeactivated = 15;
+        private const ushort AccountFieldUpdateCareerSummaries = 16;
+
+        // AP Shared Field Event Field IDs for MetaGameplayEntity (ID: 3)
+        private const ushort MetaGameplayFieldStartMissionAccepted = 23;
+        private const ushort MetaGameplayFieldMissionCancelled = 24;
+        private const ushort MetaGameplayFieldMetaSnapshot = 26;
+        private const ushort MetaGameplayFieldHenchmanCollection = 27;
+        private const ushort MetaGameplayFieldUnknown28 = 28;
+        private const ushort MetaGameplayFieldUnknown30 = 30;
+        private const ushort MetaGameplayFieldInventoryChanged = 31;
+        private const ushort MetaGameplayFieldWalletChanged = 32;
+        private const ushort MetaGameplayFieldPlayerCharacterSnapshots = 33;
+        private const ushort MetaGameplayFieldSkillChanged = 34;
+        private const ushort MetaGameplayFieldRewardAdded = 35;
+        private const ushort MetaGameplayFieldChapterChanged = 36;
+        private const ushort MetaGameplayFieldHubState = 37;
+        private const ushort MetaGameplayFieldCreationInfoChanged = 38;
+
         private long _nextGameClientEntityId = 1000;
         private readonly object _identityEntityIdLock = new object();
         private readonly Dictionary<Guid, ulong> _gameClientEntityIdByIdentity = new Dictionary<Guid, ulong>();
@@ -1030,6 +1051,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     Guid activeIdentityGuid = Guid.Empty;
                     var activeCareerIndex = 0;
                     var activeCharacterName = "OfflineRunner";
+                    var pendingCreationCareerIndex = -1;
                     string currentHubInstanceId = null;
                     PortedHubInstance currentHubInstance = null;
                     var hubReadyFallbackState = CreateHubReadyFallbackState();
@@ -1772,6 +1794,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     activeIdentityGuid,
                                     ref activeCareerIndex,
                                     ref activeCharacterName,
+                                    ref pendingCreationCareerIndex,
                                     ref currentHubInstanceId,
                                     ref currentHubInstance,
                                     ref cachedHubStatePayload,
@@ -1791,12 +1814,32 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                             if (isLeaveCurrentCareer)
                             {
-                                HandleLeaveCurrentCareerRequest(stream, peer, direct.Value, activeIdentityHash, cancelHubReadyFallback, ref currentHubInstanceId, ref sentEnterCareerUpdate);
+                                HandleLeaveCurrentCareerRequest(
+                                    stream,
+                                    peer,
+                                    direct.Value,
+                                    activeIdentityHash,
+                                    cancelHubReadyFallback,
+                                    ref activeCareerIndex,
+                                    ref activeCharacterName,
+                                    ref pendingCreationCareerIndex,
+                                    ref currentHubInstanceId,
+                                    ref cachedCreationInfoPayload,
+                                    ref sentEnterCareerUpdate);
                             }
 
                             if (isDeactivateCareer)
                             {
-                                HandleDeactivateCareerRequest(stream, peer, direct.Value, shared.Value.Data, activeIdentityHash, ref activeCareerIndex, ref activeCharacterName, ref cachedCreationInfoPayload);
+                                HandleDeactivateCareerRequest(
+                                    stream,
+                                    peer,
+                                    direct.Value,
+                                    shared.Value.Data,
+                                    activeIdentityHash,
+                                    ref activeCareerIndex,
+                                    ref activeCharacterName,
+                                    ref pendingCreationCareerIndex,
+                                    ref cachedCreationInfoPayload);
                             }
 
                             // MetaGameplayCommunicationObject callFields with no payload.
@@ -2946,6 +2989,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                 {
                                                     slot.PendingPersistenceCreation = false;
                                                 }
+                                                pendingCreationCareerIndex = -1;
                                                 if (!IsNullOrWhiteSpace(activeIdentityHash))
                                                 {
                                                     _userStore.UpsertCareer(activeIdentityHash, slot);
@@ -3190,6 +3234,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                         StopAndForgetSoloMission(peer, "connection-teardown");
                     }
 
+                    AbortPendingCareerCreationIfNeeded(
+                        peer,
+                        activeIdentityHash,
+                        ref activeCareerIndex,
+                        ref activeCharacterName,
+                        ref pendingCreationCareerIndex,
+                        "connection-teardown");
+
                         cancelHubReadyFallback("connection-teardown");
                         cancelPostCreateWatchdog("connection-teardown");
                         HubPresenceRegistry.Participant teardownParticipant;
@@ -3254,6 +3306,71 @@ namespace Shadowrun.LocalService.Core.Protocols
                     _logger.ClearConnectionContext("aplay", peer, connectionHash);
                 }
             }
+        }
+
+        private bool AbortPendingCareerCreationIfNeeded(
+            string peer,
+            string activeIdentityHash,
+            ref int activeCareerIndex,
+            ref string activeCharacterName,
+            ref int pendingCreationCareerIndex,
+            string reason)
+        {
+            if (_userStore == null || IsNullOrWhiteSpace(activeIdentityHash) || pendingCreationCareerIndex < 0)
+            {
+                pendingCreationCareerIndex = -1;
+                return false;
+            }
+
+            var careers = _userStore.GetCareers(activeIdentityHash);
+            if (careers == null || careers.Count == 0)
+            {
+                pendingCreationCareerIndex = -1;
+                return false;
+            }
+
+            CareerSlot pendingSlot = null;
+            for (var i = 0; i < careers.Count; i++)
+            {
+                var slot = careers[i];
+                if (slot != null && slot.Index == pendingCreationCareerIndex)
+                {
+                    pendingSlot = slot;
+                    break;
+                }
+            }
+
+            if (pendingSlot == null || !pendingSlot.PendingPersistenceCreation)
+            {
+                pendingCreationCareerIndex = -1;
+                return false;
+            }
+
+            try
+            {
+                _userStore.DeactivateCareerSlot(activeIdentityHash, pendingCreationCareerIndex, DefaultHubId);
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "career-creation-aborted",
+                    peer = peer,
+                    identityHash = activeIdentityHash,
+                    careerIndex = pendingCreationCareerIndex,
+                    reason = reason ?? string.Empty,
+                });
+            }
+            finally
+            {
+                if (activeCareerIndex == pendingCreationCareerIndex)
+                {
+                    activeCareerIndex = 0;
+                    activeCharacterName = "OfflineRunner";
+                }
+
+                pendingCreationCareerIndex = -1;
+            }
+
+            return true;
         }
 
         private void HandleHttpProbe(NetworkStream stream, string peer, byte[] first)
