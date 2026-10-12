@@ -6,6 +6,8 @@ This document lists all coupon codes currently accepted by the local service cou
 
 The launcher reads the numeric `Code` field of the coupon response as the official `RedeemResult` enum; it does not use the response `Message` to display redemption errors. In particular, `2` means `PackageLimitReached`, `6` means `DoesNotExist`, `7` means `CouponIsAlreadyUsedByThatAccount`, and `11` means `PackageNameIsMissing`. When their reward package resolves, custom package coupons use the same successful `Ok` result (`0`) as game-defined packages; an unavailable reward package returns `PackageNameIsMissing` rather than `PackageLimitReached`.
 
+`UnobtainableCosmetics` is a built-in item list and remains resolvable when static game data is unavailable. `BONUSCOSMETICS` remains unavailable unless its required static data and mission assets are present; a rejected redemption is not recorded. A `coupon-resolution` / `redeem-rejected` log entry distinguishes an unrecognized coupon code from a recognized code with an unresolved package and records the relevant resource-directory and file-presence checks.
+
 ## Consolidated List of All Coupon Codes
 
 Copy and claim these one by one in the launcher to activate the corresponding DLC. The contents are listed in subsequent sections of this file.

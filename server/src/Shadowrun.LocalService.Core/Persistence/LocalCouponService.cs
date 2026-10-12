@@ -394,11 +394,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 {
                     var staticDataDir = _owner._options != null ? _owner._options.StaticDataDir : null;
                     var streamingAssetsDir = _owner._options != null ? _owner._options.StreamingAssetsDir : null;
-                    if (LocalUserStore.IsNullOrWhiteSpace(staticDataDir) || !Directory.Exists(staticDataDir))
-                    {
-                        LogBonusCosmeticsDataError(new DirectoryNotFoundException("Static data directory is missing."));
-                        return new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-                    }
+                    var staticDataAvailable = !LocalUserStore.IsNullOrWhiteSpace(staticDataDir) && Directory.Exists(staticDataDir);
 
                     lock (CouponItemPackageLock)
                     {
@@ -408,11 +404,19 @@ namespace Shadowrun.LocalService.Core.Persistence
                             return CachedCouponItemPackages;
                         }
 
-                        CachedCouponItemPackages = LoadCouponItemPackagesByTechnicalName(staticDataDir);
+                        // Built-in packages do not depend on extracted game data.
+                        CachedCouponItemPackages = staticDataAvailable
+                            ? LoadCouponItemPackagesByTechnicalName(staticDataDir)
+                            : new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
                         AddBuiltInCouponItemPackages(CachedCouponItemPackages);
                         CachedCouponItemPackages.Remove(BonusCosmeticsPackageName);
                         try
                         {
+                            if (!staticDataAvailable)
+                            {
+                                throw new DirectoryNotFoundException("Static data directory is missing.");
+                            }
+
                             CachedCouponItemPackages[BonusCosmeticsPackageName] = BuildBonusCosmeticsPackage(staticDataDir, streamingAssetsDir);
                         }
                         catch (Exception ex)
@@ -877,10 +881,17 @@ namespace Shadowrun.LocalService.Core.Persistence
             private static string GetCouponItemPackageSourceIdentity(string staticDataDir, string streamingAssetsDir)
             {
                 var identity = new StringBuilder();
-                AppendFileIdentity(identity, Path.Combine(staticDataDir, "serverData.json"));
-                AppendFileIdentity(identity, Path.Combine(staticDataDir, "metagameplay.json"));
-                AppendFileIdentity(identity, Path.Combine(staticDataDir, "ids.json"));
-                AppendFileIdentity(identity, Path.Combine(staticDataDir, "globals.json"));
+                if (LocalUserStore.IsNullOrWhiteSpace(staticDataDir) || !Directory.Exists(staticDataDir))
+                {
+                    identity.Append("|static-data:missing:").Append(staticDataDir ?? string.Empty);
+                }
+                else
+                {
+                    AppendFileIdentity(identity, Path.Combine(staticDataDir, "serverData.json"));
+                    AppendFileIdentity(identity, Path.Combine(staticDataDir, "metagameplay.json"));
+                    AppendFileIdentity(identity, Path.Combine(staticDataDir, "ids.json"));
+                    AppendFileIdentity(identity, Path.Combine(staticDataDir, "globals.json"));
+                }
 
                 var levelsDir = LocalUserStore.IsNullOrWhiteSpace(streamingAssetsDir)
                     ? null

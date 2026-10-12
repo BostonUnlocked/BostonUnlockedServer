@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Text;
 using System.Globalization;
+using System.IO;
 using Shadowrun.LocalService.Core.Coupons;
 
 namespace Shadowrun.LocalService.Core.Http
@@ -88,6 +89,7 @@ namespace Shadowrun.LocalService.Core.Http
 
             if (!HonoredCouponCodes.IsHonored(code))
             {
+                LogCouponResolutionFailure(code, "unrecognized-code");
                 return JsonResponse(200, BuildRedeemCouponResult(CouponRedeemResultCode.DoesNotExist, "InvalidCoupon", null, null));
             }
 
@@ -109,6 +111,7 @@ namespace Shadowrun.LocalService.Core.Http
 
             if (IsNullOrWhiteSpace(unlockTechnicalName) && IsNullOrWhiteSpace(packageTechnicalName))
             {
+                LogCouponResolutionFailure(code, "reward-package-unresolved");
                 return JsonResponse(200, BuildRedeemCouponResult(CouponRedeemResultCode.PackageNameIsMissing, "InvalidCoupon", null, null));
             }
 
@@ -319,6 +322,36 @@ namespace Shadowrun.LocalService.Core.Http
                 { "Code", (int)code },
                 { "Message", message },
             };
+        }
+
+        private void LogCouponResolutionFailure(string code, string reason)
+        {
+            if (_logger == null)
+            {
+                return;
+            }
+
+            var staticDataDir = _options != null ? _options.StaticDataDir : null;
+            var streamingAssetsDir = _options != null ? _options.StreamingAssetsDir : null;
+            var levelsDir = IsNullOrWhiteSpace(streamingAssetsDir) ? null : Path.Combine(streamingAssetsDir, "levels");
+            SafeLog(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                level = "warning",
+                type = "coupon-resolution",
+                op = "redeem-rejected",
+                reason = reason,
+                couponCode = code,
+                staticDataDir = staticDataDir,
+                staticDataDirExists = !IsNullOrWhiteSpace(staticDataDir) && Directory.Exists(staticDataDir),
+                serverDataJsonExists = !IsNullOrWhiteSpace(staticDataDir) && File.Exists(Path.Combine(staticDataDir, "serverData.json")),
+                metagameplayJsonExists = !IsNullOrWhiteSpace(staticDataDir) && File.Exists(Path.Combine(staticDataDir, "metagameplay.json")),
+                idsJsonExists = !IsNullOrWhiteSpace(staticDataDir) && File.Exists(Path.Combine(staticDataDir, "ids.json")),
+                globalsJsonExists = !IsNullOrWhiteSpace(staticDataDir) && File.Exists(Path.Combine(staticDataDir, "globals.json")),
+                streamingAssetsDir = streamingAssetsDir,
+                streamingAssetsDirExists = !IsNullOrWhiteSpace(streamingAssetsDir) && Directory.Exists(streamingAssetsDir),
+                missionLevelsDirExists = !IsNullOrWhiteSpace(levelsDir) && Directory.Exists(levelsDir),
+            });
         }
 
         private static string NormalizePathForRoute(string path)
