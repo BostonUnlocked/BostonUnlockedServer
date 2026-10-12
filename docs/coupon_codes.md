@@ -8,6 +8,8 @@ The launcher reads the numeric `Code` field of the coupon response as the offici
 
 `UnobtainableCosmetics` is a built-in item list and remains resolvable when static game data is unavailable. `BONUSCOSMETICS` remains unavailable unless its required static data and mission assets are present; a rejected redemption is not recorded. A `coupon-resolution` / `redeem-rejected` log entry distinguishes an unrecognized coupon code from a recognized code with an unresolved package and records the relevant resource-directory and file-presence checks.
 
+Static data is read from the portable `<exe directory>\Resources\static-data` directory when present, then from an existing repo/localservice `static-data` directory. If neither layout is present, the default is `C:\Shadowrun\Service\Release\Resources\static-data`, so the Windows service manager does not need a static-data path argument.
+
 ## Consolidated List of All Coupon Codes
 
 Copy and claim these one by one in the launcher to activate the corresponding DLC. The contents are listed in subsequent sections of this file.

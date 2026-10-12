@@ -7,6 +7,7 @@ public sealed class LocalServiceOptions
 {
     // Dev toggle: flip this constant to enable local AI decision execution by default.
     public const bool DefaultEnableAiLogic = true;
+    public const string DefaultStaticDataDir = @"C:\Shadowrun\Service\Release\Resources\static-data";
 
     private string _dataDir;
 
@@ -118,7 +119,18 @@ public sealed class LocalServiceOptions
         get
         {
             var portable = TryGetPortableSubdir("static-data");
-            return !IsNullOrWhiteSpace(portable) ? portable : Path.Combine(LocalServiceRoot, "static-data");
+            if (!IsNullOrWhiteSpace(portable))
+            {
+                return portable;
+            }
+
+            var localServiceStaticDataDir = Path.Combine(LocalServiceRoot, "static-data");
+            if (Directory.Exists(localServiceStaticDataDir))
+            {
+                return localServiceStaticDataDir;
+            }
+
+            return DefaultStaticDataDir;
         }
     }
 
