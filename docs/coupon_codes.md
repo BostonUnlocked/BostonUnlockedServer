@@ -6,7 +6,7 @@ This document lists all coupon codes currently accepted by the local service cou
 
 The launcher reads the numeric `Code` field of the coupon response as the official `RedeemResult` enum; it does not use the response `Message` to display redemption errors. In particular, `2` means `PackageLimitReached`, `6` means `DoesNotExist`, `7` means `CouponIsAlreadyUsedByThatAccount`, and `11` means `PackageNameIsMissing`. When their reward package resolves, custom package coupons use the same successful `Ok` result (`0`) as game-defined packages; an unavailable reward package returns `PackageNameIsMissing` rather than `PackageLimitReached`.
 
-`UnobtainableCosmetics` is a built-in item list and remains resolvable when static game data is unavailable. `BONUSCOSMETICS` remains unavailable unless its required static data and mission assets are present; a rejected redemption is not recorded. A `coupon-resolution` / `redeem-rejected` log entry distinguishes an unrecognized coupon code from a recognized code with an unresolved package and records the relevant resource-directory and file-presence checks.
+`UnobtainableCosmetics` and `BONUSCOSMETICS` are built-in item lists and remain resolvable when static game data or mission assets are unavailable. Other game-defined item packages continue to load from static game data.
 
 Static data is read from the portable `<exe directory>\Resources\static-data` directory when present, then from an existing repo/localservice `static-data` directory. If neither layout is present, the default is `C:\Shadowrun\Service\Release\Resources\static-data`. Streaming assets similarly use the portable `<exe directory>\Resources\StreamingAssets` directory when present and otherwise default to `C:\Shadowrun\Service\Release\Resources\StreamingAssets`; the Windows service manager does not need resource-path arguments.
 
@@ -158,11 +158,9 @@ These include exclusive backer rewards previously unavailable to most players.
 
 ### BONUSCOSMETICS
 
-Grants one copy of every defined, usable cosmetic equipment item that is not currently obtainable from a positive-chance mission loot table or a positive mission-completion item reward. Cosmetic categories are derived from the game’s `ItemTypeId` definitions (upper/lower body, hands, boots, underwear, glasses, head, skin, and tattoos); empty-slot placeholder visuals are excluded. The set is built from the extracted `metagameplay.json`, `ids.json`, `serverData.json`, `globals.json`, and mission `mapdata.json` files at runtime, recursively following nested loot-table references and accounting for direct completion rewards. This intentionally includes cosmetics otherwise obtained through shops, other coupons, or DLC when they are absent from current mission rewards.
+Grants one copy of each item in a fixed snapshot of usable cosmetic equipment that is not obtainable from the extracted mission loot tables or positive mission-completion item rewards. The snapshot was computed from the extracted game data described below; it includes cosmetics otherwise obtained through shops, other coupons, or DLC when they are absent from the current mission rewards. The list is hardcoded so coupon resolution does not read or recursively scan mission assets at runtime. Changes to game data or mission rewards do not update this snapshot automatically.
 
-With the extracted game data documented in this repository, the package contains 134 items. Examples include `Item_AstralCoat`, `Item_ElegantTop`, `Item_LeatherCoat`, and `Item_KimonoTop`. The existing `UnobtainableCosmetics` package remains unchanged.
-
-If required source data is missing or invalid, the new package is unavailable and redemption is rejected without recording the coupon; a structured warning is logged. Existing coupon packages remain available.
+With the extracted game data documented in this repository, the package contains 134 items. Examples include `Item_AstralCoat`, `Item_ElegantTop`, `Item_LeatherCoat`, and `Item_KimonoTop`. The `UnobtainableCosmetics` package remains unchanged.
 
 ### SRO-KS-AWAKENED
 

@@ -1,11 +1,9 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Web.Script.Serialization;
 using Shadowrun.LocalService.Core.Coupons;
 
 namespace Shadowrun.LocalService.Core.Persistence
@@ -17,21 +15,6 @@ namespace Shadowrun.LocalService.Core.Persistence
             private static readonly object CouponItemPackageLock = new object();
             private static Dictionary<string, List<string>> CachedCouponItemPackages;
             private static string CachedCouponItemPackagesSourceIdentity;
-            private static readonly JavaScriptSerializer CouponJson = CreateCouponJsonSerializer();
-            private static readonly HashSet<string> CosmeticItemTypeNames = new HashSet<string>(StringComparer.Ordinal)
-            {
-                "UpperBody",
-                "LowerBody",
-                "Hands",
-                "Boots",
-                "UpperUnderwear",
-                "LowerUnderwear",
-                "Glasses",
-                "Head",
-                "Skin",
-                "Tattoo",
-            };
-            private const string BonusCosmeticsPackageName = "BONUSCOSMETICS";
             private static readonly string[] UnobtainableCosmeticsPackageItems = new[]
             {
                 "Item_AstralCoat",
@@ -69,6 +52,143 @@ namespace Shadowrun.LocalService.Core.Persistence
                 "Item_Sideburns",
                 "Item_StreetCorset",
                 "Item_SuitJacket",
+                "Item_WesternTop",
+            };
+            private static readonly string[] BonusCosmeticsPackageItems = new[]
+            {
+                "Item_AncientsLogoNeon",
+                "Item_AstralCoat",
+                "Item_AstralHelmet",
+                "Item_BagGloves",
+                "Item_BandanaSkull",
+                "Item_BasicCap1",
+                "Item_BasicCap2",
+                "Item_BasicCombatBoots",
+                "Item_BasicHoboJacket",
+                "Item_BasicMageVest",
+                "Item_BasicSkirt",
+                "Item_BasicTubeTop",
+                "Item_BasicWifebeater",
+                "Item_BikerBoots",
+                "Item_BikerGloves",
+                "Item_BikerJacket",
+                "Item_BikerPants",
+                "Item_CeramicPlating",
+                "Item_CowboyHat",
+                "Item_CyberdocOverall",
+                "Item_DefaultLowerUnderwear",
+                "Item_DefaultUpperUnderwear",
+                "Item_DocGloves",
+                "Item_DocMask",
+                "Item_DoubleDragon1Black",
+                "Item_DoubleDragon1Neon",
+                "Item_DragonHead1Black",
+                "Item_DragonHead1Neon",
+                "Item_ElegantTop",
+                "Item_GothJacket",
+                "Item_HarebrainedShirt",
+                "Item_HeartsBoxers",
+                "Item_Hex1Black",
+                "Item_HideBracers",
+                "Item_HipsterBoots",
+                "Item_HoboJacket2",
+                "Item_HotPants",
+                "Item_Jeans01",
+                "Item_Jeans02",
+                "Item_Jeans03",
+                "Item_Jeans04",
+                "Item_Jeans05",
+                "Item_Jeans06",
+                "Item_Jeans07",
+                "Item_KimonoMitsuhama",
+                "Item_KimonoTop",
+                "Item_KimonoWuxing",
+                "Item_LadyLuckTribal1Black",
+                "Item_LeatherBoots",
+                "Item_LeatherCoat",
+                "Item_LeatherVest",
+                "Item_MagicalLongsleeve",
+                "Item_MaoriForearmTribal1Black",
+                "Item_MaoriTribal1Black",
+                "Item_MayanStyle1",
+                "Item_MayanStyle2",
+                "Item_NeoBelt",
+                "Item_NeoBootsHigh",
+                "Item_NeoGlovesHigh",
+                "Item_NeoGoggles",
+                "Item_NeoUnderpants",
+                "Item_NeoUndershirt",
+                "Item_NinjaGloves",
+                "Item_Pack1CroppedJacket",
+                "Item_Pack1HackerTop",
+                "Item_Pack1JeansBlack",
+                "Item_Pack1JeansBlue02",
+                "Item_Pack1JeansModern",
+                "Item_Pack1MageCoat",
+                "Item_Pack1PantsKneepads",
+                "Item_Pack1Skirt1",
+                "Item_Pack1Skirt2",
+                "Item_Pack1Skirt5",
+                "Item_Pack1Sneakers",
+                "Item_Pack1StockingsCyber",
+                "Item_Pack1StockingsKneehigh",
+                "Item_Pack1StockingsStripes",
+                "Item_Pack1TopRaider",
+                "Item_Pack2BackerShirt",
+                "Item_Pack2BasicShirt",
+                "Item_Pack2Goggles",
+                "Item_Pack2HighHeelsBoots",
+                "Item_Pack2SuitPants",
+                "Item_Pack2SuitVest",
+                "Item_Pack3Cigar",
+                "Item_Pack3Corset",
+                "Item_Pack3GlassesNeo",
+                "Item_Pack3GlassesRaybanDark",
+                "Item_Pack3GlassesRound",
+                "Item_Pack3GlassesRoundDark",
+                "Item_Pack4BagBoots",
+                "Item_Pack4Fedora",
+                "Item_Pack4GasMask",
+                "Item_Pack4HospitalGown",
+                "Item_Pack4Sandals",
+                "Item_Pack4TwoToneShoes",
+                "Item_Pack4_HoloDragon",
+                "Item_PuffTie",
+                "Item_PuffTieVest",
+                "Item_RastaHatRasta",
+                "Item_RiggerPants",
+                "Item_RiotBoots",
+                "Item_RiotGloves",
+                "Item_RiotHelmet",
+                "Item_RiotVest",
+                "Item_RiotVestKE",
+                "Item_RoadRageBoots",
+                "Item_RoadRageHarness",
+                "Item_RoadRagePants",
+                "Item_RunnerLongsleeve",
+                "Item_ShamanChestpiece",
+                "Item_ShamanKilt",
+                "Item_ShamanMask1",
+                "Item_ShamanSandals",
+                "Item_ShamanTop",
+                "Item_ShortsSunrise",
+                "Item_SneakersAmerica",
+                "Item_SoycafShirt",
+                "Item_StreetBoots",
+                "Item_StreetCorset",
+                "Item_StreetPants",
+                "Item_SuitJacket",
+                "Item_TopBlue",
+                "Item_TopPurple",
+                "Item_Tribal1Black",
+                "Item_Tribal2Neon",
+                "Item_UrbanBoots",
+                "Item_UrbanGloves",
+                "Item_UrbanPants",
+                "Item_UrbanUnderpants",
+                "Item_UrbanUndershirt",
+                "Item_UrbanVest",
+                "Item_UrbanVisor",
                 "Item_WesternTop",
             };
 
@@ -393,12 +513,11 @@ namespace Shadowrun.LocalService.Core.Persistence
                 try
                 {
                     var staticDataDir = _owner._options != null ? _owner._options.StaticDataDir : null;
-                    var streamingAssetsDir = _owner._options != null ? _owner._options.StreamingAssetsDir : null;
-                    var staticDataAvailable = !LocalUserStore.IsNullOrWhiteSpace(staticDataDir) && Directory.Exists(staticDataDir);
 
                     lock (CouponItemPackageLock)
                     {
-                        var sourceIdentity = GetCouponItemPackageSourceIdentity(staticDataDir, streamingAssetsDir);
+                        bool staticDataAvailable;
+                        var sourceIdentity = GetCouponItemPackageSourceIdentity(staticDataDir, out staticDataAvailable);
                         if (CachedCouponItemPackages != null && string.Equals(CachedCouponItemPackagesSourceIdentity, sourceIdentity, StringComparison.OrdinalIgnoreCase))
                         {
                             return CachedCouponItemPackages;
@@ -409,20 +528,6 @@ namespace Shadowrun.LocalService.Core.Persistence
                             ? LoadCouponItemPackagesByTechnicalName(staticDataDir)
                             : new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
                         AddBuiltInCouponItemPackages(CachedCouponItemPackages);
-                        CachedCouponItemPackages.Remove(BonusCosmeticsPackageName);
-                        try
-                        {
-                            if (!staticDataAvailable)
-                            {
-                                throw new DirectoryNotFoundException("Static data directory is missing.");
-                            }
-
-                            CachedCouponItemPackages[BonusCosmeticsPackageName] = BuildBonusCosmeticsPackage(staticDataDir, streamingAssetsDir);
-                        }
-                        catch (Exception ex)
-                        {
-                            LogBonusCosmeticsDataError(ex);
-                        }
 
                         CachedCouponItemPackagesSourceIdentity = sourceIdentity;
                         return CachedCouponItemPackages;
@@ -430,7 +535,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 }
                 catch (Exception ex)
                 {
-                    LogBonusCosmeticsDataError(ex);
+                    LogCouponItemPackageDataError(ex);
                     return new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
                 }
             }
@@ -518,395 +623,20 @@ namespace Shadowrun.LocalService.Core.Persistence
                 }
 
                 AddBuiltInCouponItemPackage(packages, "UnobtainableCosmetics", UnobtainableCosmeticsPackageItems);
+                AddBuiltInCouponItemPackage(packages, "BONUSCOSMETICS", BonusCosmeticsPackageItems);
             }
 
-            private static JavaScriptSerializer CreateCouponJsonSerializer()
-            {
-                var serializer = new JavaScriptSerializer();
-                serializer.MaxJsonLength = int.MaxValue;
-                serializer.RecursionLimit = 100;
-                return serializer;
-            }
-
-            private static List<string> BuildBonusCosmeticsPackage(string staticDataDir, string streamingAssetsDir)
-            {
-                if (LocalUserStore.IsNullOrWhiteSpace(staticDataDir) || !Directory.Exists(staticDataDir))
-                {
-                    throw new InvalidDataException("Static data directory is missing.");
-                }
-
-                if (LocalUserStore.IsNullOrWhiteSpace(streamingAssetsDir) || !Directory.Exists(streamingAssetsDir))
-                {
-                    throw new InvalidDataException("StreamingAssets directory is missing.");
-                }
-
-                var metagameplay = ReadCouponJsonObject(Path.Combine(staticDataDir, "metagameplay.json"));
-                var ids = ReadCouponJsonObject(Path.Combine(staticDataDir, "ids.json"));
-                var serverData = ReadCouponJsonObject(Path.Combine(staticDataDir, "serverData.json"));
-                var globals = ReadCouponJsonObject(Path.Combine(staticDataDir, "globals.json"));
-
-                var itemDefinitions = FindComponent(metagameplay, "LogicCharacterDataCollection");
-                var equipmentDefinitions = GetRequiredObjectArray(itemDefinitions, "EquipmentItemDefinitions");
-                var cosmetics = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                for (var i = 0; i < equipmentDefinitions.Length; i++)
-                {
-                    var definition = RequireDictionary(equipmentDefinitions[i], "equipment item definition");
-                    var itemId = GetRequiredString(definition, "Id");
-                    var itemTypeId = Convert.ToString(definition["ItemTypeId"], CultureInfo.InvariantCulture);
-                    string rawType;
-                    if (!ids.Contains(itemTypeId) || !TryGetString(ids[itemTypeId], out rawType))
-                    {
-                        throw new InvalidDataException("Missing item type " + itemTypeId + " for " + itemId + ".");
-                    }
-
-                    const string itemTypePrefix = "MetagameplayIdentifiers.Itemtype_";
-                    if (!rawType.StartsWith(itemTypePrefix, StringComparison.Ordinal))
-                    {
-                        continue;
-                    }
-
-                    var itemTypeName = rawType.Substring(itemTypePrefix.Length);
-                    if (!CosmeticItemTypeNames.Contains(itemTypeName))
-                    {
-                        continue;
-                    }
-
-                    string visualReference;
-                    if (!definition.Contains("VisualItemReference") || !TryGetString(definition["VisualItemReference"], out visualReference)
-                        || LocalUserStore.IsNullOrWhiteSpace(visualReference)
-                        || string.Equals(visualReference, "EmptyTexture", StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    cosmetics.Add(itemId);
-                }
-
-                if (cosmetics.Count <= 0)
-                {
-                    throw new InvalidDataException("No cosmetic equipment definitions were found.");
-                }
-
-                var lootTables = FindComponent(serverData, "LootTableDefinitionCollection");
-                var lootTableDefinitions = GetRequiredObjectArray(lootTables, "LootTables");
-                var lootTablesById = new Dictionary<string, IDictionary>(StringComparer.OrdinalIgnoreCase);
-                for (var i = 0; i < lootTableDefinitions.Length; i++)
-                {
-                    var table = RequireDictionary(lootTableDefinitions[i], "loot table definition");
-                    var tableId = GetRequiredString(table, "Id");
-                    if (lootTablesById.ContainsKey(tableId))
-                    {
-                        throw new InvalidDataException("Duplicate loot table definition " + tableId + ".");
-                    }
-
-                    lootTablesById.Add(tableId, table);
-                }
-
-                var levelsDir = Path.Combine(streamingAssetsDir, "levels");
-                if (!Directory.Exists(levelsDir))
-                {
-                    throw new InvalidDataException("Mission levels directory is missing: " + levelsDir);
-                }
-
-                var mapdataPaths = Directory.GetFiles(levelsDir, "mapdata.json", SearchOption.AllDirectories);
-                if (mapdataPaths.Length <= 0)
-                {
-                    throw new InvalidDataException("No mission mapdata.json files were found under " + levelsDir + ".");
-                }
-
-                var lootRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                for (var i = 0; i < mapdataPaths.Length; i++)
-                {
-                    var mapData = ReadCouponJsonObject(mapdataPaths[i]);
-                    CollectLootTableRoots(mapData, lootRoots);
-                }
-
-                if (lootRoots.Count <= 0)
-                {
-                    throw new InvalidDataException("No mission loot table roots were found in mapdata.");
-                }
-
-                var missionDropItems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var root in lootRoots)
-                {
-                    CollectLootTableItems(root, lootTablesById, missionDropItems, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
-                }
-
-                CollectMissionCompletionRewardItems(globals, missionDropItems);
-                cosmetics.ExceptWith(missionDropItems);
-                var result = new List<string>(cosmetics);
-                result.Sort(StringComparer.OrdinalIgnoreCase);
-                if (result.Count <= 0)
-                {
-                    throw new InvalidDataException("No cosmetics remain after excluding mission rewards.");
-                }
-
-                return result;
-            }
-
-            private static IDictionary ReadCouponJsonObject(string path)
-            {
-                if (!File.Exists(path))
-                {
-                    throw new FileNotFoundException("Required coupon data file is missing.", path);
-                }
-
-                var json = File.ReadAllText(path, Encoding.UTF8);
-                var root = CouponJson.DeserializeObject(json) as IDictionary;
-                if (root == null)
-                {
-                    throw new InvalidDataException("Required coupon data file is not a JSON object: " + path);
-                }
-
-                return root;
-            }
-
-            private static IDictionary FindComponent(IDictionary root, string componentTypeName)
-            {
-                var components = GetRequiredObjectArray(root, "Components");
-                for (var i = 0; i < components.Length; i++)
-                {
-                    var component = components[i] as IDictionary;
-                    string typeName;
-                    if (component != null
-                        && TryGetString(component["TypeName"], out typeName)
-                        && typeName.IndexOf(componentTypeName, StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        return component;
-                    }
-                }
-
-                throw new InvalidDataException("Required component was not found: " + componentTypeName + ".");
-            }
-
-            private static void CollectLootTableRoots(object value, HashSet<string> roots)
-            {
-                var dictionary = value as IDictionary;
-                if (dictionary != null)
-                {
-                    string id;
-                    string root;
-                    if (dictionary.Contains("Id") && TryGetString(dictionary["Id"], out id)
-                        && string.Equals(id, "LootTable", StringComparison.Ordinal)
-                        && dictionary.Contains("Value") && TryGetString(dictionary["Value"], out root)
-                        && !LocalUserStore.IsNullOrWhiteSpace(root))
-                    {
-                        roots.Add(root);
-                    }
-
-                    foreach (DictionaryEntry entry in dictionary)
-                    {
-                        CollectLootTableRoots(entry.Value, roots);
-                    }
-
-                    return;
-                }
-
-                var values = value as object[];
-                if (values != null)
-                {
-                    for (var i = 0; i < values.Length; i++)
-                    {
-                        CollectLootTableRoots(values[i], roots);
-                    }
-                }
-            }
-
-            private static void CollectLootTableItems(string tableId, Dictionary<string, IDictionary> tables, HashSet<string> items, HashSet<string> path)
-            {
-                if (LocalUserStore.IsNullOrWhiteSpace(tableId) || !tables.ContainsKey(tableId))
-                {
-                    throw new InvalidDataException("Missing mission loot table reference: " + tableId + ".");
-                }
-
-                if (!path.Add(tableId))
-                {
-                    throw new InvalidDataException("Cycle in mission loot table references at " + tableId + ".");
-                }
-
-                var entries = GetRequiredObjectArray(tables[tableId], "Entries");
-                for (var i = 0; i < entries.Length; i++)
-                {
-                    var entry = RequireDictionary(entries[i], "loot table entry");
-                    if (!entry.Contains("Weight") || entry["Weight"] == null)
-                    {
-                        throw new InvalidDataException("Loot table entry in " + tableId + " has no weight.");
-                    }
-
-                    double weight;
-                    try
-                    {
-                        weight = Convert.ToDouble(entry["Weight"], CultureInfo.InvariantCulture);
-                    }
-                    catch (Exception ex)
-                    {
-                        throw new InvalidDataException("Invalid loot weight in " + tableId + ".", ex);
-                    }
-
-                    if (double.IsNaN(weight) || double.IsInfinity(weight))
-                    {
-                        throw new InvalidDataException("Non-finite loot weight in " + tableId + ".");
-                    }
-
-                    if (weight <= 0)
-                    {
-                        continue;
-                    }
-
-                    var reference = RequireDictionary(entry.Contains("Reference") ? entry["Reference"] : null, "loot reference");
-                    var typeName = GetRequiredString(reference, "TypeName");
-                    var referenceId = GetRequiredString(reference, "Reference");
-                    if (typeName.IndexOf("LogicItemLootReference", StringComparison.Ordinal) >= 0)
-                    {
-                        items.Add(referenceId);
-                    }
-                    else if (typeName.IndexOf("LootTableLootReference", StringComparison.Ordinal) >= 0)
-                    {
-                        CollectLootTableItems(referenceId, tables, items, path);
-                    }
-                    else
-                    {
-                        throw new InvalidDataException("Unsupported positive-weight loot reference " + typeName + " in " + tableId + ".");
-                    }
-                }
-
-                path.Remove(tableId);
-            }
-
-            private static void CollectMissionCompletionRewardItems(IDictionary globals, HashSet<string> items)
-            {
-                var missionDefinitions = GetRequiredObjectArray(FindComponent(globals, "StaticMissionDataCollection"), "MissionDefinitions");
-                if (missionDefinitions.Length <= 0)
-                {
-                    throw new InvalidDataException("No mission definitions were found in globals.json.");
-                }
-
-                for (var i = 0; i < missionDefinitions.Length; i++)
-                {
-                    var mission = RequireDictionary(missionDefinitions[i], "mission definition");
-                    CollectMissionCompletionRewardItems(mission, "Rewards", items);
-                    CollectMissionCompletionRewardItems(mission, "StoryRewards", items);
-                }
-            }
-
-            private static void CollectMissionCompletionRewardItems(IDictionary mission, string rewardKey, HashSet<string> items)
-            {
-                if (!mission.Contains(rewardKey) || mission[rewardKey] == null)
-                {
-                    return;
-                }
-
-                var reward = RequireDictionary(mission[rewardKey], "mission " + rewardKey);
-                if (!reward.Contains("ItemChanges") || reward["ItemChanges"] == null)
-                {
-                    return;
-                }
-
-                var changes = reward["ItemChanges"] as object[];
-                if (changes == null)
-                {
-                    throw new InvalidDataException("Mission " + rewardKey + " item changes are invalid.");
-                }
-
-                for (var i = 0; i < changes.Length; i++)
-                {
-                    var change = RequireDictionary(changes[i], "mission item change");
-                    if (!change.Contains("Delta") || change["Delta"] == null)
-                    {
-                        throw new InvalidDataException("Mission item change has no delta.");
-                    }
-
-                    int delta;
-                    try
-                    {
-                        delta = Convert.ToInt32(change["Delta"], CultureInfo.InvariantCulture);
-                    }
-                    catch (Exception ex)
-                    {
-                        throw new InvalidDataException("Mission item change has an invalid delta.", ex);
-                    }
-
-                    if (delta > 0)
-                    {
-                        items.Add(GetRequiredString(change, "ItemDefintionId"));
-                    }
-                }
-            }
-
-            private static IDictionary RequireDictionary(object value, string description)
-            {
-                var dictionary = value as IDictionary;
-                if (dictionary == null)
-                {
-                    throw new InvalidDataException("Invalid " + description + ".");
-                }
-
-                return dictionary;
-            }
-
-            private static object[] GetRequiredObjectArray(IDictionary dictionary, string key)
-            {
-                if (dictionary == null || !dictionary.Contains(key) || dictionary[key] == null)
-                {
-                    throw new InvalidDataException("Required JSON array is missing: " + key + ".");
-                }
-
-                var values = dictionary[key] as object[];
-                if (values == null)
-                {
-                    throw new InvalidDataException("Required JSON value is not an array: " + key + ".");
-                }
-
-                return values;
-            }
-
-            private static string GetRequiredString(IDictionary dictionary, string key)
-            {
-                string value;
-                if (dictionary == null || !dictionary.Contains(key) || !TryGetString(dictionary[key], out value)
-                    || LocalUserStore.IsNullOrWhiteSpace(value))
-                {
-                    throw new InvalidDataException("Required JSON string is missing: " + key + ".");
-                }
-
-                return value;
-            }
-
-            private static bool TryGetString(object value, out string result)
-            {
-                result = value as string;
-                return result != null;
-            }
-
-            private static string GetCouponItemPackageSourceIdentity(string staticDataDir, string streamingAssetsDir)
+            private static string GetCouponItemPackageSourceIdentity(string staticDataDir, out bool staticDataAvailable)
             {
                 var identity = new StringBuilder();
-                if (LocalUserStore.IsNullOrWhiteSpace(staticDataDir) || !Directory.Exists(staticDataDir))
+                staticDataAvailable = !LocalUserStore.IsNullOrWhiteSpace(staticDataDir) && Directory.Exists(staticDataDir);
+                if (!staticDataAvailable)
                 {
                     identity.Append("|static-data:missing:").Append(staticDataDir ?? string.Empty);
                 }
                 else
                 {
                     AppendFileIdentity(identity, Path.Combine(staticDataDir, "serverData.json"));
-                    AppendFileIdentity(identity, Path.Combine(staticDataDir, "metagameplay.json"));
-                    AppendFileIdentity(identity, Path.Combine(staticDataDir, "ids.json"));
-                    AppendFileIdentity(identity, Path.Combine(staticDataDir, "globals.json"));
-                }
-
-                var levelsDir = LocalUserStore.IsNullOrWhiteSpace(streamingAssetsDir)
-                    ? null
-                    : Path.Combine(streamingAssetsDir, "levels");
-                if (LocalUserStore.IsNullOrWhiteSpace(levelsDir) || !Directory.Exists(levelsDir))
-                {
-                    identity.Append("|levels:missing");
-                    return identity.ToString();
-                }
-
-                var mapdataPaths = Directory.GetFiles(levelsDir, "mapdata.json", SearchOption.AllDirectories);
-                Array.Sort(mapdataPaths, StringComparer.OrdinalIgnoreCase);
-                for (var i = 0; i < mapdataPaths.Length; i++)
-                {
-                    AppendFileIdentity(identity, mapdataPaths[i]);
                 }
 
                 return identity.ToString();
@@ -925,7 +655,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 identity.Append(':').Append(info.Length).Append(':').Append(info.LastWriteTimeUtc.Ticks);
             }
 
-            private void LogBonusCosmeticsDataError(Exception exception)
+            private void LogCouponItemPackageDataError(Exception exception)
             {
                 if (_owner == null || _owner._logger == null)
                 {
@@ -939,7 +669,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                         ts = RequestLogger.UtcNowIso(),
                         level = "warning",
                         type = "coupon-data",
-                        op = "bonus-cosmetics-unavailable",
+                        op = "package-cache-unavailable",
                         error = exception != null ? exception.Message : "Unknown data error",
                     });
                 }
