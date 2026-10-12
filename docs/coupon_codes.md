@@ -158,9 +158,72 @@ These include exclusive backer rewards previously unavailable to most players.
 
 ### BONUSCOSMETICS
 
-Grants one copy of each item in a fixed snapshot of usable cosmetic equipment that is not obtainable from the extracted mission loot tables or positive mission-completion item rewards. The snapshot was computed from the extracted game data described below; it includes cosmetics otherwise obtained through shops, other coupons, or DLC when they are absent from the current mission rewards. The list is hardcoded so coupon resolution does not read or recursively scan mission assets at runtime. Changes to game data or mission rewards do not update this snapshot automatically.
+Grants one copy of each item in a fixed snapshot of usable cosmetic equipment that is not obtainable from the extracted mission loot tables or positive mission-completion item rewards, excluding items already granted by the server's default cosmetic seeding. The snapshot was computed from the extracted game data and current career-seed logic; it includes cosmetics otherwise obtained through shops, other coupons, or DLC when they are absent from the current mission rewards and default seeds. The list is hardcoded so coupon resolution does not read or recursively scan mission assets at runtime. Changes to game data, mission rewards, or default seeds do not update this snapshot automatically.
 
-With the extracted game data documented in this repository, the package contains 134 items. Examples include `Item_AstralCoat`, `Item_ElegantTop`, `Item_LeatherCoat`, and `Item_KimonoTop`. The `UnobtainableCosmetics` package remains unchanged.
+With the extracted game data and current career-seed logic, 101 already-seeded items were removed and the package now contains 33 items. The `UnobtainableCosmetics` package remains unchanged at 36 items.
+
+Compared with `UnobtainableCosmetics`, the updated packages contain 17 shared items, 16 `BONUSCOSMETICS`-only items, and 19 `UnobtainableCosmetics`-only items:
+
+**Shared (17)**
+
+* Item_AstralCoat
+* Item_BasicMageVest
+* Item_BikerPants
+* Item_CyberdocOverall
+* Item_DefaultLowerUnderwear
+* Item_DefaultUpperUnderwear
+* Item_DocGloves
+* Item_ElegantTop
+* Item_HipsterBoots
+* Item_KimonoTop
+* Item_LeatherBoots
+* Item_LeatherCoat
+* Item_MagicalLongsleeve
+* Item_RunnerLongsleeve
+* Item_StreetCorset
+* Item_SuitJacket
+* Item_WesternTop
+
+**BONUSCOSMETICS only (16)**
+
+* Item_AncientsLogoNeon
+* Item_BandanaSkull
+* Item_DoubleDragon1Neon
+* Item_DragonHead1Neon
+* Item_HarebrainedShirt
+* Item_HeartsBoxers
+* Item_KimonoMitsuhama
+* Item_KimonoWuxing
+* Item_NinjaGloves
+* Item_PuffTie
+* Item_PuffTieVest
+* Item_RastaHatRasta
+* Item_ShortsSunrise
+* Item_SneakersAmerica
+* Item_SoycafShirt
+* Item_Tribal2Neon
+
+**UnobtainableCosmetics only (19)**
+
+* Item_BeardBraided
+* Item_BeardConchita
+* Item_BeardFull
+* Item_BeardStubble
+* Item_DocOverall
+* Item_HairDreads
+* Item_HairDreadsUndercut
+* Item_HairLadyLuck
+* Item_HairLong2
+* Item_HairMohawkLimp
+* Item_HairMohawkSideburns
+* Item_HairPancake
+* Item_HornsBasic
+* Item_Pack1HackerTop
+* Item_Pack1MageCoat
+* Item_Pack3Corset
+* Item_Pack4BagBoots
+* Item_Pack4HospitalGown
+* Item_Sideburns
 
 ### SRO-KS-AWAKENED
 
