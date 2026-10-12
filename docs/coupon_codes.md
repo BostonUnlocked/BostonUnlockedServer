@@ -6,7 +6,7 @@ This document lists all coupon codes currently accepted by the local service cou
 
 The launcher reads the numeric `Code` field of the coupon response as the official `RedeemResult` enum; it does not use the response `Message` to display redemption errors. In particular, `2` means `PackageLimitReached`, `6` means `DoesNotExist`, `7` means `CouponIsAlreadyUsedByThatAccount`, and `11` means `PackageNameIsMissing`. When their reward package resolves, custom package coupons use the same successful `Ok` result (`0`) as game-defined packages; an unavailable reward package returns `PackageNameIsMissing` rather than `PackageLimitReached`.
 
-`BONUSCOSMETICS` is a built-in item list and remains resolvable when static game data or mission assets are unavailable. Other game-defined item packages continue to load from static game data.
+`BONUSCOSMETICS` and `HALLOWEEN` are built-in item lists and remain resolvable when static game data or mission assets are unavailable. Other game-defined item packages continue to load from static game data.
 
 Static data is read from the portable `<exe directory>\Resources\static-data` directory when present, otherwise from `<LocalServiceRoot>\static-data`. Streaming assets are read from the portable `<exe directory>\Resources\StreamingAssets` directory when present, otherwise from `<GameRootDir>\Shadowrun_Data\StreamingAssets`.
 
@@ -28,6 +28,7 @@ Copy and claim these one by one in the launcher to activate the corresponding DL
     SRO-ITEM-PEGASUS
     SRO-ITEM-STARTER-GEAR
     BONUSCOSMETICS
+    HALLOWEEN
     SRO-KS-AWAKENED
     SRO-KS-COOP
     SRO-KS-MASTER
@@ -172,6 +173,12 @@ Grants one copy of each item in the combined 52-item snapshot formerly split bet
 * Item_SuitJacket
 * Item_Tribal2Neon
 * Item_WesternTop
+
+### HALLOWEEN
+
+Grants one copy of the Halloween pet, **Flying pumpkin**.
+
+* Item_halloweenpet_01
 
 ### SRO-KS-AWAKENED
 

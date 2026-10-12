@@ -70,6 +70,10 @@ namespace Shadowrun.LocalService.Core.Persistence
                 "Item_Tribal2Neon",
                 "Item_WesternTop",
             };
+            private static readonly string[] HalloweenPackageItems = new[]
+            {
+                "Item_halloweenpet_01",
+            };
 
             private const string CouponGameName = "SRO";
             private const string CouponPackagesPlayerInfoKey = "CouponPackages";
@@ -508,6 +512,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 }
 
                 AddBuiltInCouponItemPackage(packages, "BONUSCOSMETICS", BonusCosmeticsPackageItems);
+                AddBuiltInCouponItemPackage(packages, "HALLOWEEN", HalloweenPackageItems);
             }
 
             private static string GetCouponItemPackageSourceIdentity(string staticDataDir, out bool staticDataAvailable)
