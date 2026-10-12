@@ -15,6 +15,21 @@ $ErrorActionPreference = "Stop"
 
 Write-Output "[server] launching C# service..."
 
+function Sync-LocalWorktreeResources {
+    param([string]$RepoRoot)
+
+    $syncScript = Join-Path $RepoRoot 'tools\sync_local_worktree_resources.ps1'
+    if (-not (Test-Path -LiteralPath $syncScript)) {
+        return
+    }
+
+    Write-Output "[server] syncing local worktree resources before build..."
+    & $syncScript -DestinationRoot $RepoRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "Local resource sync failed with exit code $LASTEXITCODE"
+    }
+}
+
 # If a previous run is still active, it will lock output DLLs and cause MSBuild copy failures.
 Get-Process -Name "Shadowrun.LocalService.Host" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
@@ -47,7 +62,6 @@ function Resolve-MsbuildCommand {
 
     # Fallbacks for older environments.
     $candidates += "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\MSBuild.exe"
-    $candidates += "$env:WINDIR\Microsoft.NET\Framework\v3.5\MSBuild.exe"
 
     foreach ($candidate in $candidates) {
         if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
@@ -63,6 +77,13 @@ function Resolve-MsbuildCommand {
         }
     }
     catch {
+    }
+
+    $candidates += "$env:WINDIR\Microsoft.NET\Framework\v3.5\MSBuild.exe"
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
+            return @{ type = 'exe'; command = $candidate }
+        }
     }
 
     throw "No suitable MSBuild was found. Install Visual Studio Build Tools (MSBuild) or .NET SDK."
@@ -98,6 +119,9 @@ Remove-LegacyNugetArtifacts -ProjectDir (Join-Path $PSScriptRoot 'src\Shadowrun.
 
 $depsDir = Join-Path $PSScriptRoot 'src\Dependencies'
 $staticDataDir = Join-Path $PSScriptRoot 'static-data'
+$streamingAssetsLevelsDir = Join-Path $PSScriptRoot 'StreamingAssets\levels'
+
+Sync-LocalWorktreeResources -RepoRoot (Join-Path $PSScriptRoot '..')
 
 $requiredDlls = @(
     'APlayCommon.dll',
@@ -118,8 +142,6 @@ $requiredStaticData = @(
     'globals.json',
     'metagameplay.json'
 )
-
-$streamingAssetsLevelsDir = Join-Path $PSScriptRoot 'StreamingAssets\levels'
 
 $missingDlls = @()
 foreach ($dll in $requiredDlls) {
