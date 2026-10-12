@@ -15,9 +15,11 @@ namespace Shadowrun.LocalService.Core.Persistence
             private static readonly object CouponItemPackageLock = new object();
             private static Dictionary<string, List<string>> CachedCouponItemPackages;
             private static string CachedCouponItemPackagesSourceIdentity;
-            private static readonly string[] UnobtainableCosmeticsPackageItems = new[]
+            private static readonly string[] BonusCosmeticsPackageItems = new[]
             {
+                "Item_AncientsLogoNeon",
                 "Item_AstralCoat",
+                "Item_BandanaSkull",
                 "Item_BasicMageVest",
                 "Item_BeardBraided",
                 "Item_BeardConchita",
@@ -29,6 +31,8 @@ namespace Shadowrun.LocalService.Core.Persistence
                 "Item_DefaultUpperUnderwear",
                 "Item_DocGloves",
                 "Item_DocOverall",
+                "Item_DoubleDragon1Neon",
+                "Item_DragonHead1Neon",
                 "Item_ElegantTop",
                 "Item_HairDreads",
                 "Item_HairDreadsUndercut",
@@ -37,163 +41,39 @@ namespace Shadowrun.LocalService.Core.Persistence
                 "Item_HairMohawkLimp",
                 "Item_HairMohawkSideburns",
                 "Item_HairPancake",
-                "Item_HipsterBoots",
-                "Item_HornsBasic",
-                "Item_KimonoTop",
-                "Item_LeatherBoots",
-                "Item_LeatherCoat",
-                "Item_MagicalLongsleeve",
-                "Item_Pack1HackerTop",
-                "Item_Pack1MageCoat",
-                "Item_Pack3Corset",
-                "Item_Pack4BagBoots",
-                "Item_Pack4HospitalGown",
-                "Item_RunnerLongsleeve",
-                "Item_Sideburns",
-                "Item_StreetCorset",
-                "Item_SuitJacket",
-                "Item_WesternTop",
-            };
-            private static readonly string[] BonusCosmeticsPackageItems = new[]
-            {
-                "Item_AncientsLogoNeon",
-                "Item_AstralCoat",
-                "Item_AstralHelmet",
-                "Item_BagGloves",
-                "Item_BandanaSkull",
-                "Item_BasicCap1",
-                "Item_BasicCap2",
-                "Item_BasicCombatBoots",
-                "Item_BasicHoboJacket",
-                "Item_BasicMageVest",
-                "Item_BasicSkirt",
-                "Item_BasicTubeTop",
-                "Item_BasicWifebeater",
-                "Item_BikerBoots",
-                "Item_BikerGloves",
-                "Item_BikerJacket",
-                "Item_BikerPants",
-                "Item_CeramicPlating",
-                "Item_CowboyHat",
-                "Item_CyberdocOverall",
-                "Item_DefaultLowerUnderwear",
-                "Item_DefaultUpperUnderwear",
-                "Item_DocGloves",
-                "Item_DocMask",
-                "Item_DoubleDragon1Black",
-                "Item_DoubleDragon1Neon",
-                "Item_DragonHead1Black",
-                "Item_DragonHead1Neon",
-                "Item_ElegantTop",
-                "Item_GothJacket",
                 "Item_HarebrainedShirt",
                 "Item_HeartsBoxers",
-                "Item_Hex1Black",
-                "Item_HideBracers",
                 "Item_HipsterBoots",
-                "Item_HoboJacket2",
-                "Item_HotPants",
-                "Item_Jeans01",
-                "Item_Jeans02",
-                "Item_Jeans03",
-                "Item_Jeans04",
-                "Item_Jeans05",
-                "Item_Jeans06",
-                "Item_Jeans07",
+                "Item_HornsBasic",
                 "Item_KimonoMitsuhama",
                 "Item_KimonoTop",
                 "Item_KimonoWuxing",
-                "Item_LadyLuckTribal1Black",
                 "Item_LeatherBoots",
                 "Item_LeatherCoat",
-                "Item_LeatherVest",
                 "Item_MagicalLongsleeve",
-                "Item_MaoriForearmTribal1Black",
-                "Item_MaoriTribal1Black",
-                "Item_MayanStyle1",
-                "Item_MayanStyle2",
-                "Item_NeoBelt",
-                "Item_NeoBootsHigh",
-                "Item_NeoGlovesHigh",
-                "Item_NeoGoggles",
-                "Item_NeoUnderpants",
-                "Item_NeoUndershirt",
                 "Item_NinjaGloves",
-                "Item_Pack1CroppedJacket",
                 "Item_Pack1HackerTop",
-                "Item_Pack1JeansBlack",
-                "Item_Pack1JeansBlue02",
-                "Item_Pack1JeansModern",
                 "Item_Pack1MageCoat",
-                "Item_Pack1PantsKneepads",
-                "Item_Pack1Skirt1",
-                "Item_Pack1Skirt2",
-                "Item_Pack1Skirt5",
-                "Item_Pack1Sneakers",
-                "Item_Pack1StockingsCyber",
-                "Item_Pack1StockingsKneehigh",
-                "Item_Pack1StockingsStripes",
-                "Item_Pack1TopRaider",
-                "Item_Pack2BackerShirt",
-                "Item_Pack2BasicShirt",
-                "Item_Pack2Goggles",
-                "Item_Pack2HighHeelsBoots",
-                "Item_Pack2SuitPants",
-                "Item_Pack2SuitVest",
-                "Item_Pack3Cigar",
                 "Item_Pack3Corset",
-                "Item_Pack3GlassesNeo",
-                "Item_Pack3GlassesRaybanDark",
-                "Item_Pack3GlassesRound",
-                "Item_Pack3GlassesRoundDark",
                 "Item_Pack4BagBoots",
-                "Item_Pack4Fedora",
-                "Item_Pack4GasMask",
                 "Item_Pack4HospitalGown",
-                "Item_Pack4Sandals",
-                "Item_Pack4TwoToneShoes",
-                "Item_Pack4_HoloDragon",
                 "Item_PuffTie",
                 "Item_PuffTieVest",
                 "Item_RastaHatRasta",
-                "Item_RiggerPants",
-                "Item_RiotBoots",
-                "Item_RiotGloves",
-                "Item_RiotHelmet",
-                "Item_RiotVest",
-                "Item_RiotVestKE",
-                "Item_RoadRageBoots",
-                "Item_RoadRageHarness",
-                "Item_RoadRagePants",
                 "Item_RunnerLongsleeve",
-                "Item_ShamanChestpiece",
-                "Item_ShamanKilt",
-                "Item_ShamanMask1",
-                "Item_ShamanSandals",
-                "Item_ShamanTop",
                 "Item_ShortsSunrise",
+                "Item_Sideburns",
                 "Item_SneakersAmerica",
                 "Item_SoycafShirt",
-                "Item_StreetBoots",
                 "Item_StreetCorset",
-                "Item_StreetPants",
                 "Item_SuitJacket",
-                "Item_TopBlue",
-                "Item_TopPurple",
-                "Item_Tribal1Black",
                 "Item_Tribal2Neon",
-                "Item_UrbanBoots",
-                "Item_UrbanGloves",
-                "Item_UrbanPants",
-                "Item_UrbanUnderpants",
-                "Item_UrbanUndershirt",
-                "Item_UrbanVest",
-                "Item_UrbanVisor",
                 "Item_WesternTop",
             };
 
             private const string CouponGameName = "SRO";
             private const string CouponPackagesPlayerInfoKey = "CouponPackages";
+            private const string LegacyUnobtainableCosmeticsPackageName = "UnobtainableCosmetics";
 
             private readonly LocalUserStore _owner;
 
@@ -451,14 +331,19 @@ namespace Shadowrun.LocalService.Core.Persistence
                 var split = raw.Split(new[] { ';', ',', '|' }, StringSplitOptions.RemoveEmptyEntries);
                 for (var i = 0; i < split.Length; i++)
                 {
-                    var s = split[i] != null ? split[i].Trim() : null;
-                    if (LocalUserStore.IsNullOrWhiteSpace(s) || seen.ContainsKey(s) || !HonoredCouponCodes.IsHonored(s))
+                    var packageName = split[i] != null ? split[i].Trim() : null;
+                    if (string.Equals(packageName, LegacyUnobtainableCosmeticsPackageName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        packageName = "BONUSCOSMETICS";
+                    }
+
+                    if (LocalUserStore.IsNullOrWhiteSpace(packageName) || seen.ContainsKey(packageName) || !HonoredCouponCodes.IsHonored(packageName))
                     {
                         continue;
                     }
 
-                    seen[s] = true;
-                    packages.Add(s);
+                    seen[packageName] = true;
+                    packages.Add(packageName);
                 }
 
                 return packages;
@@ -622,7 +507,6 @@ namespace Shadowrun.LocalService.Core.Persistence
                     return;
                 }
 
-                AddBuiltInCouponItemPackage(packages, "UnobtainableCosmetics", UnobtainableCosmeticsPackageItems);
                 AddBuiltInCouponItemPackage(packages, "BONUSCOSMETICS", BonusCosmeticsPackageItems);
             }
 
