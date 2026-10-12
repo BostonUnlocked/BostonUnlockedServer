@@ -8,7 +8,7 @@ The launcher reads the numeric `Code` field of the coupon response as the offici
 
 `UnobtainableCosmetics` and `BONUSCOSMETICS` are built-in item lists and remain resolvable when static game data or mission assets are unavailable. Other game-defined item packages continue to load from static game data.
 
-Static data is read from the portable `<exe directory>\Resources\static-data` directory when present, then from an existing repo/localservice `static-data` directory. If neither layout is present, the default is `C:\Shadowrun\Service\Release\Resources\static-data`. Streaming assets similarly use the portable `<exe directory>\Resources\StreamingAssets` directory when present and otherwise default to `C:\Shadowrun\Service\Release\Resources\StreamingAssets`; the Windows service manager does not need resource-path arguments.
+Static data is read from the portable `<exe directory>\Resources\static-data` directory when present, otherwise from `<LocalServiceRoot>\static-data`. Streaming assets are read from the portable `<exe directory>\Resources\StreamingAssets` directory when present, otherwise from `<GameRootDir>\Shadowrun_Data\StreamingAssets`.
 
 ## Consolidated List of All Coupon Codes
 
