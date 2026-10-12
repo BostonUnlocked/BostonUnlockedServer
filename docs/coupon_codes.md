@@ -4,6 +4,12 @@ This document lists all coupon codes currently accepted by the local service cou
 
 **Package coupon rewards are applied to all existing occupied careers and future occupied careers for the account.**
 
+The launcher reads the numeric `Code` field of the coupon response as the official `RedeemResult` enum; it does not use the response `Message` to display redemption errors. In particular, `2` means `PackageLimitReached`, `6` means `DoesNotExist`, `7` means `CouponIsAlreadyUsedByThatAccount`, and `11` means `PackageNameIsMissing`. When their reward package resolves, custom package coupons use the same successful `Ok` result (`0`) as game-defined packages; an unavailable reward package returns `PackageNameIsMissing` rather than `PackageLimitReached`.
+
+`UnobtainableCosmetics` is a built-in item list and remains resolvable when static game data is unavailable. `BONUSCOSMETICS` remains unavailable unless its required static data and mission assets are present; a rejected redemption is not recorded. A `coupon-resolution` / `redeem-rejected` log entry distinguishes an unrecognized coupon code from a recognized code with an unresolved package and records the relevant resource-directory and file-presence checks.
+
+Static data is read from the portable `<exe directory>\Resources\static-data` directory when present, then from an existing repo/localservice `static-data` directory. If neither layout is present, the default is `C:\Shadowrun\Service\Release\Resources\static-data`. Streaming assets similarly use the portable `<exe directory>\Resources\StreamingAssets` directory when present and otherwise default to `C:\Shadowrun\Service\Release\Resources\StreamingAssets`; the Windows service manager does not need resource-path arguments.
+
 ## Consolidated List of All Coupon Codes
 
 Copy and claim these one by one in the launcher to activate the corresponding DLC. The contents are listed in subsequent sections of this file.

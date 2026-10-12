@@ -3,12 +3,38 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Text;
 using System.Globalization;
+using System.IO;
 using Shadowrun.LocalService.Core.Coupons;
 
 namespace Shadowrun.LocalService.Core.Http
 {
     public sealed partial class HttpStubServer
     {
+        private enum CouponRedeemResultCode
+        {
+            Ok = 0,
+            AccountLimitReached = 1,
+            PackageLimitReached = 2,
+            OnlyUsableAtRegistration = 3,
+            Expired = 4,
+            NotStarted = 5,
+            DoesNotExist = 6,
+            CouponIsAlreadyUsedByThatAccount = 7,
+            OutOfCoupons = 8,
+            AccountIdNotProvided = 9,
+            CouponIdNotProvided = 10,
+            PackageNameIsMissing = 11,
+            AppKeyDoesNotMatch = 12,
+        }
+
+        private enum CouponReturnResultCode
+        {
+            Ok = 0,
+            CouponNotOwnedByThisAccount = 1,
+            InvalidSessionHash = 2,
+            PackageIsNotReturnable = 3,
+        }
+
         private const string CouponGameName = "SRO";
         private const string CouponUnlocksPlayerInfoKey = "CouponUnlocks";
         private const string CouponPackagesPlayerInfoKey = "CouponPackages";
@@ -55,12 +81,16 @@ namespace Shadowrun.LocalService.Core.Http
 
             if (!IsGuidish(accountId) || IsNullOrWhiteSpace(code))
             {
-                return JsonResponse(200, BuildRedeemCouponResult(1, "InvalidRequest", null, null));
+                var resultCode = !IsGuidish(accountId)
+                    ? CouponRedeemResultCode.AccountIdNotProvided
+                    : CouponRedeemResultCode.CouponIdNotProvided;
+                return JsonResponse(200, BuildRedeemCouponResult(resultCode, "InvalidRequest", null, null));
             }
 
             if (!HonoredCouponCodes.IsHonored(code))
             {
-                return JsonResponse(200, BuildRedeemCouponResult(2, "InvalidCoupon", null, null));
+                LogCouponResolutionFailure(code, "unrecognized-code");
+                return JsonResponse(200, BuildRedeemCouponResult(CouponRedeemResultCode.DoesNotExist, "InvalidCoupon", null, null));
             }
 
             string unlockTechnicalName;
@@ -81,7 +111,8 @@ namespace Shadowrun.LocalService.Core.Http
 
             if (IsNullOrWhiteSpace(unlockTechnicalName) && IsNullOrWhiteSpace(packageTechnicalName))
             {
-                return JsonResponse(200, BuildRedeemCouponResult(2, "InvalidCoupon", null, null));
+                LogCouponResolutionFailure(code, "reward-package-unresolved");
+                return JsonResponse(200, BuildRedeemCouponResult(CouponRedeemResultCode.PackageNameIsMissing, "InvalidCoupon", null, null));
             }
 
             var history = LoadCouponHistory(accountId);
@@ -92,7 +123,7 @@ namespace Shadowrun.LocalService.Core.Http
                     ?? GetString(existing, "UnlockTechnicalName")
                     ?? packageTechnicalName
                     ?? unlockTechnicalName;
-                return JsonResponse(200, BuildRedeemCouponResult(3, "AlreadyRedeemed", GetCouponPackageDisplayName(existingTechnicalName), existingTechnicalName));
+                return JsonResponse(200, BuildRedeemCouponResult(CouponRedeemResultCode.CouponIsAlreadyUsedByThatAccount, "AlreadyRedeemed", GetCouponPackageDisplayName(existingTechnicalName), existingTechnicalName));
             }
 
             var unlocks = LoadCouponUnlocks(accountId);
@@ -127,7 +158,7 @@ namespace Shadowrun.LocalService.Core.Http
             }
 
             var redeemedTechnicalName = packageTechnicalName ?? unlockTechnicalName;
-            return JsonResponse(200, BuildRedeemCouponResult(0, "OK", GetCouponPackageDisplayName(redeemedTechnicalName), redeemedTechnicalName));
+            return JsonResponse(200, BuildRedeemCouponResult(CouponRedeemResultCode.Ok, "OK", GetCouponPackageDisplayName(redeemedTechnicalName), redeemedTechnicalName));
         }
 
         private HttpResponse HandleCouponHistory(string normalizedPath)
@@ -150,20 +181,23 @@ namespace Shadowrun.LocalService.Core.Http
 
             if (IsNullOrWhiteSpace(sessionHash) || IsNullOrWhiteSpace(code))
             {
-                return JsonResponse(200, BuildReturnCouponResult(1, "InvalidRequest"));
+                var resultCode = IsNullOrWhiteSpace(sessionHash)
+                    ? CouponReturnResultCode.InvalidSessionHash
+                    : CouponReturnResultCode.CouponNotOwnedByThisAccount;
+                return JsonResponse(200, BuildReturnCouponResult(resultCode, "InvalidRequest"));
             }
 
             string identityHash;
             if (!TryResolveIdentityForSessionHash(sessionHash, out identityHash) || !IsGuidish(identityHash))
             {
-                return JsonResponse(200, BuildReturnCouponResult(2, "IdentityNotFound"));
+                return JsonResponse(200, BuildReturnCouponResult(CouponReturnResultCode.InvalidSessionHash, "IdentityNotFound"));
             }
 
             var history = LoadCouponHistory(identityHash);
             IDictionary matched;
             if (!TryFindActiveCouponByCode(history, code, out matched))
             {
-                return JsonResponse(200, BuildReturnCouponResult(3, "CouponNotFound"));
+                return JsonResponse(200, BuildReturnCouponResult(CouponReturnResultCode.CouponNotOwnedByThisAccount, "CouponNotFound"));
             }
 
             matched["TimeReturned"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
@@ -183,7 +217,7 @@ namespace Shadowrun.LocalService.Core.Http
             }
 
             SaveCouponState(identityHash, unlocks, packages, history);
-            return JsonResponse(200, BuildReturnCouponResult(0, "OK"));
+            return JsonResponse(200, BuildReturnCouponResult(CouponReturnResultCode.Ok, "OK"));
         }
 
         private static Dictionary<string, string> CreateCouponCodeToUnlockMap()
@@ -270,24 +304,54 @@ namespace Shadowrun.LocalService.Core.Http
             return sb.ToString();
         }
 
-        private static Dictionary<string, object> BuildRedeemCouponResult(int code, string message, string packageName, string packageTechnicalName)
+        private static Dictionary<string, object> BuildRedeemCouponResult(CouponRedeemResultCode code, string message, string packageName, string packageTechnicalName)
         {
             return new Dictionary<string, object>
             {
-                { "Code", code },
+                { "Code", (int)code },
                 { "Message", message },
                 { "PackageName", packageName },
                 { "PackageTechnicalName", packageTechnicalName },
             };
         }
 
-        private static Dictionary<string, object> BuildReturnCouponResult(int code, string message)
+        private static Dictionary<string, object> BuildReturnCouponResult(CouponReturnResultCode code, string message)
         {
             return new Dictionary<string, object>
             {
-                { "Code", code },
+                { "Code", (int)code },
                 { "Message", message },
             };
+        }
+
+        private void LogCouponResolutionFailure(string code, string reason)
+        {
+            if (_logger == null)
+            {
+                return;
+            }
+
+            var staticDataDir = _options != null ? _options.StaticDataDir : null;
+            var streamingAssetsDir = _options != null ? _options.StreamingAssetsDir : null;
+            var levelsDir = IsNullOrWhiteSpace(streamingAssetsDir) ? null : Path.Combine(streamingAssetsDir, "levels");
+            SafeLog(new
+            {
+                ts = RequestLogger.UtcNowIso(),
+                level = "warning",
+                type = "coupon-resolution",
+                op = "redeem-rejected",
+                reason = reason,
+                couponCode = code,
+                staticDataDir = staticDataDir,
+                staticDataDirExists = !IsNullOrWhiteSpace(staticDataDir) && Directory.Exists(staticDataDir),
+                serverDataJsonExists = !IsNullOrWhiteSpace(staticDataDir) && File.Exists(Path.Combine(staticDataDir, "serverData.json")),
+                metagameplayJsonExists = !IsNullOrWhiteSpace(staticDataDir) && File.Exists(Path.Combine(staticDataDir, "metagameplay.json")),
+                idsJsonExists = !IsNullOrWhiteSpace(staticDataDir) && File.Exists(Path.Combine(staticDataDir, "ids.json")),
+                globalsJsonExists = !IsNullOrWhiteSpace(staticDataDir) && File.Exists(Path.Combine(staticDataDir, "globals.json")),
+                streamingAssetsDir = streamingAssetsDir,
+                streamingAssetsDirExists = !IsNullOrWhiteSpace(streamingAssetsDir) && Directory.Exists(streamingAssetsDir),
+                missionLevelsDirExists = !IsNullOrWhiteSpace(levelsDir) && Directory.Exists(levelsDir),
+            });
         }
 
         private static string NormalizePathForRoute(string path)
