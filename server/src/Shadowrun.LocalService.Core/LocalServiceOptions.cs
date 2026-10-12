@@ -8,6 +8,7 @@ public sealed class LocalServiceOptions
     // Dev toggle: flip this constant to enable local AI decision execution by default.
     public const bool DefaultEnableAiLogic = true;
     public const string DefaultStaticDataDir = @"C:\Shadowrun\Service\Release\Resources\static-data";
+    public const string DefaultStreamingAssetsDir = @"C:\Shadowrun\Service\Release\Resources\StreamingAssets";
 
     private string _dataDir;
 
@@ -28,14 +29,14 @@ public sealed class LocalServiceOptions
 
         EnableAiLogic = DefaultEnableAiLogic;
 
-        // Defaults for a typical Steam install; can be overridden by setting these properties.
+        // The game root is also used to probe for official game assemblies.
         GameRootDir = "d:\\SteamLibrary\\steamapps\\common\\ShadowrunChronicles";
 
-        // Prefer a portable bundle layout if present.
+        // Prefer a portable bundle layout, then use the production service installation path.
         var portableStreamingAssets = TryGetPortableSubdir("StreamingAssets");
         StreamingAssetsDir = !IsNullOrWhiteSpace(portableStreamingAssets)
             ? portableStreamingAssets
-            : Path.Combine(Path.Combine(GameRootDir, "Shadowrun_Data"), "StreamingAssets");
+            : DefaultStreamingAssetsDir;
 
         // Keep persistence outside build output by default.
         _dataDir = TryGetDefaultPersistentDataDir();
