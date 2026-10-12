@@ -1,7 +1,7 @@
 param(
     [string]$ServiceName = "ShadowrunLocalService",
     [string]$DisplayName = "Shadowrun Local Service",
-    [string]$Description = "Offline Shadowrun Chronicles local service host",
+    [string]$Description = "Shadowrun Chronicles Server for TheMade.org",
     [ValidateSet("Automatic", "Manual", "Disabled")]
     [string]$StartupType = "Automatic",
     [string]$BindHost = "0.0.0.0",
