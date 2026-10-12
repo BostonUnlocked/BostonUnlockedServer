@@ -22,6 +22,7 @@ Copy and claim these one by one in the launcher to activate the corresponding DL
     SRO-ITEM-PEGASUS
     SRO-ITEM-STARTER-GEAR
     UnobtainableCosmetics
+    BONUSCOSMETICS
     SRO-KS-AWAKENED
     SRO-KS-COOP
     SRO-KS-MASTER
@@ -148,6 +149,14 @@ These include exclusive backer rewards previously unavailable to most players.
 * Item_StreetCorset
 * Item_SuitJacket
 * Item_WesternTop
+
+### BONUSCOSMETICS
+
+Grants one copy of every defined, usable cosmetic equipment item that is not currently obtainable from a positive-chance mission loot table or a positive mission-completion item reward. Cosmetic categories are derived from the game’s `ItemTypeId` definitions (upper/lower body, hands, boots, underwear, glasses, head, skin, and tattoos); empty-slot placeholder visuals are excluded. The set is built from the extracted `metagameplay.json`, `ids.json`, `serverData.json`, `globals.json`, and mission `mapdata.json` files at runtime, recursively following nested loot-table references and accounting for direct completion rewards. This intentionally includes cosmetics otherwise obtained through shops, other coupons, or DLC when they are absent from current mission rewards.
+
+With the extracted game data documented in this repository, the package contains 134 items. Examples include `Item_AstralCoat`, `Item_ElegantTop`, `Item_LeatherCoat`, and `Item_KimonoTop`. The existing `UnobtainableCosmetics` package remains unchanged.
+
+If required source data is missing or invalid, the new package is unavailable and redemption is rejected without recording the coupon; a structured warning is logged. Existing coupon packages remain available.
 
 ### SRO-KS-AWAKENED
 
