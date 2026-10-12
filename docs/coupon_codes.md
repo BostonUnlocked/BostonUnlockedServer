@@ -6,7 +6,7 @@ This document lists all coupon codes currently accepted by the local service cou
 
 The launcher reads the numeric `Code` field of the coupon response as the official `RedeemResult` enum; it does not use the response `Message` to display redemption errors. In particular, `2` means `PackageLimitReached`, `6` means `DoesNotExist`, `7` means `CouponIsAlreadyUsedByThatAccount`, and `11` means `PackageNameIsMissing`. When their reward package resolves, custom package coupons use the same successful `Ok` result (`0`) as game-defined packages; an unavailable reward package returns `PackageNameIsMissing` rather than `PackageLimitReached`.
 
-`UnobtainableCosmetics` and `BONUSCOSMETICS` are built-in item lists and remain resolvable when static game data or mission assets are unavailable. Other game-defined item packages continue to load from static game data.
+`BONUSCOSMETICS` is a built-in item list and remains resolvable when static game data or mission assets are unavailable. Other game-defined item packages continue to load from static game data.
 
 Static data is read from the portable `<exe directory>\Resources\static-data` directory when present, otherwise from `<LocalServiceRoot>\static-data`. Streaming assets are read from the portable `<exe directory>\Resources\StreamingAssets` directory when present, otherwise from `<GameRootDir>\Shadowrun_Data\StreamingAssets`.
 
@@ -27,7 +27,6 @@ Copy and claim these one by one in the launcher to activate the corresponding DL
     SRO-ITEM-PAX-18
     SRO-ITEM-PEGASUS
     SRO-ITEM-STARTER-GEAR
-    UnobtainableCosmetics
     BONUSCOSMETICS
     SRO-KS-AWAKENED
     SRO-KS-COOP
@@ -117,9 +116,13 @@ These include exclusive backer rewards previously unavailable to most players.
 * Item_ElementalEssenceSpray1
 * Item_PolymerCoating2
 
-### UnobtainableCosmetics
+### BONUSCOSMETICS
 
+Grants one copy of each item in the combined 52-item snapshot formerly split between this package and `UnobtainableCosmetics`. The consolidated hardcoded list retains every unique item from both packages; coupon resolution does not read or recursively scan mission assets at runtime. The retired `UnobtainableCosmetics` code is no longer accepted. Existing account entitlements recorded under that package name are mapped to `BONUSCOSMETICS` for future careers.
+
+* Item_AncientsLogoNeon
 * Item_AstralCoat
+* Item_BandanaSkull
 * Item_BasicMageVest
 * Item_BeardBraided
 * Item_BeardConchita
@@ -131,6 +134,8 @@ These include exclusive backer rewards previously unavailable to most players.
 * Item_DefaultUpperUnderwear
 * Item_DocGloves
 * Item_DocOverall
+* Item_DoubleDragon1Neon
+* Item_DragonHead1Neon
 * Item_ElegantTop
 * Item_HairDreads
 * Item_HairDreadsUndercut
@@ -139,91 +144,34 @@ These include exclusive backer rewards previously unavailable to most players.
 * Item_HairMohawkLimp
 * Item_HairMohawkSideburns
 * Item_HairPancake
+* Item_HarebrainedShirt
+* Item_HeartsBoxers
 * Item_HipsterBoots
 * Item_HornsBasic
+* Item_KimonoMitsuhama
 * Item_KimonoTop
+* Item_KimonoWuxing
 * Item_LeatherBoots
 * Item_LeatherCoat
 * Item_MagicalLongsleeve
+* Item_NinjaGloves
 * Item_Pack1HackerTop
 * Item_Pack1MageCoat
 * Item_Pack3Corset
 * Item_Pack4BagBoots
 * Item_Pack4HospitalGown
-* Item_RunnerLongsleeve
-* Item_Sideburns
-* Item_StreetCorset
-* Item_SuitJacket
-* Item_WesternTop
-
-### BONUSCOSMETICS
-
-Grants one copy of each item in a fixed snapshot of usable cosmetic equipment that is not obtainable from the extracted mission loot tables or positive mission-completion item rewards, excluding items already granted by the server's default cosmetic seeding. The snapshot was computed from the extracted game data and current career-seed logic; it includes cosmetics otherwise obtained through shops, other coupons, or DLC when they are absent from the current mission rewards and default seeds. The list is hardcoded so coupon resolution does not read or recursively scan mission assets at runtime. Changes to game data, mission rewards, or default seeds do not update this snapshot automatically.
-
-With the extracted game data and current career-seed logic, 101 already-seeded items were removed and the package now contains 33 items. The `UnobtainableCosmetics` package remains unchanged at 36 items.
-
-Compared with `UnobtainableCosmetics`, the updated packages contain 17 shared items, 16 `BONUSCOSMETICS`-only items, and 19 `UnobtainableCosmetics`-only items:
-
-**Shared (17)**
-
-* Item_AstralCoat
-* Item_BasicMageVest
-* Item_BikerPants
-* Item_CyberdocOverall
-* Item_DefaultLowerUnderwear
-* Item_DefaultUpperUnderwear
-* Item_DocGloves
-* Item_ElegantTop
-* Item_HipsterBoots
-* Item_KimonoTop
-* Item_LeatherBoots
-* Item_LeatherCoat
-* Item_MagicalLongsleeve
-* Item_RunnerLongsleeve
-* Item_StreetCorset
-* Item_SuitJacket
-* Item_WesternTop
-
-**BONUSCOSMETICS only (16)**
-
-* Item_AncientsLogoNeon
-* Item_BandanaSkull
-* Item_DoubleDragon1Neon
-* Item_DragonHead1Neon
-* Item_HarebrainedShirt
-* Item_HeartsBoxers
-* Item_KimonoMitsuhama
-* Item_KimonoWuxing
-* Item_NinjaGloves
 * Item_PuffTie
 * Item_PuffTieVest
 * Item_RastaHatRasta
+* Item_RunnerLongsleeve
 * Item_ShortsSunrise
+* Item_Sideburns
 * Item_SneakersAmerica
 * Item_SoycafShirt
+* Item_StreetCorset
+* Item_SuitJacket
 * Item_Tribal2Neon
-
-**UnobtainableCosmetics only (19)**
-
-* Item_BeardBraided
-* Item_BeardConchita
-* Item_BeardFull
-* Item_BeardStubble
-* Item_DocOverall
-* Item_HairDreads
-* Item_HairDreadsUndercut
-* Item_HairLadyLuck
-* Item_HairLong2
-* Item_HairMohawkLimp
-* Item_HairMohawkSideburns
-* Item_HairPancake
-* Item_HornsBasic
-* Item_Pack1HackerTop
-* Item_Pack1MageCoat
-* Item_Pack3Corset
-* Item_Pack4BagBoots
-* Item_Pack4HospitalGown
-* Item_Sideburns
+* Item_WesternTop
 
 ### SRO-KS-AWAKENED
 

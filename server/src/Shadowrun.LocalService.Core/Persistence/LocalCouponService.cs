@@ -15,9 +15,11 @@ namespace Shadowrun.LocalService.Core.Persistence
             private static readonly object CouponItemPackageLock = new object();
             private static Dictionary<string, List<string>> CachedCouponItemPackages;
             private static string CachedCouponItemPackagesSourceIdentity;
-            private static readonly string[] UnobtainableCosmeticsPackageItems = new[]
+            private static readonly string[] BonusCosmeticsPackageItems = new[]
             {
+                "Item_AncientsLogoNeon",
                 "Item_AstralCoat",
+                "Item_BandanaSkull",
                 "Item_BasicMageVest",
                 "Item_BeardBraided",
                 "Item_BeardConchita",
@@ -29,6 +31,8 @@ namespace Shadowrun.LocalService.Core.Persistence
                 "Item_DefaultUpperUnderwear",
                 "Item_DocGloves",
                 "Item_DocOverall",
+                "Item_DoubleDragon1Neon",
+                "Item_DragonHead1Neon",
                 "Item_ElegantTop",
                 "Item_HairDreads",
                 "Item_HairDreadsUndercut",
@@ -37,40 +41,10 @@ namespace Shadowrun.LocalService.Core.Persistence
                 "Item_HairMohawkLimp",
                 "Item_HairMohawkSideburns",
                 "Item_HairPancake",
-                "Item_HipsterBoots",
-                "Item_HornsBasic",
-                "Item_KimonoTop",
-                "Item_LeatherBoots",
-                "Item_LeatherCoat",
-                "Item_MagicalLongsleeve",
-                "Item_Pack1HackerTop",
-                "Item_Pack1MageCoat",
-                "Item_Pack3Corset",
-                "Item_Pack4BagBoots",
-                "Item_Pack4HospitalGown",
-                "Item_RunnerLongsleeve",
-                "Item_Sideburns",
-                "Item_StreetCorset",
-                "Item_SuitJacket",
-                "Item_WesternTop",
-            };
-            private static readonly string[] BonusCosmeticsPackageItems = new[]
-            {
-                "Item_AncientsLogoNeon",
-                "Item_AstralCoat",
-                "Item_BandanaSkull",
-                "Item_BasicMageVest",
-                "Item_BikerPants",
-                "Item_CyberdocOverall",
-                "Item_DefaultLowerUnderwear",
-                "Item_DefaultUpperUnderwear",
-                "Item_DocGloves",
-                "Item_DoubleDragon1Neon",
-                "Item_DragonHead1Neon",
-                "Item_ElegantTop",
                 "Item_HarebrainedShirt",
                 "Item_HeartsBoxers",
                 "Item_HipsterBoots",
+                "Item_HornsBasic",
                 "Item_KimonoMitsuhama",
                 "Item_KimonoTop",
                 "Item_KimonoWuxing",
@@ -78,11 +52,17 @@ namespace Shadowrun.LocalService.Core.Persistence
                 "Item_LeatherCoat",
                 "Item_MagicalLongsleeve",
                 "Item_NinjaGloves",
+                "Item_Pack1HackerTop",
+                "Item_Pack1MageCoat",
+                "Item_Pack3Corset",
+                "Item_Pack4BagBoots",
+                "Item_Pack4HospitalGown",
                 "Item_PuffTie",
                 "Item_PuffTieVest",
                 "Item_RastaHatRasta",
                 "Item_RunnerLongsleeve",
                 "Item_ShortsSunrise",
+                "Item_Sideburns",
                 "Item_SneakersAmerica",
                 "Item_SoycafShirt",
                 "Item_StreetCorset",
@@ -93,6 +73,7 @@ namespace Shadowrun.LocalService.Core.Persistence
 
             private const string CouponGameName = "SRO";
             private const string CouponPackagesPlayerInfoKey = "CouponPackages";
+            private const string LegacyUnobtainableCosmeticsPackageName = "UnobtainableCosmetics";
 
             private readonly LocalUserStore _owner;
 
@@ -350,14 +331,19 @@ namespace Shadowrun.LocalService.Core.Persistence
                 var split = raw.Split(new[] { ';', ',', '|' }, StringSplitOptions.RemoveEmptyEntries);
                 for (var i = 0; i < split.Length; i++)
                 {
-                    var s = split[i] != null ? split[i].Trim() : null;
-                    if (LocalUserStore.IsNullOrWhiteSpace(s) || seen.ContainsKey(s) || !HonoredCouponCodes.IsHonored(s))
+                    var packageName = split[i] != null ? split[i].Trim() : null;
+                    if (string.Equals(packageName, LegacyUnobtainableCosmeticsPackageName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        packageName = "BONUSCOSMETICS";
+                    }
+
+                    if (LocalUserStore.IsNullOrWhiteSpace(packageName) || seen.ContainsKey(packageName) || !HonoredCouponCodes.IsHonored(packageName))
                     {
                         continue;
                     }
 
-                    seen[s] = true;
-                    packages.Add(s);
+                    seen[packageName] = true;
+                    packages.Add(packageName);
                 }
 
                 return packages;
@@ -521,7 +507,6 @@ namespace Shadowrun.LocalService.Core.Persistence
                     return;
                 }
 
-                AddBuiltInCouponItemPackage(packages, "UnobtainableCosmetics", UnobtainableCosmeticsPackageItems);
                 AddBuiltInCouponItemPackage(packages, "BONUSCOSMETICS", BonusCosmeticsPackageItems);
             }
 
