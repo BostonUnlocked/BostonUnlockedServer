@@ -10,6 +10,9 @@ namespace Shadowrun.LocalService.Core.Simulation
 {
     public sealed partial class ServerSimulationSession
     {
+        private readonly object _dynamicSpawnVisualizationBarrierSync = new object();
+        private readonly HashSet<int> _dynamicSpawnVisualizationBarrierAppliedEntityIds = new HashSet<int>();
+
         internal sealed class MissionEntityReplicationSnapshot
         {
             public int EntityId { get; set; }
@@ -115,6 +118,84 @@ namespace Shadowrun.LocalService.Core.Simulation
             }
 
             return snapshots.ToArray();
+        }
+
+        internal int[] SnapshotMissionEntityIds()
+        {
+            if (_gameworld == null || _gameworld.EntitySystem == null)
+            {
+                return new int[0];
+            }
+
+            try
+            {
+                return _gameworld.EntitySystem
+                    .GetAllEntities()
+                    .Where(entity => entity != null && entity.Id > 0)
+                    .Select(entity => entity.Id)
+                    .Distinct()
+                    .ToArray();
+            }
+            catch
+            {
+                return new int[0];
+            }
+        }
+
+        internal int[] DescribeNewSpawnedEntityIdsSince(IEnumerable<int> previousEntityIds)
+        {
+            if (_gameworld == null || _gameworld.EntitySystem == null)
+            {
+                return new int[0];
+            }
+
+            var previous = new HashSet<int>((previousEntityIds ?? new int[0]).Where(id => id > 0));
+            var currentIds = SnapshotMissionEntityIds();
+            if (currentIds.Length == 0)
+            {
+                return new int[0];
+            }
+
+            return DescribeEntitiesForReplication(currentIds.Where(id => !previous.Contains(id)))
+                .Where(snapshot => snapshot != null && snapshot.Exists && snapshot.HasSpawnInfo)
+                .Select(snapshot => snapshot.EntityId)
+                .Distinct()
+                .ToArray();
+        }
+
+        internal int[] ReserveDynamicSpawnVisualizationBarrierEntityIds(IEnumerable<int> candidateEntityIds)
+        {
+            if (candidateEntityIds == null)
+            {
+                return new int[0];
+            }
+
+            var candidates = candidateEntityIds
+                .Where(id => id > 0)
+                .Distinct()
+                .ToArray();
+            if (candidates.Length == 0)
+            {
+                return new int[0];
+            }
+
+            lock (_dynamicSpawnVisualizationBarrierSync)
+            {
+                var reserved = new List<int>(candidates.Length);
+                for (var i = 0; i < candidates.Length; i++)
+                {
+                    var entityId = candidates[i];
+                    if (_dynamicSpawnVisualizationBarrierAppliedEntityIds.Contains(entityId))
+                    {
+                        continue;
+                    }
+
+                    _dynamicSpawnVisualizationBarrierAppliedEntityIds.Add(entityId);
+                    reserved.Add(entityId);
+                }
+
+                return reserved.ToArray();
+            }
         }
     }
 }

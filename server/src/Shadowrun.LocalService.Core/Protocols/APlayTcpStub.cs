@@ -3151,6 +3151,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     activeCharacterName,
                                     currentMissionMapName,
                                     completedStoryMissions,
+                                    stopEvent,
                                     ref currentCoopGroupName,
                                     ref simulationSession,
                                     ref simulationSessionSync,
