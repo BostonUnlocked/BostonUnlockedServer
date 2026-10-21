@@ -319,7 +319,8 @@ namespace Shadowrun.LocalService.Core.Persistence
                     return packages;
                 }
 
-                var playerInfo = _owner.GetPlayerInfo(identityHash, CouponGameName);
+                // Career projection itself applies coupon entitlements; read only the stored entitlement keys.
+                var playerInfo = _owner._playerInfoStore.Get(identityHash, CouponGameName);
                 if (playerInfo == null)
                 {
                     return packages;

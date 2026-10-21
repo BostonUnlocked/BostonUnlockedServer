@@ -66,6 +66,15 @@ public sealed partial class PhotonProxyTcpStub
         _chatAdminAccountIds = CheatAuthorizationPolicy.LoadChatAdminAccountIds(options, LogAdminEvent);
         _chatAdminOpenMode = CheatAuthorizationPolicy.ResolveAdminOpenMode(_chatAdminAccountIds);
         _chatCommands = BuildChatCommandMap();
+        if (_userStore != null)
+        {
+            _userStore.PlayerInfoChanged += NotifyPlayerInfoChanged;
+        }
+    }
+
+    private void NotifyPlayerInfoChanged(Guid accountId)
+    {
+        _chatAndFriends.BroadcastTextMessage("SRO_Default_Info", accountId, string.Empty);
     }
 
     private void HandleAccountHardOffline(Guid accountId)

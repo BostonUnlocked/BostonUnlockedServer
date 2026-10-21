@@ -5,6 +5,7 @@ using System.Globalization;
 using Cliffhanger.SRO.ServerClientCommons;
 using Cliffhanger.SRO.ServerClientCommons.Definitions;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay;
+using Shadowrun.LocalService.Core.Career;
 using Shadowrun.LocalService.Core.Persistence;
 
 namespace Shadowrun.LocalService.Core.Protocols
@@ -21,121 +22,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         private static PlayerCharacterSnapshot BuildPlayerCharacterSnapshotForSlot(string characterIdentifier, string characterName, CareerSlot slot)
         {
-            var snapshot = new PlayerCharacterSnapshot();
-            snapshot.IsHenchman = false;
-            snapshot.PlayerId = 1UL;
-            snapshot.DataVersion = 48;
-            snapshot.CharacterIdentifier = characterIdentifier ?? string.Empty;
-            snapshot.CharacterName = !IsNullOrWhiteSpace(characterName) ? characterName : PlayerCharacterDefaultValues.PlayerName;
-            snapshot.PortraitPath = (slot != null && !IsNullOrWhiteSpace(slot.PortraitPath)) ? slot.PortraitPath : PlayerCharacterDefaultValues.PortraitPath;
-            snapshot.Voiceset = (slot != null && !IsNullOrWhiteSpace(slot.Voiceset)) ? slot.Voiceset : PlayerCharacterDefaultValues.Voiceset;
-            snapshot.Bodytype = (slot != null && slot.Bodytype != 0UL) ? slot.Bodytype : PlayerCharacterDefaultValues.Bodytype;
-            snapshot.SkinTextureIndex = (slot != null) ? slot.SkinTextureIndex : PlayerCharacterDefaultValues.SkinTextureIndex;
-            snapshot.BackgroundStory = (slot != null && slot.BackgroundStory != 0UL) ? slot.BackgroundStory : PlayerCharacterDefaultValues.BackgroundStory;
-            snapshot.WantsBackgroundChange = slot != null && slot.WantsBackgroundChange;
-
-            if (snapshot.Wallet != null)
-            {
-                var karma = slot != null ? slot.Karma : 0;
-                var spentKarma = slot != null ? slot.SpentKarma : 0;
-                var nuyen = slot != null ? slot.Nuyen : 0;
-                snapshot.Wallet.Reset(CurrencyId.Karma, karma, spentKarma);
-                snapshot.Wallet.Reset(CurrencyId.Nuyen, nuyen, 0);
-            }
-
-            if (snapshot.SkillTreeDefinitions == null)
-            {
-                snapshot.SkillTreeDefinitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
-            }
-            if (slot != null && slot.SkillTreeDefinitions != null && slot.SkillTreeDefinitions.Count > 0)
-            {
-                foreach (var kvp in slot.SkillTreeDefinitions)
-                {
-                    if (IsNullOrWhiteSpace(kvp.Key) || kvp.Value == null)
-                    {
-                        continue;
-                    }
-                    snapshot.SkillTreeDefinitions[kvp.Key] = kvp.Value;
-                }
-            }
-
-            var pcInv = new PlayerCharacterInventory();
-            var primaryItemId = (slot != null && !IsNullOrWhiteSpace(slot.PrimaryWeaponItemId)) ? slot.PrimaryWeaponItemId : PlayerCharacterDefaultValues.PrimaryWeapon;
-            var primaryKey = slot != null ? slot.PrimaryWeaponInventoryKey : 0;
-            var primaryQuality = slot != null ? slot.PrimaryWeaponQuality : 0;
-            var primaryFlavour = slot != null ? slot.PrimaryWeaponFlavour : -1;
-            pcInv.PrimaryWeapon = CreateInventoryItem(primaryItemId, primaryKey, primaryQuality, primaryFlavour);
-
-            var secondaryItemId = (slot != null && !IsNullOrWhiteSpace(slot.SecondaryWeaponItemId)) ? slot.SecondaryWeaponItemId : PlayerCharacterDefaultValues.SecondaryWeapon;
-            var secondaryKey = slot != null ? slot.SecondaryWeaponInventoryKey : 1;
-            var secondaryQuality = slot != null ? slot.SecondaryWeaponQuality : 0;
-            var secondaryFlavour = slot != null ? slot.SecondaryWeaponFlavour : -1;
-            pcInv.SecondaryWeapon = CreateInventoryItem(secondaryItemId, secondaryKey, secondaryQuality, secondaryFlavour);
-
-            var armorItemId = (slot != null && !IsNullOrWhiteSpace(slot.ArmorItemId)) ? slot.ArmorItemId : PlayerCharacterDefaultValues.Armor;
-            var armorKey = slot != null ? slot.ArmorInventoryKey : 2;
-            var armorQuality = slot != null ? slot.ArmorQuality : 0;
-            var armorFlavour = slot != null ? slot.ArmorFlavour : -1;
-            pcInv.Armor = CreateInventoryItem(armorItemId, armorKey, armorQuality, armorFlavour);
-            if (slot != null && slot.EquippedItems != null && slot.EquippedItems.Count > 0)
-            {
-                var keys = new List<string>(slot.EquippedItems.Keys);
-                keys.Sort(StringComparer.Ordinal);
-
-                var nextKey = 10;
-                var usedInventoryKeys = new HashSet<int>();
-                for (var i = 0; i < keys.Count; i++)
-                {
-                    var slotKey = keys[i];
-                    if (IsNullOrWhiteSpace(slotKey))
-                    {
-                        continue;
-                    }
-
-                    ulong slotId;
-                    if (!TryParseUInt64(slotKey, out slotId) || slotId == 0UL)
-                    {
-                        continue;
-                    }
-
-                    CareerSlot.EquippedSlotState state;
-                    if (!slot.EquippedItems.TryGetValue(slotKey, out state) || state == null || IsNullOrWhiteSpace(state.ItemId))
-                    {
-                        continue;
-                    }
-
-                    var def = new LogicItemslotDefinition();
-                    def.Id = slotId;
-                    def.AssignableItemTypes = new ulong[0];
-                    def.CannotBeEmpty = false;
-                    def.DefaultItem = string.Empty;
-
-                    var itemSlot = new ItemSlot(def);
-                    var inventoryKey = state.InventoryKey >= 0 ? state.InventoryKey : nextKey;
-                    if (inventoryKey < 0 || usedInventoryKeys.Contains(inventoryKey))
-                    {
-                        while (usedInventoryKeys.Contains(nextKey))
-                        {
-                            nextKey++;
-                        }
-
-                        inventoryKey = nextKey++;
-                    }
-
-                    usedInventoryKeys.Add(inventoryKey);
-                    itemSlot.Item = CreateInventoryItem(state.ItemId, inventoryKey);
-                    itemSlot.Item.Quality = state.Quality;
-                    itemSlot.Item.FlavourIndex = state.Flavour;
-                    pcInv.EquippedItems.Add(itemSlot);
-                    if (inventoryKey >= nextKey)
-                    {
-                        nextKey = inventoryKey + 1;
-                    }
-                }
-            }
-            snapshot.PlayerCharacterInventory = pcInv;
-
-            return snapshot;
+            return PlayerCharacterSnapshotFactory.Create(characterIdentifier, characterName, slot);
         }
 
         private static Guid TryParseAccountIdFromCharacterIdentifier(string characterIdentifier)

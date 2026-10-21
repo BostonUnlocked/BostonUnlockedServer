@@ -8,8 +8,10 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
+using Cliffhanger.SRO.ServerClientCommons.Metagameplay;
 using PhotonProxy.ChatAndFriends.Client.DTOs;
 using PhotonProxy.Common.ServiceCommunication;
+using SRO.Core.Compatibility.Utilities;
 using Shadowrun.LocalService.Core;
 using Shadowrun.LocalService.Core.Http;
 using Shadowrun.LocalService.Core.Persistence;
@@ -56,7 +58,9 @@ internal static class SocialPresenceRegression
             SqliteDatabasePath = Path.Combine(dataDirectory, "localservice.sqlite"),
         };
         var sessions = new ExpiringSessionIdentityMap();
-        var server = new PhotonProxyTcpStub(options, new RequestLogger(null, null), null, sessions);
+        var logger = new RequestLogger(null, null);
+        var store = new LocalUserStore(options, logger);
+        var server = new PhotonProxyTcpStub(options, logger, store, sessions);
         using (var stop = new ManualResetEvent(false))
         {
             var connectedAccounts = new List<Guid>();
@@ -76,7 +80,7 @@ internal static class SocialPresenceRegression
                     connectedAccounts.Add(alice.AccountId);
                     connectedAccounts.Add(bob.AccountId);
                     Assert(IsOnline(alice.AccountId) && IsOnline(bob.AccountId), "Authenticated accounts are online.");
-                    ValidateProfiles(options, sessions, alice.AccountId, bob.AccountId);
+                    ValidateProfiles(options, store, sessions, alice.AccountId, bob.AccountId);
                     alice.Request(new JoinChannelRequest { ChannelName = "SRO_Default_Info" });
                     alice.Event<ChannelParticipantListChangedEventParameters>();
                     bob.Request(new JoinChannelRequest { ChannelName = "SRO_Default_Info" });
@@ -84,16 +88,17 @@ internal static class SocialPresenceRegression
                     Assert(joined.Participant == bob.AccountId && joined.ChangeType == 1, "Join notification identifies the account and uses the client's Added value.");
                     var roster = (GetChannelParticipantsResponse)alice.Request(new GetChannelParticipantsRequest { ChannelName = "SRO_Default_Info" });
                     Assert(roster.Participants.Count == 2, "Presence roster includes both authenticated accounts.");
+                    ValidateCareerProfiles(options, store, sessions, alice, bob);
                     bob.Request(new LeaveChannelRequest { ChannelName = "SRO_Default_Info" });
                     var left = alice.Event<ChannelParticipantListChangedEventParameters>();
                     Assert(left.Participant == bob.AccountId && left.ChangeType == 0, "Leave notification identifies the departed account and uses the client's Deleted value.");
                     alice.Request(new JoinChannelRequest { ChannelName = "Global" });
                     bob.Request(new JoinChannelRequest { ChannelName = "Global" });
                     bob.Request(new SendMessageToChannelRequest { ChannelName = "Global", TextMessage = "bob-to-alice" });
-                    var incoming = alice.Event<TextMessageEventParameters>();
+                    var incoming = alice.Event<TextMessageEventParameters>(delegate(TextMessageEventParameters e) { return e.ChannelName == "Global"; });
                     Assert(incoming.Sender == bob.AccountId && incoming.Text == "bob-to-alice", "Remote chat preserves sender identity and text.");
                     alice.Request(new SendMessageToChannelRequest { ChannelName = "Global", TextMessage = "alice-to-bob" });
-                    incoming = bob.Event<TextMessageEventParameters>();
+                    incoming = bob.Event<TextMessageEventParameters>(delegate(TextMessageEventParameters e) { return e.ChannelName == "Global"; });
                     Assert(incoming.Sender == alice.AccountId && incoming.Text == "alice-to-bob", "Chat is bidirectional.");
                     ValidateConcurrentFrames(alice, bob);
                     Thread.Sleep(2500);
@@ -142,9 +147,9 @@ internal static class SocialPresenceRegression
         return (bool)type.GetMethod("IsOnline").Invoke(null, new object[] { accountId });
     }
 
-    private static void ValidateProfiles(LocalServiceOptions options, ISessionIdentityMap sessions, Guid alice, Guid bob)
+    private static void ValidateProfiles(LocalServiceOptions options, LocalUserStore store, ISessionIdentityMap sessions, Guid alice, Guid bob)
     {
-        var http = new HttpStubServer(options, new RequestLogger(null, null), null, sessions, null);
+        var http = new HttpStubServer(options, new RequestLogger(null, null), store, sessions, null);
         var peers = typeof(PhotonProxyTcpStub).Assembly.GetType("Shadowrun.LocalService.Core.Protocols.ConnectedPeerRegistry", true);
         var missions = typeof(PhotonProxyTcpStub).Assembly.GetType("Shadowrun.LocalService.Core.Protocols.MissionRuntimeRegistry", true);
         var peer = "social-regression-mission";
@@ -166,19 +171,140 @@ internal static class SocialPresenceRegression
         }
     }
 
+    private static void ValidateCareerProfiles(LocalServiceOptions options, LocalUserStore store, ISessionIdentityMap sessions, SocialClient alice, SocialClient bob)
+    {
+        Console.WriteLine("Checking selected-career profiles and invalidation...");
+        var identity = alice.AccountId.ToString();
+        var oldCareer = store.GetOrCreateCareer(identity, 0, true);
+        oldCareer.CharacterName = "Previous Career";
+        oldCareer.PendingPersistenceCreation = false;
+        store.UpsertCareer(identity, oldCareer);
+        store.SetLastCareerIndex(identity, 0);
+        var oldSnapshot = SerializeSnapshot(identity, oldCareer);
+        store.SetPlayerInfo(identity, "SRO", new Dictionary<string, string>
+        {
+            { "DisplayName", "Launcher;Previous Career" },
+            { "PlayerCharacter", oldSnapshot },
+        });
+        var nextCareer = store.GetOrCreateCareer(identity, 1, true);
+        nextCareer.CharacterName = "Current Career";
+        nextCareer.PendingPersistenceCreation = false;
+        nextCareer.Nuyen = 123;
+        nextCareer.Karma = 17;
+        nextCareer.SpentKarma = 3;
+        nextCareer.PrimaryWeaponQuality = 2;
+        nextCareer.PrimaryWeaponFlavour = 4;
+        store.UpsertCareer(identity, nextCareer);
+        bob.Request(new GetChannelParticipantsRequest { ChannelName = "SRO_Default_Info" });
+        bob.DiscardEvents();
+        store.SetLastCareerIndex(identity, 1);
+        var http = new HttpStubServer(options, new RequestLogger(null, null), store, sessions, null);
+        var profiles = GetProfiles(http, alice.AccountId, bob.AccountId);
+        AssertProfile(profiles[alice.AccountId], identity, nextCareer);
+        var changed = bob.Event<TextMessageEventParameters>(delegate(TextMessageEventParameters e) { return e.ChannelName == "SRO_Default_Info"; });
+        Assert(changed.Sender == alice.AccountId, "Career selection invalidates remote cached metadata using the changed account's info-channel sender.");
+
+        ServeAccount(http, "SetPlayerInfo", new
+        {
+            IdentityHash = identity,
+            GameName = "SRO",
+            PlayerInfo = new Dictionary<string, string> { { "Tag", "publication-order-probe" } },
+        });
+        changed = bob.Event<TextMessageEventParameters>(delegate(TextMessageEventParameters e) { return e.ChannelName == "SRO_Default_Info"; });
+        Assert(changed.Sender == alice.AccountId && store.GetPlayerInfo(identity, "SRO")["Tag"] == "publication-order-probe",
+            "HTTP profile writes invalidate peers after the changed values are observable.");
+
+        oldCareer.CharacterName = "Late Previous Career Save";
+        store.UpsertCareer(identity, oldCareer);
+        AssertProfile(GetProfiles(http, alice.AccountId, bob.AccountId)[alice.AccountId], identity, nextCareer);
+
+        var setResult = ServeAccount(http, "SetPlayerInfo", new
+        {
+            IdentityHash = identity,
+            GameName = "SRO",
+            PlayerInfo = new Dictionary<string, string>
+            {
+                { "DisplayName", "Launcher;Previous Career" },
+                { "PlayerCharacter", oldSnapshot },
+            },
+        });
+        Assert((int)setResult["Code"] == 0, "A delayed previous-career upload succeeds without replacing the selected profile.");
+        AssertProfile(GetProfiles(http, alice.AccountId, bob.AccountId)[alice.AccountId], identity, nextCareer);
+        ServeAccount(http, "SetPlayerInfo", new
+        {
+            IdentityHash = identity,
+            GameName = "SRO",
+            PlayerInfo = new Dictionary<string, string> { { "PlayerCharacter", oldSnapshot } },
+        });
+        AssertProfile(GetProfiles(http, alice.AccountId, bob.AccountId)[alice.AccountId], identity, nextCareer);
+        var persisted = new LocalPlayerInfoStore(options, new RequestLogger(null, null), new SqliteLocalStore(options, new RequestLogger(null, null)));
+        AssertProfile(persisted.Get(identity, "SRO"), identity, nextCareer);
+
+        persisted.Set(identity, "SRO", new Dictionary<string, string>
+        {
+            { "DisplayName", "Launcher;Previous Career" },
+            { "CharacterName", "Previous Career" },
+            { "PlayerCharacter", oldSnapshot },
+        });
+        AssertProfile(GetProfiles(http, alice.AccountId, bob.AccountId)[alice.AccountId], identity, nextCareer);
+        var recreatedStore = new LocalUserStore(options, new RequestLogger(null, null));
+        var recreatedHttp = new HttpStubServer(options, new RequestLogger(null, null), recreatedStore, sessions, null);
+        AssertProfile(GetProfiles(recreatedHttp, alice.AccountId, bob.AccountId)[alice.AccountId], identity, nextCareer);
+        store.SetLastCareerIndex(identity, 1);
+        AssertProfile(persisted.Get(identity, "SRO"), identity, nextCareer);
+
+        nextCareer.CharacterName = "Renamed Runn\u00e9r";
+        store.UpsertCareer(identity, nextCareer);
+        AssertProfile(GetProfiles(http, alice.AccountId, bob.AccountId)[alice.AccountId], identity, nextCareer);
+        var search = store.SearchPlayerInfo("SRO", nextCareer.CharacterName);
+        Assert(search.Count == 1 && search[0].Key == identity, "Player search returns the authoritative selected career.");
+        AssertProfile(search[0].Value, identity, nextCareer);
+        AssertProfile(store.GetPlayerInfo(identity, " SRO "), identity, nextCareer);
+        store.SetPlayerInfo(identity, "OtherGame", new Dictionary<string, string> { { "PlayerCharacter", "other-game-data" } });
+        Assert(store.GetPlayerInfo(identity, "OtherGame")["PlayerCharacter"] == "other-game-data", "Non-SRO profile values are preserved.");
+    }
+
+    private static string SerializeSnapshot(string identity, CareerSlot career)
+    {
+        var method = typeof(APlayTcpStub).GetMethod("BuildPlayerCharacterSnapshotForSlot", BindingFlags.NonPublic | BindingFlags.Static);
+        var snapshot = method.Invoke(null, new object[] { identity + ":" + career.Index, career.CharacterName, career });
+        return ZipUtilities.Compress(JsonFxSerializerProvider.Current.Serialize<IPlayerCharacterSnapshot>((IPlayerCharacterSnapshot)snapshot));
+    }
+
+    private static void AssertProfile(Dictionary<string, string> info, string identity, CareerSlot career)
+    {
+        Assert(info["CharacterName"] == career.CharacterName && info["DisplayName"].EndsWith(";" + career.CharacterName), "Profile name strings describe the selected career.");
+        var snapshot = JsonFxSerializerProvider.Current.Deserialize<PlayerCharacterSnapshot>(ZipUtilities.Decompress(info["PlayerCharacter"]));
+        Assert(snapshot.CharacterName == career.CharacterName, "Chat snapshot name describes the selected career rather than the previous career.");
+        Assert(snapshot.CharacterIdentifier == identity + ":" + career.Index, "Chat snapshot identifier matches the selected career.");
+        Assert(snapshot.Nuyen == career.Nuyen && snapshot.PortraitPath == career.PortraitPath, "Profile projection retains selected career appearance and wallet data.");
+        Assert(snapshot.Karma == career.Karma && snapshot.SpentKarma == career.SpentKarma, "The client codec preserves karma balances.");
+        Assert(snapshot.PlayerCharacterInventory.PrimaryWeapon.Quality == career.PrimaryWeaponQuality
+            && snapshot.PlayerCharacterInventory.PrimaryWeapon.FlavourIndex == career.PrimaryWeaponFlavour, "The client codec preserves selected-career equipment metadata.");
+    }
+
     private static Dictionary<Guid, Dictionary<string, string>> GetProfiles(HttpStubServer http, Guid alice, Guid bob)
     {
-        var json = new JavaScriptSerializer();
-        var request = Encoding.UTF8.GetBytes(json.Serialize(new
+        var request = new
         {
             IdentityHashes = new string[] { alice.ToString(), bob.ToString() },
             GameName = "SRO",
-            Keys = new string[] { "Online", "InMission" },
-        }));
+            Keys = new string[] { "Online", "InMission", "DisplayName", "CharacterName", "PlayerCharacter" },
+        };
+        return ParseProfiles(ServeAccount(http, "GetPlayerInfo", request), alice, bob);
+    }
+
+    private static IDictionary ServeAccount(HttpStubServer http, string operation, object request)
+    {
+        var json = new JavaScriptSerializer();
         var response = typeof(HttpStubServer).GetMethod("TryServeAccount", BindingFlags.Instance | BindingFlags.NonPublic)
-            .Invoke(http, new object[] { "/AccountSystem/Accounts/PlayerActivity/GetPlayerInfo", request });
+            .Invoke(http, new object[] { "/AccountSystem/Accounts/PlayerActivity/" + operation, Encoding.UTF8.GetBytes(json.Serialize(request)) });
         var body = (byte[])response.GetType().GetField("BodyBytes").GetValue(response);
-        var root = (IDictionary)json.DeserializeObject(Encoding.UTF8.GetString(body));
+        return (IDictionary)json.DeserializeObject(Encoding.UTF8.GetString(body));
+    }
+
+    private static Dictionary<Guid, Dictionary<string, string>> ParseProfiles(IDictionary root, Guid alice, Guid bob)
+    {
         Assert((int)root["Code"] == 0, "GetPlayerInfo succeeds.");
         var rows = (object[])root["PlayerInfoResults"];
         Assert(rows.Length == 2, "GetPlayerInfo returns every requested identity.");
@@ -213,7 +339,7 @@ internal static class SocialPresenceRegression
         for (var i = 0; i < count; i++)
         {
             alice.Request(new GetChannelParticipantsRequest { ChannelName = "Global" });
-            var incoming = alice.Event<TextMessageEventParameters>();
+            var incoming = alice.Event<TextMessageEventParameters>(delegate(TextMessageEventParameters e) { return e.ChannelName == "Global"; });
             Assert(incoming.Sender == bob.AccountId && incoming.Text == text + i, "Concurrent responses and large events retain valid frames and payloads.");
         }
         Assert(sender.Join(4000), "Concurrent sender finishes.");
@@ -299,6 +425,11 @@ internal static class SocialPresenceRegression
         public T Event<T>() where T : class
         {
             return Event<T>(delegate(T e) { return true; });
+        }
+
+        public void DiscardEvents()
+        {
+            _events.Clear();
         }
 
         public T Event<T>(Predicate<T> matches) where T : class

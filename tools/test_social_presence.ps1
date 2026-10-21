@@ -14,6 +14,10 @@ try {
     & $compiler /nologo /target:exe /platform:x64 "/out:$executable" `
         /reference:System.Web.Extensions.dll `
         "/reference:$AssemblyDirectory\Shadowrun.LocalService.Core.dll" `
+        "/reference:$AssemblyDirectory\Cliffhanger.SRO.ServerClientCommons.dll" `
+        "/reference:$AssemblyDirectory\SRO.Core.Compatibility.dll" `
+        "/reference:$AssemblyDirectory\Cliffhanger.Core.Compatibility.dll" `
+        "/reference:$AssemblyDirectory\JsonFx.Json.dll" `
         "/reference:$AssemblyDirectory\PhotonProxy.Common.dll" `
         "/reference:$AssemblyDirectory\PhotonProxy.Serializer.Client.dll" `
         "/reference:$AssemblyDirectory\protobuf-net.dll" `

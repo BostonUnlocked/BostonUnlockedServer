@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using SRO.Core.Compatibility.Utilities;
 using Shadowrun.LocalService.Core.Protocols;
 
 namespace Shadowrun.LocalService.Core.Http
@@ -927,23 +928,16 @@ namespace Shadowrun.LocalService.Core.Http
                 return;
             }
 
-            var status = "unknown";
+            var status = "ok-compressed-json";
+            string error = null;
             try
             {
-                Cliffhanger.SRO.ServerClientCommons.SerializerHelper.FromUncompressedString(blob);
-                status = "ok-uncompressed";
+                Json.DeserializeObject(ZipUtilities.Decompress(blob));
             }
-            catch
+            catch (Exception ex)
             {
-                try
-                {
-                    Cliffhanger.SRO.ServerClientCommons.SerializerHelper.FromCompressedString(blob);
-                    status = "ok-compressed";
-                }
-                catch
-                {
-                    status = "invalid";
-                }
+                status = "invalid";
+                error = ex.Message;
             }
 
             _logger.LogLow(new
@@ -954,6 +948,7 @@ namespace Shadowrun.LocalService.Core.Http
                 gameName = gameName,
                 key = "PlayerCharacter",
                 status = status,
+                error = error,
                 length = blob.Length,
             });
         }

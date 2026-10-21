@@ -111,6 +111,7 @@
 
   <ItemGroup>
     <Compile Include="Career\CareerInfoGenerator.cs" />
+    <Compile Include="Career\PlayerCharacterSnapshotFactory.cs" />
     <Compile Include="Career\MatchConfigurationGenerator.cs" />
     <Compile Include="AILogic\AiAgentSnapshotFactory.cs" />
     <Compile Include="AILogic\AiMovementScorer.cs" />
