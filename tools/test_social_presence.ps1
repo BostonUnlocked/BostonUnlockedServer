@@ -1,5 +1,6 @@
 param(
-    [string]$AssemblyDirectory = (Join-Path $PSScriptRoot '..\server\src\Shadowrun.LocalService.Host\bin\Release')
+    [string]$AssemblyDirectory = (Join-Path $PSScriptRoot '..\server\src\Shadowrun.LocalService.Host\bin\Release'),
+    [switch]$MeasurePerformance
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,7 +27,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Could not compile social presence regressions.' }
 
     foreach ($backend in @('json', 'sqlite')) {
-        & $executable $AssemblyDirectory (Join-Path $outputDirectory $backend) ($backend -eq 'sqlite')
+        & $executable $AssemblyDirectory (Join-Path $outputDirectory $backend) ($backend -eq 'sqlite') $MeasurePerformance.IsPresent
         if ($LASTEXITCODE -ne 0) { throw "Social presence regressions failed ($backend)." }
     }
 }

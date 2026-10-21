@@ -138,7 +138,10 @@ namespace Shadowrun.LocalService.Core.Persistence
                     }
                 }
 
-                SavePlayerInfoNoThrow(root);
+                if (changes.Added.Count > 0 || changes.Updated.Count > 0 || changes.Deleted.Count > 0)
+                {
+                    SavePlayerInfoNoThrow(root);
+                }
                 return changes;
             }
         }
@@ -167,6 +170,45 @@ namespace Shadowrun.LocalService.Core.Persistence
                 root.Remove(normalizedIdentity);
                 SavePlayerInfoNoThrow(root);
                 return 1;
+            }
+        }
+
+        internal void RepairSroProfiles(Dictionary<string, Dictionary<string, string>> profiles)
+        {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                _sqliteStore.RepairSroProfiles(profiles);
+                return;
+            }
+            lock (_lock)
+            {
+                var root = LoadPlayerInfoNoThrow();
+                var changed = false;
+                foreach (var profile in profiles)
+                {
+                    var info = GetOrCreateDict(GetOrCreateDict(root, profile.Key), "SRO");
+                    foreach (var field in profile.Value)
+                    {
+                        if (string.Equals(info[field.Key] as string, field.Value, StringComparison.Ordinal)) continue;
+                        info[field.Key] = field.Value;
+                        changed = true;
+                    }
+                }
+                if (changed)
+                {
+                    // Startup repair must fail visibly rather than start serving stale searchable names.
+                    var temporaryPath = _playerInfoPath + ".repair-" + Guid.NewGuid().ToString("N");
+                    try
+                    {
+                        File.WriteAllText(temporaryPath, Json.Serialize(root), Encoding.UTF8);
+                        if (File.Exists(_playerInfoPath)) File.Replace(temporaryPath, _playerInfoPath, null);
+                        else File.Move(temporaryPath, _playerInfoPath);
+                    }
+                    finally
+                    {
+                        if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+                    }
+                }
             }
         }
 

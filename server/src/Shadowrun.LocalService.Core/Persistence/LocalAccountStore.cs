@@ -556,9 +556,15 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public void SetLastCareerIndex(string identityHash, int index)
         {
+            IDictionary account;
+            SetLastCareerIndex(identityHash, index, out account);
+        }
+
+        internal void SetLastCareerIndex(string identityHash, int index, out IDictionary account)
+        {
             if (_sqliteStore != null && _sqliteStore.IsEnabled)
             {
-                _sqliteStore.SetLastCareerIndex(identityHash, index);
+                _sqliteStore.SetLastCareerIndex(identityHash, index, out account);
                 return;
             }
 
@@ -569,7 +575,7 @@ namespace Shadowrun.LocalService.Core.Persistence
 
             lock (_syncRoot)
             {
-                var account = LoadAccountForIdentityNoThrow(identityHash, true) ?? LoadAccountNoThrow();
+                account = LoadAccountForIdentityNoThrow(identityHash, true) ?? LoadAccountNoThrow();
                 account["LastCareerIndex"] = index;
                 SaveAccountNoThrow(account);
             }
@@ -667,7 +673,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             return true;
         }
 
-        private static bool EnsureDisplayNameIsAnonymized(IDictionary account, string identityHash)
+        internal static bool EnsureDisplayNameIsAnonymized(IDictionary account, string identityHash)
         {
             if (account == null)
             {

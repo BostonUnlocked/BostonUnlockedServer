@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -31,8 +32,10 @@ internal static class SocialPresenceRegression
         };
         try
         {
-            Run(args[1], bool.Parse(args[2]));
-            Console.WriteLine("PASS: social presence regressions ({0})", bool.Parse(args[2]) ? "SQLite" : "JSON");
+            var measurePerformance = args.Length > 3 && bool.Parse(args[3]);
+            if (measurePerformance) MeasurePerformance(args[1], bool.Parse(args[2]));
+            else Run(args[1], bool.Parse(args[2]));
+            Console.WriteLine("PASS: {0} ({1})", measurePerformance ? "social performance workload" : "social presence regressions", bool.Parse(args[2]) ? "SQLite" : "JSON");
             return 0;
         }
         catch (Exception ex)
@@ -40,6 +43,120 @@ internal static class SocialPresenceRegression
             Console.Error.WriteLine(ex);
             return 1;
         }
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static void MeasurePerformance(string dataDirectory, bool useSqlite)
+    {
+        const int accounts = 100;
+        var options = new LocalServiceOptions
+        {
+            UseSqlite = useSqlite,
+            DataDir = dataDirectory,
+            SqliteDatabasePath = Path.Combine(dataDirectory, "localservice.sqlite"),
+        };
+        var logger = new RequestLogger(null, null);
+        var store = new LocalUserStore(options, logger);
+        var template = store.GetOrCreateCareer(Guid.NewGuid().ToString(), 0, true);
+        template.PendingPersistenceCreation = false;
+        var identities = new List<string>();
+        var careers = new List<CareerSlot>();
+        var accountRows = new Dictionary<string, object>();
+        var profileRows = new Dictionary<string, object>();
+        for (var i = 0; i < accounts; i++)
+        {
+            var identity = new Guid(i + 1, 0, 0, new byte[8]).ToString();
+            identities.Add(identity);
+            var career = CareerSlot.FromDictionary(template.ToDictionary());
+            career.CharacterIdentifier = identity + ":0";
+            career.CharacterName = "Runner-" + i.ToString("D3");
+            careers.Add(career);
+            accountRows[identity] = new Dictionary<string, object>
+            {
+                { "IdentityHash", identity }, { "DisplayName", "Launcher-" + i },
+                { "LastCareerIndex", 0 }, { "Careers", new object[] { career.ToDictionary() } },
+            };
+            profileRows[identity] = new Dictionary<string, object>
+            {
+                { "SRO", new Dictionary<string, string>
+                    {
+                        { "LauncherDisplayName", "Launcher-" + i },
+                        { "DisplayName", "Launcher-" + i + ";" + career.CharacterName },
+                        { "CharacterName", career.CharacterName },
+                        { "PlayerCharacter", SerializeSnapshot(identity, career) },
+                    }
+                },
+            };
+        }
+        var accountRoot = new Dictionary<string, object> { { "SchemaVersion", 2 }, { "Accounts", accountRows } };
+        typeof(LocalUserStore).GetMethod("SaveAccountStoreNoThrow", BindingFlags.Instance | BindingFlags.NonPublic)
+            .Invoke(store, new object[] { accountRoot });
+        var raw = new LocalPlayerInfoStore(options, logger, new SqliteLocalStore(options, logger));
+        raw.MutateRootNoThrow(delegate(IDictionary root)
+        {
+            root.Clear();
+            foreach (var row in profileRows) root[row.Key] = row.Value;
+            return true;
+        });
+
+        var backend = useSqlite ? "SQLite" : "JSON";
+        var startup = Stopwatch.StartNew();
+        store = new LocalUserStore(options, logger);
+        startup.Stop();
+        Console.WriteLine("BENCH {0}: accounts={1}, startup={2:F2} ms", backend, accounts, startup.Elapsed.TotalMilliseconds);
+        Benchmark(backend, "read-100", delegate()
+        {
+            for (var i = 0; i < 100; i++)
+                Assert(store.GetPlayerInfo(identities[i % accounts], "SRO")["CharacterName"] == careers[i % accounts].CharacterName, "Benchmarked reads return correct names.");
+        });
+        Benchmark(backend, "search-20", delegate()
+        {
+            for (var i = 0; i < 20; i++)
+                Assert(store.SearchPlayerInfo("SRO", careers[i].CharacterName).Count == 1, "Benchmarked searches match exactly one career.");
+        });
+        Benchmark(backend, "update-20", delegate()
+        {
+            for (var i = 0; i < 20; i++)
+                store.SetPlayerInfo(identities[i], "SRO", new Dictionary<string, string> { { "Tag", Guid.NewGuid().ToString() } });
+        });
+        var uploadedProfiles = new List<Dictionary<string, string>>();
+        for (var i = 0; i < 20; i++) uploadedProfiles.Add(raw.Get(identities[i], "SRO"));
+        Benchmark(backend, "profile-upload-20", delegate()
+        {
+            for (var i = 0; i < 20; i++) store.SetPlayerInfo(identities[i], "SRO", uploadedProfiles[i]);
+        });
+        Benchmark(backend, "save-10", delegate()
+        {
+            for (var i = 0; i < 10; i++)
+            {
+                careers[i].Nuyen++;
+                store.UpsertCareer(identities[i], careers[i]);
+            }
+        });
+        Benchmark(backend, "select-10", delegate()
+        {
+            for (var i = 0; i < 10; i++) store.SetLastCareerIndex(identities[i], 0);
+        });
+        Benchmark(backend, "parallel-read-100", delegate()
+        {
+            System.Threading.Tasks.Parallel.For(0, 100, new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = 4 },
+                delegate(int i) { Assert(store.GetPlayerInfo(identities[i % accounts], "SRO").Count > 0, "Concurrent profile reads succeed."); });
+        });
+    }
+
+    private static void Benchmark(string backend, string operation, Action action)
+    {
+        action();
+        var samples = new List<double>();
+        for (var i = 0; i < 5; i++)
+        {
+            var timer = Stopwatch.StartNew();
+            action();
+            timer.Stop();
+            samples.Add(timer.Elapsed.TotalMilliseconds);
+        }
+        samples.Sort();
+        Console.WriteLine("BENCH {0}: {1} median={2:F2} ms", backend, operation, samples[2]);
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
@@ -89,8 +206,11 @@ internal static class SocialPresenceRegression
                     var roster = (GetChannelParticipantsResponse)alice.Request(new GetChannelParticipantsRequest { ChannelName = "SRO_Default_Info" });
                     Assert(roster.Participants.Count == 2, "Presence roster includes both authenticated accounts.");
                     ValidateCareerProfiles(options, store, sessions, alice, bob);
+                    ValidateNotificationDelivery(port, server, store, sessions, alice, bob);
+                    ValidateAuthenticationDeadline(port);
+                    Assert(IsOnline(alice.AccountId) && IsOnline(bob.AccountId), "Authenticated clients survive beyond the unauthenticated handshake deadline.");
                     bob.Request(new LeaveChannelRequest { ChannelName = "SRO_Default_Info" });
-                    var left = alice.Event<ChannelParticipantListChangedEventParameters>();
+                    var left = alice.Event<ChannelParticipantListChangedEventParameters>(delegate(ChannelParticipantListChangedEventParameters e) { return e.Participant == bob.AccountId && e.ChangeType == 0; });
                     Assert(left.Participant == bob.AccountId && left.ChangeType == 0, "Leave notification identifies the departed account and uses the client's Deleted value.");
                     alice.Request(new JoinChannelRequest { ChannelName = "Global" });
                     bob.Request(new JoinChannelRequest { ChannelName = "Global" });
@@ -107,7 +227,7 @@ internal static class SocialPresenceRegression
                     Assert(roster.Participants.Count == 1, "Requests still succeed after an idle receive timeout.");
                     var bobId = bob.AccountId;
                     bob.Request(new JoinChannelRequest { ChannelName = "SRO_Default_Info" });
-                    alice.Event<ChannelParticipantListChangedEventParameters>(delegate(ChannelParticipantListChangedEventParameters e) { return e.ChannelName == "SRO_Default_Info"; });
+                    alice.Event<ChannelParticipantListChangedEventParameters>(delegate(ChannelParticipantListChangedEventParameters e) { return e.ChannelName == "SRO_Default_Info" && e.Participant == bobId && e.ChangeType == 1; });
                     using (var replacement = new SocialClient(port, sessions, bobId))
                     {
                         replacement.Request(new JoinChannelRequest { ChannelName = "SRO_Default_Info" });
@@ -120,7 +240,7 @@ internal static class SocialPresenceRegression
                     var deadline = DateTime.UtcNow.AddSeconds(4);
                     while (IsOnline(bobId) && DateTime.UtcNow < deadline) Thread.Sleep(10);
                     Assert(!IsOnline(bobId), "Closing the final Photon socket clears transport liveness.");
-                    left = alice.Event<ChannelParticipantListChangedEventParameters>(delegate(ChannelParticipantListChangedEventParameters e) { return e.ChannelName == "SRO_Default_Info"; });
+                    left = alice.Event<ChannelParticipantListChangedEventParameters>(delegate(ChannelParticipantListChangedEventParameters e) { return e.ChannelName == "SRO_Default_Info" && e.Participant == bobId && e.ChangeType == 0; });
                     Assert(left.Participant == bobId && left.ChangeType == 0, "Final disconnect removes the account from the info-channel roster.");
                     roster = (GetChannelParticipantsResponse)alice.Request(new GetChannelParticipantsRequest { ChannelName = "Global" });
                     Assert(roster.Participants.Count == 1, "Closing a socket removes its channel membership.");
@@ -246,9 +366,17 @@ internal static class SocialPresenceRegression
             { "CharacterName", "Previous Career" },
             { "PlayerCharacter", oldSnapshot },
         });
-        AssertProfile(GetProfiles(http, alice.AccountId, bob.AccountId)[alice.AccountId], identity, nextCareer);
+        persisted.Set(identity, "OtherGame", new Dictionary<string, string> { { "PlayerCharacter", "preserve-through-repair" } });
         var recreatedStore = new LocalUserStore(options, new RequestLogger(null, null));
         var recreatedHttp = new HttpStubServer(options, new RequestLogger(null, null), recreatedStore, sessions, null);
+        var repairedSearch = recreatedStore.SearchPlayerInfo("SRO", nextCareer.CharacterName);
+        Assert(repairedSearch.Count == 1 && repairedSearch[0].Key == identity, "Startup repairs historical searchable names before matching, without reselection.");
+        Assert(recreatedStore.SearchPlayerInfo("SRO", "Previous Career").Count == 0, "Search no longer matches a historical career's stale name.");
+        AssertProfile(repairedSearch[0].Value, identity, nextCareer);
+        Assert(recreatedStore.GetPlayerInfo(identity, "OtherGame")["PlayerCharacter"] == "preserve-through-repair",
+            "Startup repair preserves other games' stored data.");
+        Assert(recreatedStore.GetPlayerInfo(identity, "SRO")["Tag"] == "publication-order-probe",
+            "Startup repair preserves unrelated SRO profile fields.");
         AssertProfile(GetProfiles(recreatedHttp, alice.AccountId, bob.AccountId)[alice.AccountId], identity, nextCareer);
         store.SetLastCareerIndex(identity, 1);
         AssertProfile(persisted.Get(identity, "SRO"), identity, nextCareer);
@@ -259,9 +387,116 @@ internal static class SocialPresenceRegression
         var search = store.SearchPlayerInfo("SRO", nextCareer.CharacterName);
         Assert(search.Count == 1 && search[0].Key == identity, "Player search returns the authoritative selected career.");
         AssertProfile(search[0].Value, identity, nextCareer);
+        string renamedAccount;
+        string renameError;
+        Assert(store.TrySetDisplayName(identity, "Renamed Account", out renamedAccount, out renameError), "Account display-name updates succeed.");
+        Assert(store.GetPlayerInfo(identity, "SRO")["DisplayName"] == "Renamed Account;" + nextCareer.CharacterName,
+            "Account-name changes update persisted profile fields without relying on read-time projection.");
+        Assert(store.SearchPlayerInfo("SRO", "Renamed Account").Count == 1, "An account-name change is searchable immediately.");
         AssertProfile(store.GetPlayerInfo(identity, " SRO "), identity, nextCareer);
         store.SetPlayerInfo(identity, "OtherGame", new Dictionary<string, string> { { "PlayerCharacter", "other-game-data" } });
         Assert(store.GetPlayerInfo(identity, "OtherGame")["PlayerCharacter"] == "other-game-data", "Non-SRO profile values are preserved.");
+        var unselectedIdentity = Guid.NewGuid().ToString();
+        store.SetPlayerInfo(unselectedIdentity, "SRO", new Dictionary<string, string> { { "DisplayName", "First value" } });
+        store.SetPlayerInfo(unselectedIdentity, "SRO", new Dictionary<string, string> { { "DisplayName", "Updated value" } });
+        Assert(store.GetPlayerInfo(unselectedIdentity, "SRO")["DisplayName"] == "Updated value", "Accounts without an occupied selected career retain normal profile update behavior.");
+    }
+
+    private static void ValidateNotificationDelivery(int port, PhotonProxyTcpStub server, LocalUserStore store,
+        ExpiringSessionIdentityMap sessions, SocialClient alice, SocialClient bob)
+    {
+        using (var slow = new SocialClient(port, sessions))
+        using (var writerHeld = new ManualResetEvent(false))
+        using (var releaseWriter = new ManualResetEvent(false))
+        {
+            slow.Request(new JoinChannelRequest { ChannelName = "SRO_Default_Info" });
+            var state = typeof(PhotonProxyTcpStub).GetField("_chatAndFriends", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(server);
+            var peers = (IDictionary)state.GetType().GetField("_peersByConnId", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(state);
+            object slowPeer = null;
+            foreach (DictionaryEntry entry in peers)
+            {
+                if ((Guid)entry.Value.GetType().GetField("AccountId").GetValue(entry.Value) == slow.AccountId) slowPeer = entry.Value;
+            }
+            Assert(slowPeer != null, "The slow info-channel peer is registered.");
+            var stream = slowPeer.GetType().GetField("Stream").GetValue(slowPeer);
+            var blocker = new Thread(delegate()
+            {
+                lock (stream)
+                {
+                    writerHeld.Set();
+                    releaseWriter.WaitOne(8000);
+                }
+            });
+            blocker.IsBackground = true;
+            blocker.Start();
+            Assert(writerHeld.WaitOne(4000), "The slow peer's writer is occupied.");
+            try
+            {
+                var elapsed = Stopwatch.StartNew();
+                for (var i = 0; i < 32; i++)
+                    store.SetPlayerInfo(alice.AccountId.ToString(), "SRO", new Dictionary<string, string> { { "Tag", "burst-" + i } });
+                elapsed.Stop();
+                Assert(elapsed.ElapsedMilliseconds < 1500, "Profile writes must not wait for a stalled info-channel writer.");
+                var delivery = Stopwatch.StartNew();
+                var changed = bob.Event<TextMessageEventParameters>(delegate(TextMessageEventParameters e) { return e.ChannelName == "SRO_Default_Info" && e.Sender == alice.AccountId; });
+                Assert(changed.Sender == alice.AccountId && delivery.ElapsedMilliseconds < 1000, "A stalled peer does not hold up healthy recipients.");
+                var pending = (HashSet<Guid>)slowPeer.GetType().GetField("PendingPlayerInfoChanges").GetValue(slowPeer);
+                lock (pending) Assert(pending.Count <= 1, "Repeated changes coalesce to one pending account per slow peer.");
+                var deadline = DateTime.UtcNow.AddSeconds(5);
+                while (IsOnline(slow.AccountId) && DateTime.UtcNow < deadline) Thread.Sleep(10);
+                Assert(!IsOnline(slow.AccountId), "A peer exceeding the bounded writer wait is disconnected instead of retaining an undeliverable queue.");
+                Console.WriteLine("PERF: 32 profile writes with a stalled peer: {0} ms", elapsed.ElapsedMilliseconds);
+            }
+            finally
+            {
+                releaseWriter.Set();
+                Assert(blocker.Join(4000), "The controlled blocked writer finishes.");
+            }
+        }
+    }
+
+    private static void ValidateAuthenticationDeadline(int port)
+    {
+        using (var idle = new TcpClient())
+        using (var partial = new TcpClient())
+        using (var pinging = new TcpClient())
+        using (var stop = new ManualResetEvent(false))
+        {
+            idle.Connect(IPAddress.Loopback, port);
+            partial.Connect(IPAddress.Loopback, port);
+            pinging.Connect(IPAddress.Loopback, port);
+            idle.ReceiveTimeout = partial.ReceiveTimeout = pinging.ReceiveTimeout = 14000;
+            var header = new byte[] { 0xfb, 0, 0, 0xff, 0xff, 0, 0 };
+            partial.GetStream().Write(header, 0, header.Length);
+            var trickle = new Thread(delegate()
+            {
+                try
+                {
+                    while (!stop.WaitOne(100))
+                    {
+                        partial.GetStream().WriteByte(0);
+                        var ping = new byte[] { 0xf0, 0, 0, 0, 0 };
+                        pinging.GetStream().Write(ping, 0, ping.Length);
+                    }
+                }
+                catch (IOException) { }
+                catch (ObjectDisposedException) { }
+            });
+            trickle.IsBackground = true;
+            trickle.Start();
+            try
+            {
+                Assert(idle.GetStream().ReadByte() == -1, "An idle unauthenticated socket expires.");
+                Assert(partial.GetStream().ReadByte() == -1, "Partial-frame trickle traffic cannot extend authentication indefinitely.");
+                var buffer = new byte[1024];
+                while (pinging.GetStream().Read(buffer, 0, buffer.Length) > 0) { }
+            }
+            finally
+            {
+                stop.Set();
+                Assert(trickle.Join(4000), "Unauthenticated traffic generator finishes.");
+            }
+        }
     }
 
     private static string SerializeSnapshot(string identity, CareerSlot career)

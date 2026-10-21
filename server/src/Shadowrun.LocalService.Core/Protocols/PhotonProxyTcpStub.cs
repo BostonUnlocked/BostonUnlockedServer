@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -29,6 +30,7 @@ public sealed partial class PhotonProxyTcpStub
     private readonly AccountConnectionTerminator _accountConnectionTerminator;
 
     private readonly ClientSerializer _serializer = new ClientSerializer();
+    private static readonly long AuthenticationTimeoutTicks = 10 * Stopwatch.Frequency;
 
     public PhotonProxyTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore)
         : this(options, logger, userStore, null, null, null)
@@ -74,7 +76,7 @@ public sealed partial class PhotonProxyTcpStub
 
     private void NotifyPlayerInfoChanged(Guid accountId)
     {
-        _chatAndFriends.BroadcastTextMessage("SRO_Default_Info", accountId, string.Empty);
+        _chatAndFriends.QueuePlayerInfoChanged(accountId);
     }
 
     private void HandleAccountHardOffline(Guid accountId)
@@ -127,19 +129,21 @@ public sealed partial class PhotonProxyTcpStub
                     break;
                 }
 
+                var acceptedAt = Stopwatch.GetTimestamp();
                 ThreadPool.QueueUserWorkItem(delegate (object state)
                 {
-                    HandleClient((TcpClient)state, stopEvent);
+                    HandleClient((TcpClient)state, stopEvent, acceptedAt);
                 }, client);
             }
         }
         finally
         {
             listener.Stop();
+            if (_userStore != null) _userStore.PlayerInfoChanged -= NotifyPlayerInfoChanged;
         }
     }
 
-    private void HandleClient(TcpClient client, ManualResetEvent stopEvent)
+    private void HandleClient(TcpClient client, ManualResetEvent stopEvent, long acceptedAt)
     {
         using (client)
         {
@@ -176,7 +180,7 @@ public sealed partial class PhotonProxyTcpStub
 
                     while (!stopEvent.WaitOne(0))
                     {
-                        var chunk = ReadChunk(stream, endpoint, stopEvent);
+                        var chunk = ReadChunk(stream, endpoint, stopEvent, state, acceptedAt);
                         if (chunk.Length <= 0)
                         {
                             break;
@@ -197,6 +201,7 @@ public sealed partial class PhotonProxyTcpStub
 
                         while (recvBuffer.Count > 0)
                         {
+                            if (AuthenticationExpired(state, endpoint, acceptedAt)) return;
                             if (recvBuffer[0] == 0xF0)
                             {
                                 if (recvBuffer.Count < 5)
@@ -522,9 +527,24 @@ public sealed partial class PhotonProxyTcpStub
     {
         try
         {
-            lock (stream)
+            var lockTaken = false;
+            try
             {
+                if (string.Equals(kind, "profile-invalidation", StringComparison.Ordinal))
+                {
+                    lockTaken = Monitor.TryEnter(stream, 2000);
+                    if (!lockTaken) throw new TimeoutException("Profile invalidation timed out waiting for the Photon writer.");
+                }
+                else
+                {
+                    Monitor.Enter(stream);
+                    lockTaken = true;
+                }
                 stream.Write(data, 0, data.Length);
+            }
+            finally
+            {
+                if (lockTaken) Monitor.Exit(stream);
             }
             Action<object> log = string.Equals(kind, "ping-response", StringComparison.Ordinal) ? (Action<object>)_logger.LogLow : _logger.Log;
 
@@ -553,11 +573,25 @@ public sealed partial class PhotonProxyTcpStub
         }
     }
 
-    private byte[] ReadChunk(NetworkStream stream, string endpoint, ManualResetEvent stopEvent)
+    private bool AuthenticationExpired(ConnectionState state, string endpoint, long acceptedAt)
+    {
+        if (state.AccountId != Guid.Empty || Stopwatch.GetTimestamp() - acceptedAt < AuthenticationTimeoutTicks) return false;
+        _logger.Log(new
+        {
+            ts = RequestLogger.UtcNowIso(),
+            type = "photon-error",
+            peer = endpoint,
+            kind = "authentication-timeout",
+        });
+        return true;
+    }
+
+    private byte[] ReadChunk(NetworkStream stream, string endpoint, ManualResetEvent stopEvent, ConnectionState state, long acceptedAt)
     {
         var buffer = new byte[8192];
         while (!stopEvent.WaitOne(0))
         {
+            if (AuthenticationExpired(state, endpoint, acceptedAt)) return new byte[0];
             try
             {
                 var read = stream.Read(buffer, 0, buffer.Length);

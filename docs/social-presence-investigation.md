@@ -92,6 +92,12 @@ value now remains a polling bound for service shutdown; only EOF, a real receive
 failure, or shutdown ends that read loop. Real receive failures are logged with
 the peer endpoint.
 
+Unauthenticated sockets have a ten-second absolute authentication deadline,
+measured monotonically from acceptance, including time queued for a worker.
+Idle polling is indefinite only after an account is bound. Partial frames,
+init messages, and pings do not extend that deadline; receive polling can add
+up to two seconds before the handler observes expiry.
+
 Peer/liveness cleanup previously followed the request loop rather than being
 inside its `finally`. Returning after a failed init, ping, or operation response,
 or a requested strict disconnect, skipped it. That could retain dead account
@@ -159,17 +165,31 @@ snapshot builder, including appearance, equipment, skills, and wallet values,
 and the official extracted JSON/compression helpers. Selection and saves of the
 selected career persist the corrected profile; a late save of a different career
 does not replace it. Client uploads cannot replace those fields with an older
-career, even when only `PlayerCharacter` is supplied. Profile reads and returned
-search rows also project the selected career, so historical stale data is not
-served while waiting for another upload. This read projection does not itself
-rewrite the stored row; selection or a subsequent profile/career write does.
+career, even when only `PlayerCharacter` is supplied. Historical stale profiles
+are repaired in a batch when `LocalUserStore` is constructed, before listeners
+start. Both search backends therefore match and rank authoritative stored names,
+rather than matching old names and correcting only the returned rows. SQLite
+repairs changed keys in one transaction; JSON repairs use one atomic file
+replacement. Repair failures surface instead of silently serving stale names.
+Profile reads and searches retain their original persistence paths: no character
+snapshot construction, compression, or extra account queries on each read.
+Selection and saves reuse the account state already loaded for persistence;
+account display-name changes explicitly synchronize the profile as well.
+Client uploads preserve stored authoritative fields without recompressing them.
+Accounts without an occupied selected career keep normal profile-update behavior.
 
 Actual persisted profile changes publish an ordinary empty text event on
 `SRO_Default_Info`, with the changed account GUID as sender, after the store
-update and outside the local update lock. Existing interested peers can then
+update and outside the local update lock. Delivery is asynchronous: each recipient
+has at most one worker and a set of pending changed-account IDs, coalescing
+duplicate pending invalidations. The queue is capped at 1,024 distinct IDs per
+peer. Writer-lock acquisition is bounded at two seconds; socket writes retain
+their two-second send timeout. Delivery failure or queue overflow is logged and
+disconnects that slow peer, rather than retaining an undeliverable queue. Other
+peers and persistence callers do not wait for its network fanout. Existing interested peers can then
 reload the corrected profile. This closes the upload/announce ordering gap
 without relying on the stock client's fire-and-forget announcement. Coupon
-entitlement reads use raw stored keys to avoid reentering career projection.
+entitlement reads use raw stored keys independently of profile construction.
 The blob-format diagnostic now checks compressed JSON, rather than incorrectly
 trying the APlay message decoder.
 
@@ -181,15 +201,17 @@ restarted receiving client. These are stronger explanations than a transient
 username rendering problem.
 
 However, **no server-lifetime player-profile cache was found**: JSON and SQLite
-profile values are read from storage. Restarting the server does not erase a
-persisted old blob. It does force connection/session reconstruction and can
+profile values are read from storage. In the original implementation, restarting
+the server did not erase a persisted old blob. It does force connection/session reconstruction and can
 change subsequent publication/reload ordering, but that explanation of the
 reported recovery has not been reproduced with two game clients. If restarting
 all receiving clients still fails while only a server restart reliably repairs
 the name, additional runtime evidence is needed; this change does not claim that
 exact restart-only trigger is proven. The fix removes the reproduced stale
 snapshot and publication-order dependencies rather than assuming a nonexistent
-profile cache.
+profile cache. The new implementation deliberately repairs persisted stale
+profiles at startup; that new behavior is not evidence of the original
+restart-only recovery mechanism.
 
 ## Remaining proposed fixes and production confirmation
 
@@ -201,7 +223,7 @@ display its text while metadata is retried. This repository change does not
 patch or redistribute the proprietary client.
 
 Server-side cache invalidation now covers persisted profile changes from career
-selection, selected-career saves, and HTTP updates. Authoritative mission-only
+selection, selected-career saves, account-name changes, and HTTP updates. Authoritative mission-only
 transitions still need independent notification coverage; their HTTP status
 projection remains unchanged. Neither profile invalidations nor corrected
 snapshots retry an already stuck sent profile request, so these changes are not
@@ -249,6 +271,12 @@ metadata. It checks an info-channel invalidation with the correct sender,
 delayed saves of A, mismatched and snapshot-only stale HTTP uploads, deliberately
 injected historical stale rows, a recreated store/HTTP service, reselecting the
 same index, a Unicode rename, search results, and preservation of non-SRO data.
+The stale-row search check runs after startup repair but before any reselection:
+the selected name matches and the previous name no longer matches. Additional
+checks cover account-name changes, accounts without an occupied career, and
+preservation of unrelated profile fields during repair.
+The added stale-name search assertion fails against reviewed commit `ec80683`
+and passes after the review fixes.
 Both JSON and SQLite pass. Against transport-only commit `e187796`, the new
 regression fails because B's profile still decodes to A's chat name. This
 isolates the career-profile defect from the already-fixed socket defects.
@@ -260,6 +288,66 @@ account registration but before its first authentication response, then waited
 for the handler's connection context to be removed. Unchanged HEAD still
 reported that account online; the fixed build reported it offline. This verifies
 the early-return cleanup path independently of ordinary socket EOF.
+
+Review regressions also hold an info-channel peer's stream writer while making
+32 profile writes: the writes must finish within 1.5 seconds, a healthy peer must
+receive an invalidation, duplicate pending IDs must coalesce, and the blocked
+peer must disconnect within the bounded delivery window. The measured write
+totals were 173 ms (JSON) and 98 ms (SQLite). A separate socket check verifies
+that idle, partial-frame-trickling, and pinging unauthenticated clients expire,
+while authenticated clients remain connected beyond the authentication deadline.
+
+## Performance review
+
+Run the reproducible, isolated 100-account workload with:
+
+```powershell
+.\tools\test_social_presence.ps1 -MeasurePerformance
+# Compare the same harness with a separately built revision:
+.\tools\test_social_presence.ps1 -MeasurePerformance -AssemblyDirectory 'C:\path\to\baseline\bin\Release'
+```
+
+This measures store operations, not full Unity gameplay. Each timed operation
+has a warmup and five samples; the table gives median batch times in milliseconds
+from paired local runs. Baseline is pre-PR `a8e856a`; reviewed revision is
+`ec80683`. These are scale-specific observations, not a claim of zero overhead
+or a substitute for production load testing.
+
+| Backend / batch | Pre-PR | Reviewed PR | Revised PR |
+| --- | ---: | ---: | ---: |
+| JSON / 100 profile reads | 178.85 | 12,469.31 | 181.68 |
+| SQLite / 100 profile reads | 24.52 | 580.46 | 24.28 |
+| JSON / 20 searches | 36.62 | 2,460.84 | 39.04 |
+| SQLite / 20 searches | 13.86 | 122.35 | 14.16 |
+| JSON / 20 ordinary profile updates | 195.74 | 2,646.32 | 188.42 |
+| SQLite / 20 ordinary profile updates | 61.33 | 168.45 | 60.90 |
+| JSON / 10 selected-career saves | 1,022.42 | 2,391.10 | 698.92 |
+| SQLite / 10 selected-career saves | 50.44 | 132.38 | 74.69 |
+| JSON / 10 selections | 666.12 | 1,955.60 | 711.21 |
+| SQLite / 10 selections | 34.73 | 93.51 | 41.89 |
+| JSON / 100 reads, four callers | 182.78 | 12,858.12 | 186.07 |
+| SQLite / 100 reads, four callers | 11.62 | 636.97 | 11.94 |
+
+The reviewed PR's substantial read/search regression came from rebuilding,
+serializing, compressing, and repeatedly loading account data under the shared
+lock for every lookup. That work is now at startup and authoritative mutations;
+the steady-state read/search implementation is the pre-PR path. No-op JSON
+updates no longer rewrite the profile file. Persistence callers no longer
+perform notification socket writes.
+
+There are measurable, deliberate costs, so **this is not a zero-performance-cost
+change**. With 100 accounts, startup repair took about 90 ms (JSON varied up to
+165 ms in another run). SQLite selected-career saves added approximately
+2.4 ms/save, and selection about 0.7 ms/operation, to maintain the canonical
+snapshot. Uploading 20 complete profiles through the store took 639.41 ms
+versus 186.63 ms (JSON), and 18.47 ms versus 5.08 ms (SQLite): these infrequent
+uploads check that a selected career exists and preserve authoritative fields.
+That is roughly 23 ms additional per JSON upload, or 0.7 ms per SQLite upload.
+It is not paid by ordinary status/Tag updates or profile reads. JSON still
+serializes whole persistence files and remains the compatibility backend;
+larger installations should use the default SQLite backend. The bounded
+notification queue also consumes memory and at most one active delivery worker
+per receiving peer; it is not an asynchronous rewrite of all existing sockets.
 
 A two-game-client production reproduction remains necessary before declaring
 the combined player report fully resolved.

@@ -406,6 +406,13 @@ namespace Shadowrun.LocalService.Core.Persistence
 
         public void SetLastCareerIndex(string identityHash, int index)
         {
+            IDictionary account;
+            SetLastCareerIndex(identityHash, index, out account);
+        }
+
+        internal void SetLastCareerIndex(string identityHash, int index, out IDictionary account)
+        {
+            account = null;
             if (!IsEnabled)
             {
                 return;
@@ -416,7 +423,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 index = 0;
             }
 
-            var account = LoadAccountForIdentityNoThrow(identityHash, true);
+            account = LoadAccountForIdentityNoThrow(identityHash, true);
             if (account == null)
             {
                 return;
@@ -870,6 +877,30 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
 
             return changes;
+        }
+
+        internal void RepairSroProfiles(Dictionary<string, Dictionary<string, string>> profiles)
+        {
+            using (var connection = OpenConnection())
+            using (var transaction = connection.BeginTransaction())
+            {
+                foreach (var profile in profiles)
+                {
+                    var existing = LoadPlayerInfoMap(connection, transaction, profile.Key, "SRO");
+                    foreach (var field in profile.Value)
+                    {
+                        string value;
+                        if (existing.TryGetValue(field.Key, out value) && string.Equals(value, field.Value, StringComparison.Ordinal)) continue;
+                        ExecuteNonQuery(connection, transaction,
+                            "INSERT OR REPLACE INTO player_info (identity_hash, game_name, info_key, info_value, updated_utc) VALUES (@identityHash, 'SRO', @infoKey, @infoValue, @updatedUtc);",
+                            "@identityHash", profile.Key,
+                            "@infoKey", field.Key,
+                            "@infoValue", field.Value,
+                            "@updatedUtc", DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                    }
+                }
+                transaction.Commit();
+            }
         }
 
         public List<KeyValuePair<string, Dictionary<string, string>>> SearchPlayerInfo(string gameName, string searchString)
