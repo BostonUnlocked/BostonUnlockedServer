@@ -319,7 +319,8 @@ namespace Shadowrun.LocalService.Core.Persistence
                     return packages;
                 }
 
-                var playerInfo = _owner.GetPlayerInfo(identityHash, CouponGameName);
+                // Entitlements are persisted keys, independent of character profile construction.
+                var playerInfo = _owner._playerInfoStore.Get(identityHash, CouponGameName);
                 if (playerInfo == null)
                 {
                     return packages;

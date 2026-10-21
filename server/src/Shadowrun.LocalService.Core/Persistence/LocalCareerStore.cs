@@ -160,11 +160,11 @@ namespace Shadowrun.LocalService.Core.Persistence
                 }
             }
 
-            public void UpsertCareer(string identityHash, CareerSlot slot)
+            public IDictionary UpsertCareer(string identityHash, CareerSlot slot)
             {
                 if (slot == null)
                 {
-                    return;
+                    return null;
                 }
 
                 if (!LocalUserStore.IsGuidish(identityHash))
@@ -189,7 +189,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                     catch
                     {
                     }
-                    return;
+                    return null;
                 }
 
                 lock (_owner._lock)
@@ -231,7 +231,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                                         catch
                                         {
                                         }
-                                        return;
+                                        return null;
                                     }
                                 }
                             }
@@ -284,7 +284,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                     {
                         careersList.Add(slot.ToDictionary());
                         _owner.SaveAccountNoThrow(account);
-                        return;
+                        return account;
                     }
 
                     var updated = slot.ToDictionary();
@@ -293,6 +293,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                         found[entry.Key] = entry.Value;
                     }
                     _owner.SaveAccountNoThrow(account);
+                    return account;
                 }
             }
 

@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading;
 using System.Web.Script.Serialization;
 using Cliffhanger.ChatAndFriends.Interfaces.DTOs;
 using PhotonProxy.ChatAndFriends.Client.DTOs;
@@ -52,6 +53,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                 public NetworkStream Stream;
                 public object SendLock;
                 public User User;
+                public readonly HashSet<Guid> PendingPlayerInfoChanges = new HashSet<Guid>();
+                public bool PlayerInfoWorkerActive;
+                public bool Removed;
                 public readonly HashSet<string> GlobalMessageSubscriptions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             }
 
@@ -127,6 +131,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                     if (_peersByConnId.TryGetValue(connectionId, out peer) && peer != null)
                     {
                         accountId = peer.AccountId;
+                        lock (peer.PendingPlayerInfoChanges)
+                        {
+                            peer.Removed = true;
+                            peer.PendingPlayerInfoChanges.Clear();
+                        }
                         _peersByConnId.Remove(connectionId);
 
                         if (accountId != Guid.Empty)
@@ -613,6 +622,84 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                     return participants;
                 }
+            }
+
+            public void QueuePlayerInfoChanged(Guid accountId)
+            {
+                List<Peer> targets = new List<Peer>();
+                lock (_lock)
+                {
+                    HashSet<Guid> members;
+                    if (!_channelMembers.TryGetValue("SRO_Default_Info", out members)) return;
+                    foreach (var connectionId in members)
+                    {
+                        Peer peer;
+                        if (_peersByConnId.TryGetValue(connectionId, out peer) && peer.AccountId != accountId) targets.Add(peer);
+                    }
+                }
+                foreach (var peer in targets)
+                {
+                    var overflow = false;
+                    lock (peer.PendingPlayerInfoChanges)
+                    {
+                        if (peer.Removed) continue;
+                        peer.PendingPlayerInfoChanges.Add(accountId);
+                        overflow = peer.PendingPlayerInfoChanges.Count > 1024;
+                        if (!overflow && !peer.PlayerInfoWorkerActive)
+                        {
+                            peer.PlayerInfoWorkerActive = true;
+                            ThreadPool.QueueUserWorkItem(delegate(object state) { DeliverPlayerInfoChanges((Peer)state); }, peer);
+                        }
+                    }
+                    if (overflow) ClosePlayerInfoPeer(peer, "queue-limit");
+                }
+            }
+
+            private void DeliverPlayerInfoChanges(Peer peer)
+            {
+                while (true)
+                {
+                    Guid changedAccount;
+                    lock (peer.PendingPlayerInfoChanges)
+                    {
+                        if (peer.Removed || peer.PendingPlayerInfoChanges.Count == 0)
+                        {
+                            peer.PlayerInfoWorkerActive = false;
+                            return;
+                        }
+                        changedAccount = peer.PendingPlayerInfoChanges.First();
+                        peer.PendingPlayerInfoChanges.Remove(changedAccount);
+                    }
+                    var payload = new TextMessageEventParameters
+                    {
+                        Sender = changedAccount,
+                        Text = string.Empty,
+                        ChannelName = "SRO_Default_Info",
+                        ServerTimestamp = DateTime.UtcNow,
+                    };
+                    if (!SendEventToPeer(peer, payload, true))
+                    {
+                        ClosePlayerInfoPeer(peer, "delivery-failed");
+                        return;
+                    }
+                }
+            }
+
+            private void ClosePlayerInfoPeer(Peer peer, string reason)
+            {
+                lock (peer.PendingPlayerInfoChanges)
+                {
+                    peer.Removed = true;
+                    peer.PendingPlayerInfoChanges.Clear();
+                }
+                _owner._logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "photon-profile-notification-disconnect",
+                    peer = peer.Endpoint,
+                    reason = reason,
+                });
+                peer.Stream.Close();
             }
 
             public void BroadcastTextMessage(string channelName, Guid senderAccountId, string text)
@@ -2337,14 +2424,19 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             private void SendEventToPeer(Peer peer, ISerializableMessage payload)
             {
+                SendEventToPeer(peer, payload, false);
+            }
+
+            private bool SendEventToPeer(Peer peer, ISerializableMessage payload, bool profileInvalidation)
+            {
                 if (peer == null || peer.Stream == null)
                 {
-                    return;
+                    return false;
                 }
 
                 if (_owner == null)
                 {
-                    return;
+                    return false;
                 }
 
                 // Build PhotonClientMessage (protobuf) and wrap into Photon EventData (binary protocol).
@@ -2364,16 +2456,27 @@ namespace Shadowrun.LocalService.Core.Protocols
                         clientMessageBytes = ms.ToArray();
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
-                    return;
+                    _owner._logger.Log(new
+                    {
+                        ts = RequestLogger.UtcNowIso(),
+                        type = "photon-event-serialization-failed",
+                        peer = peer.Endpoint,
+                        message = ex.Message,
+                    });
+                    return false;
                 }
 
                 var eventPayload = BuildEventDataWithSingleByteArrayParam(0x00, 100, clientMessageBytes);
 
+                if (profileInvalidation)
+                {
+                    return _owner.SendPhotonFrame(peer.Stream, peer.Endpoint ?? "unknown", eventPayload, "profile-invalidation");
+                }
                 lock (peer.SendLock)
                 {
-                    _owner.SendPhotonFrame(peer.Stream, peer.Endpoint ?? "unknown", eventPayload, "event");
+                    return _owner.SendPhotonFrame(peer.Stream, peer.Endpoint ?? "unknown", eventPayload, "event");
                 }
             }
 

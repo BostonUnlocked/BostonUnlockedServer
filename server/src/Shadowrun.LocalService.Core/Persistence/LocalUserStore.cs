@@ -7,6 +7,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Web.Script.Serialization;
 using Cliffhanger.SRO.ServerClientCommons.Metagameplay;
+using SRO.Core.Compatibility.Utilities;
+using Shadowrun.LocalService.Core.Career;
 
 namespace Shadowrun.LocalService.Core.Persistence
 {
@@ -29,6 +31,8 @@ namespace Shadowrun.LocalService.Core.Persistence
         private readonly LocalCareerStore _careerStore;
         private readonly LocalSessionStore _sessionStore;
         private readonly LocalPlayerInfoStore _playerInfoStore;
+
+        public event Action<Guid> PlayerInfoChanged;
 
         public LocalUserStore(LocalServiceOptions options, RequestLogger logger)
         {
@@ -83,6 +87,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             _careerStore = new LocalCareerStore(this);
             _sessionStore = new LocalSessionStore(options, logger);
             _playerInfoStore = new LocalPlayerInfoStore(options, logger, _sqliteStore);
+            RepairSelectedCareerPlayerInfo();
         }
 
         public string GetOrCreateIdentityHash()
@@ -401,7 +406,18 @@ namespace Shadowrun.LocalService.Core.Persistence
                 return false;
             }
 
-            return _accountStore.TrySetDisplayName(identityHash, requestedDisplayName, out normalizedDisplayName, out errorMessage);
+            PlayerInfoChanges changes;
+            lock (_lock)
+            {
+                if (!_accountStore.TrySetDisplayName(identityHash, requestedDisplayName, out normalizedDisplayName, out errorMessage))
+                {
+                    return false;
+                }
+                var account = LoadAccountForIdentityNoThrow(identityHash, false);
+                changes = SyncSelectedCareerPlayerInfo(identityHash, GetSelectedCareer(account), account);
+            }
+            NotifyPlayerInfoChanged(identityHash, DefaultPlayerInfoGameName, changes);
+            return true;
         }
 
         public int GetLastCareerIndex()
@@ -426,7 +442,14 @@ namespace Shadowrun.LocalService.Core.Persistence
                 return;
             }
 
-            _accountStore.SetLastCareerIndex(identityHash, index);
+            PlayerInfoChanges changes;
+            lock (_lock)
+            {
+                IDictionary account;
+                _accountStore.SetLastCareerIndex(identityHash, index, out account);
+                changes = SyncSelectedCareerPlayerInfo(identityHash, GetSelectedCareer(account), account);
+            }
+            NotifyPlayerInfoChanged(identityHash, DefaultPlayerInfoGameName, changes);
         }
 
         public Guid CreateSessionForCurrentIdentity()
@@ -529,7 +552,37 @@ namespace Shadowrun.LocalService.Core.Persistence
                 return new PlayerInfoChanges();
             }
 
-            return _playerInfoStore.Set(identityHash, gameName, updates);
+            if (updates == null)
+            {
+                return new PlayerInfoChanges();
+            }
+
+            PlayerInfoChanges changes;
+            lock (_lock)
+            {
+                var authoritativeUpdates = new Dictionary<string, string>(updates, StringComparer.OrdinalIgnoreCase);
+                if (IsSroPlayerInfo(gameName))
+                {
+                    Dictionary<string, string> storedInfo = null;
+                    foreach (var key in SelectedCareerPlayerInfoKeys)
+                    {
+                        if (!authoritativeUpdates.ContainsKey(key)) continue;
+                        if (storedInfo == null)
+                        {
+                            if (!IsGuidish(identityHash) || GetSelectedCareer(LoadAccountForIdentityNoThrow(identityHash, false)) == null) break;
+                            storedInfo = _playerInfoStore.Get(identityHash, gameName);
+                        }
+                        string value;
+                        if (storedInfo.TryGetValue(key, out value))
+                        {
+                            authoritativeUpdates[key] = value;
+                        }
+                    }
+                }
+                changes = _playerInfoStore.Set(identityHash, gameName, authoritativeUpdates);
+            }
+            NotifyPlayerInfoChanged(identityHash, gameName, changes);
+            return changes;
         }
 
         public List<KeyValuePair<string, Dictionary<string, string>>> SearchPlayerInfo(string gameName, string searchString)
@@ -690,8 +743,7 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
 
             var identityHash = GetOrCreateIdentityHash();
-            _careerStore.UpsertCareer(identityHash, slot);
-            TrySyncPlayerInfoFromCareer(identityHash, slot);
+            UpsertCareer(identityHash, slot);
         }
 
         public void UpsertCareer(string identityHash, CareerSlot slot)
@@ -701,60 +753,124 @@ namespace Shadowrun.LocalService.Core.Persistence
                 return;
             }
 
-            _careerStore.UpsertCareer(identityHash, slot);
-            TrySyncPlayerInfoFromCareer(identityHash, slot);
+            PlayerInfoChanges changes = null;
+            lock (_lock)
+            {
+                var account = _careerStore.UpsertCareer(identityHash, slot);
+                if (account != null && slot != null && slot.Index == GetInt(account, "LastCareerIndex", 0))
+                {
+                    changes = SyncSelectedCareerPlayerInfo(identityHash, slot, account);
+                }
+            }
+            NotifyPlayerInfoChanged(identityHash, DefaultPlayerInfoGameName, changes);
         }
 
-        private void TrySyncPlayerInfoFromCareer(string identityHash, CareerSlot slot)
+        private static CareerSlot GetSelectedCareer(IDictionary account)
         {
-            if (_playerInfoStore == null || slot == null || !slot.IsOccupied)
+            if (account == null) return null;
+            var careers = CoerceToArrayList(account["Careers"]);
+            if (careers == null) return null;
+            var careerIndex = GetInt(account, "LastCareerIndex", 0);
+            foreach (var rawCareer in careers)
             {
-                return;
+                var careerData = rawCareer as IDictionary;
+                if (GetInt(careerData, "Index", -1) != careerIndex) continue;
+                var career = CareerSlot.FromDictionary(careerData);
+                if (career != null && career.Index == careerIndex && career.IsOccupied)
+                {
+                    return career;
+                }
+            }
+            return null;
+        }
+
+        private PlayerInfoChanges SyncSelectedCareerPlayerInfo(string identityHash, CareerSlot selectedCareer, IDictionary account)
+        {
+            if (_playerInfoStore == null)
+            {
+                return null;
             }
 
-            if (!IsGuidish(identityHash) || IsNullOrWhiteSpace(slot.CharacterName))
+            var updates = BuildSelectedCareerPlayerInfo(identityHash, selectedCareer, account);
+            return updates.Count > 0 ? _playerInfoStore.Set(identityHash, DefaultPlayerInfoGameName, updates) : null;
+        }
+
+        private static readonly string[] SelectedCareerPlayerInfoKeys = { "CharacterName", "LauncherDisplayName", "DisplayName", "PlayerCharacter" };
+
+        private static bool IsSroPlayerInfo(string gameName)
+        {
+            return string.Equals(gameName != null ? gameName.Trim() : null, DefaultPlayerInfoGameName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void RepairSelectedCareerPlayerInfo()
+        {
+            // Repair before listeners start, so both search backends match/rank canonical stored names.
+            // Read accounts once and write profiles once, rather than rebuilding snapshots on every lookup.
+            var accounts = GetDict(LoadAccountStoreNoThrow(false), AccountStoreAccountsKey);
+            var profiles = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+            if (accounts == null) return;
+            foreach (DictionaryEntry entry in accounts)
             {
-                return;
+                var identity = entry.Key as string;
+                var account = entry.Value as IDictionary;
+                if (!IsGuidish(identity) || account == null) continue;
+                var info = BuildSelectedCareerPlayerInfo(identity, GetSelectedCareer(account), account);
+                if (info.Count > 0) profiles[NormalizeGuidish(identity)] = info;
             }
+            if (profiles.Count == 0) return;
+            _playerInfoStore.RepairSroProfiles(profiles);
+        }
+
+        private static Dictionary<string, string> BuildSelectedCareerPlayerInfo(string identityHash, CareerSlot selectedCareer, IDictionary account)
+        {
+            var info = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (!IsGuidish(identityHash) || selectedCareer == null || !selectedCareer.IsOccupied
+                || IsNullOrWhiteSpace(selectedCareer.CharacterName)) return info;
 
             var normalizedIdentity = NormalizeGuidish(identityHash);
-            var characterName = slot.CharacterName.Trim();
-            var launcherDisplayName = GetDisplayName(normalizedIdentity);
+            var characterName = selectedCareer.CharacterName.Trim();
+            LocalAccountStore.EnsureDisplayNameIsAnonymized(account, identityHash);
+            var launcherDisplayName = GetString(account, "DisplayName");
             if (IsNullOrWhiteSpace(launcherDisplayName))
             {
                 launcherDisplayName = BuildAnonymizedDisplayName(normalizedIdentity);
             }
+            var identifier = normalizedIdentity + ":" + selectedCareer.Index.ToString(CultureInfo.InvariantCulture);
+            var snapshot = PlayerCharacterSnapshotFactory.Create(identifier, characterName, selectedCareer);
+            info["CharacterName"] = characterName;
+            info["LauncherDisplayName"] = launcherDisplayName;
+            info["DisplayName"] = launcherDisplayName + ";" + characterName;
+            info["PlayerCharacter"] = ZipUtilities.Compress(JsonFxSerializerProvider.Current.Serialize<IPlayerCharacterSnapshot>(snapshot));
+            return info;
+        }
 
-            if (IsNullOrWhiteSpace(launcherDisplayName))
+        private void NotifyPlayerInfoChanged(string identityHash, string gameName, PlayerInfoChanges changes)
+        {
+            var observers = PlayerInfoChanged;
+            if (observers == null || changes == null || !IsGuidish(identityHash)
+                || !IsSroPlayerInfo(gameName)
+                || (changes.Added.Count == 0 && changes.Updated.Count == 0 && changes.Deleted.Count == 0))
             {
                 return;
             }
 
-            var updates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            var accountId = new Guid(identityHash);
+            foreach (Action<Guid> observer in observers.GetInvocationList())
             {
-                { "CharacterName", characterName },
-                { "LauncherDisplayName", launcherDisplayName },
-                { "DisplayName", launcherDisplayName + ";" + characterName },
-            };
-
-            try
-            {
-                _playerInfoStore.Set(normalizedIdentity, DefaultPlayerInfoGameName, updates);
-                if (_logger != null)
+                try
                 {
-                    _logger.LogLow(new
+                    observer(accountId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Log(new
                     {
                         ts = RequestLogger.UtcNowIso(),
-                        type = "playerinfo-backfill",
-                        op = "sync-from-career",
-                        identityHash = normalizedIdentity,
-                        careerIndex = slot.Index,
-                        characterName = characterName,
+                        type = "playerinfo-notification-failed",
+                        accountId = accountId,
+                        message = ex.Message,
                     });
                 }
-            }
-            catch
-            {
             }
         }
 
