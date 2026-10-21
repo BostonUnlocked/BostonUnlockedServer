@@ -137,6 +137,7 @@ public sealed partial class PhotonProxyTcpStub
             var endpoint = client.Client.RemoteEndPoint != null ? client.Client.RemoteEndPoint.ToString() : "unknown";
             var connectionHash = RequestLogger.CreateConnectionHash("photon", endpoint);
             _logger.RegisterConnectionContext("photon", endpoint, connectionHash);
+            ConnectionState state = null;
             try
             {
                 client.ReceiveTimeout = 2000;
@@ -150,7 +151,6 @@ public sealed partial class PhotonProxyTcpStub
                     note = "connected",
                 });
 
-                ConnectionState state = null;
                 using (var stream = client.GetStream())
                 {
                     var recvBuffer = new List<byte>();
@@ -167,7 +167,7 @@ public sealed partial class PhotonProxyTcpStub
 
                     while (!stopEvent.WaitOne(0))
                     {
-                        var chunk = ReadChunk(stream);
+                        var chunk = ReadChunk(stream, endpoint, stopEvent);
                         if (chunk.Length <= 0)
                         {
                             break;
@@ -376,76 +376,81 @@ public sealed partial class PhotonProxyTcpStub
                     }
                 }
             }
-
-            // Best-effort: unregister this peer from shared state.
-            try
+            }
+            finally
             {
-                if (state != null && state.AccountId != Guid.Empty)
+                // Best-effort: unregister this peer from shared state.
+                try
                 {
-                    AccountTransportLivenessRegistry.MarkDisconnected(state.AccountId, AccountTransportLivenessRegistry.TransportPhoton);
+                    if (state != null && state.AccountId != Guid.Empty)
+                    {
+                        AccountTransportLivenessRegistry.MarkDisconnected(state.AccountId, AccountTransportLivenessRegistry.TransportPhoton);
 
-                    var snapshot = AccountTransportLivenessRegistry.Evaluate(state.AccountId);
-                    _logger.Log(new
+                        var snapshot = AccountTransportLivenessRegistry.Evaluate(state.AccountId);
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "transport-disconnected",
+                            protocol = "photon",
+                            accountId = state.AccountId,
+                            connectionHash = state.ConnectionHash,
+                            peer = state.Endpoint,
+                            photonConnections = snapshot.PhotonConnections,
+                            aplayConnections = snapshot.APlayConnections,
+                        });
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = "account-liveness-evaluated",
+                            protocol = "photon",
+                            accountId = state.AccountId,
+                            isSocialOnline = snapshot.IsSocialOnline,
+                            isHardOffline = snapshot.IsHardOffline,
+                            photonConnections = snapshot.PhotonConnections,
+                            aplayConnections = snapshot.APlayConnections,
+                            reason = "disconnect",
+                        });
+                    }
+
+                    if (state != null)
                     {
-                        ts = RequestLogger.UtcNowIso(),
-                        type = "transport-disconnected",
-                        protocol = "photon",
-                        accountId = state.AccountId,
-                        connectionHash = state.ConnectionHash,
-                        peer = state.Endpoint,
-                        photonConnections = snapshot.PhotonConnections,
-                        aplayConnections = snapshot.APlayConnections,
-                    });
-                    _logger.Log(new
-                    {
-                        ts = RequestLogger.UtcNowIso(),
-                        type = "account-liveness-evaluated",
-                        protocol = "photon",
-                        accountId = state.AccountId,
-                        isSocialOnline = snapshot.IsSocialOnline,
-                        isHardOffline = snapshot.IsHardOffline,
-                        photonConnections = snapshot.PhotonConnections,
-                        aplayConnections = snapshot.APlayConnections,
-                        reason = "disconnect",
-                    });
+                        _chatAndFriends.Unregister(state.ConnectionId);
+                    }
+                }
+                catch
+                {
                 }
 
-                _chatAndFriends.Unregister(state.ConnectionId);
-            }
-            catch
-            {
-            }
-
-            // If this disconnect caused the account to go offline (no remaining Photon connections), notify friends.
-            try
-            {
-                var shouldNotifyOffline = state != null
-                    && state.AccountId != Guid.Empty
-                    && !AccountTransportLivenessRegistry.IsOnline(state.AccountId)
-                    && (_chatAndFriends == null || !_chatAndFriends.IsAccountOnline(state.AccountId));
-
-                if (state != null && state.AccountId != Guid.Empty)
+                // If this disconnect caused the account to go offline (no remaining Photon connections), notify friends.
+                try
                 {
-                    _logger.Log(new
+                    var shouldNotifyOffline = state != null
+                        && state.AccountId != Guid.Empty
+                        && !AccountTransportLivenessRegistry.IsOnline(state.AccountId)
+                        && (_chatAndFriends == null || !_chatAndFriends.IsAccountOnline(state.AccountId));
+
+                    if (state != null && state.AccountId != Guid.Empty)
                     {
-                        ts = RequestLogger.UtcNowIso(),
-                        type = shouldNotifyOffline ? "group-offline-action-applied" : "group-offline-action-skipped",
-                        protocol = "photon",
-                        accountId = state.AccountId,
-                        connectionHash = state.ConnectionHash,
-                        peer = state.Endpoint,
-                        reason = shouldNotifyOffline ? "social-offline-transition" : "account-still-online-or-social-state-active",
-                    });
-                }
+                        _logger.Log(new
+                        {
+                            ts = RequestLogger.UtcNowIso(),
+                            type = shouldNotifyOffline ? "group-offline-action-applied" : "group-offline-action-skipped",
+                            protocol = "photon",
+                            accountId = state.AccountId,
+                            connectionHash = state.ConnectionHash,
+                            peer = state.Endpoint,
+                            reason = shouldNotifyOffline ? "social-offline-transition" : "account-still-online-or-social-state-active",
+                        });
+                    }
 
-                if (shouldNotifyOffline)
-                {
-                    NotifyFriendsPresenceChanged(state.AccountId, false);
+                    if (shouldNotifyOffline)
+                    {
+                        NotifyFriendsPresenceChanged(state.AccountId, false);
+                    }
                 }
-            }
-            catch
-            {
-            }
+                catch
+                {
+                }
 
                 _logger.Log(new
                 {
@@ -454,9 +459,6 @@ public sealed partial class PhotonProxyTcpStub
                     peer = endpoint,
                     note = "closed",
                 });
-            }
-            finally
-            {
                 if (_accountConnectionTerminator != null)
                 {
                     _accountConnectionTerminator.Unregister("photon", connectionHash);
@@ -511,7 +513,10 @@ public sealed partial class PhotonProxyTcpStub
     {
         try
         {
-            stream.Write(data, 0, data.Length);
+            lock (stream)
+            {
+                stream.Write(data, 0, data.Length);
+            }
             Action<object> log = string.Equals(kind, "ping-response", StringComparison.Ordinal) ? (Action<object>)_logger.LogLow : _logger.Log;
 
             log(new
@@ -539,28 +544,59 @@ public sealed partial class PhotonProxyTcpStub
         }
     }
 
-    private static byte[] ReadChunk(NetworkStream stream)
+    private byte[] ReadChunk(NetworkStream stream, string endpoint, ManualResetEvent stopEvent)
     {
         var buffer = new byte[8192];
-        try
+        while (!stopEvent.WaitOne(0))
         {
-            var read = stream.Read(buffer, 0, buffer.Length);
-            if (read <= 0)
+            try
             {
+                var read = stream.Read(buffer, 0, buffer.Length);
+                if (read <= 0)
+                {
+                    return new byte[0];
+                }
+                if (read == buffer.Length)
+                {
+                    return buffer;
+                }
+                var slice = new byte[read];
+                Buffer.BlockCopy(buffer, 0, slice, 0, read);
+                return slice;
+            }
+            catch (IOException ex)
+            {
+                var socketError = ex.InnerException as SocketException;
+                if (socketError != null && socketError.SocketErrorCode == SocketError.TimedOut)
+                {
+                    // ReceiveTimeout bounds shutdown latency, not the lifetime of an idle Photon session.
+                    continue;
+                }
+
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "photon-error",
+                    peer = endpoint,
+                    kind = "receive-failed",
+                    message = ex.Message,
+                });
                 return new byte[0];
             }
-            if (read == buffer.Length)
+            catch (ObjectDisposedException ex)
             {
-                return buffer;
+                _logger.Log(new
+                {
+                    ts = RequestLogger.UtcNowIso(),
+                    type = "photon-error",
+                    peer = endpoint,
+                    kind = "receive-closed",
+                    message = ex.Message,
+                });
+                return new byte[0];
             }
-            var slice = new byte[read];
-            Buffer.BlockCopy(buffer, 0, slice, 0, read);
-            return slice;
         }
-        catch
-        {
-            return new byte[0];
-        }
+        return new byte[0];
     }
 
     private static long GetUnixTimeMilliseconds()
