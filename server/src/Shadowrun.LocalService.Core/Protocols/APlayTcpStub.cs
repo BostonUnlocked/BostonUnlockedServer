@@ -950,21 +950,24 @@ namespace Shadowrun.LocalService.Core.Protocols
         {
             using (client)
             {
+                client.SendTimeout = 2000;
                 var peer = client.Client.RemoteEndPoint != null ? client.Client.RemoteEndPoint.ToString() : "unknown";
                 var connectionHash = RequestLogger.CreateConnectionHash("aplay", peer);
                 _logger.RegisterConnectionContext("aplay", peer, connectionHash);
                 Guid aplayTransportAccountId = Guid.Empty;
+                NetworkStream hubPeerStream = null;
+                var connectionClosed = new ManualResetEvent(false);
                 try
                 {
                     using (var stream = client.GetStream())
                     {
+                        hubPeerStream = stream;
                         // The client uses `GameClientConnection.APlayEntityId` as its local PlayerID.
                         // To make coop ownership work, each connection must have a unique entity id.
                         var gameClientEntityId = AllocateGameClientEntityId();
                         var gameClientIntroducePayload = BuildCoreIntroduceGameClientPayload(gameClientEntityId, "127.0.0.1", 1UL);
                         var apInitializedPayload = BuildCoreApInitializedPayload(1U, gameClientEntityId, DefaultIntroduceMsgNo + 1UL);
 
-                        var connectionClosed = new ManualResetEvent(false);
                         var keepAliveLoopStarted = false;
                         long keepAliveMsgNo = 500000;
 
@@ -1484,113 +1487,52 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             var movedX = BitConverter.ToSingle(BitConverter.GetBytes(rawX), 0);
                                             var movedY = BitConverter.ToSingle(BitConverter.GetBytes(rawY), 0);
 
+                                            HubPresenceRegistry.Participant commandParticipant;
+                                            if (!_hubPresenceRegistry.TryGetParticipantForPeer(peer, out commandParticipant)
+                                                || commandParticipant.AccountId != activeIdentityGuid
+                                                || commandParticipant.CareerIndex != activeCareerIndex
+                                                || !string.Equals(commandParticipant.CharacterId, movedCharacterId, StringComparison.Ordinal))
+                                            {
+                                                _logger.Log(new
+                                                {
+                                                    ts = RequestLogger.UtcNowIso(),
+                                                    type = "hub-character-command-rejected",
+                                                    peer = peer,
+                                                    accountId = activeIdentityGuid,
+                                                    fieldId = shared.Value.FieldId,
+                                                    characterId = movedCharacterId,
+                                                    expectedCharacterId = commandParticipant != null ? commandParticipant.CharacterId : null,
+                                                    reason = "not-active-hub-character",
+                                                });
+                                                continue;
+                                            }
+
                                             if (shared.Value.FieldId == 1)
                                             {
-                                                _hubPresenceRegistry.UpdatePosition(peer, movedX, movedY);
-
-                                                HubPresenceRegistry.Participant movementParticipant;
-                                                _hubPresenceRegistry.TryGetParticipantForPeer(peer, out movementParticipant);
+                                                var movementParticipant = commandParticipant;
                                                 var movementHubId = ResolveParticipantHubId(movementParticipant, currentHubInstanceId);
-
-                                                if (!IsHubMoveOwnershipValid(peer, activeIdentityGuid, movedCharacterId, movementParticipant))
-                                                {
-                                                    continue;
-                                                }
-
-                                                if (movementParticipant != null
-                                                    && !IsNullOrWhiteSpace(movedCharacterId)
-                                                    && !string.Equals(movementParticipant.CharacterId, movedCharacterId, StringComparison.OrdinalIgnoreCase))
-                                                {
-                                                    var previousCharacterId = movementParticipant.CharacterId;
-                                                    var updatedHubId = ResolveParticipantHubId(movementParticipant, movementHubId);
-
-                                                    RetireDuplicateHubSessionForCharacter(peer, movedCharacterId, "hub-move-character-shift-pre-register");
-
-                                                    RegisterOrUpdateHubPresenceWithDuplicateRetire(
-                                                        peer,
-                                                        movementParticipant.AccountId,
-                                                        movementParticipant.IdentityHash,
-                                                        movementParticipant.CareerIndex,
-                                                        movedCharacterId,
-                                                        movementParticipant.CharacterName,
-                                                        updatedHubId,
-                                                        movedX,
-                                                        movedY,
-                                                        "hub-move-character-shift");
-
-                                                    if (!IsNullOrWhiteSpace(updatedHubId) && !IsNullOrWhiteSpace(movementParticipant.CharacterId))
-                                                    {
-                                                        BroadcastHubStateRemove(updatedHubId, peer, movementParticipant.CharacterId);
-                                                    }
-
-                                                    HubPresenceRegistry.Participant shiftedParticipant;
-                                                    _hubPresenceRegistry.TryGetParticipantForPeer(peer, out shiftedParticipant);
-                                                    var shiftedHubId = ResolveParticipantHubId(shiftedParticipant, updatedHubId);
-                                                    if (shiftedParticipant != null && !IsNullOrWhiteSpace(shiftedHubId))
-                                                    {
-                                                        ClearHubAnnouncementForAllPeers(shiftedHubId, shiftedParticipant.CharacterId);
-                                                        BroadcastHubStateAddToReadyPeers(shiftedHubId, peer, shiftedParticipant, "character-shift");
-                                                    }
-
-                                                    _logger.Log(new
-                                                    {
-                                                        ts = RequestLogger.UtcNowIso(),
-                                                        type = "hub-characterid-shift",
-                                                        peer = peer,
-                                                        oldCharacterId = movementParticipant.CharacterId ?? string.Empty,
-                                                        newCharacterId = movedCharacterId,
-                                                        hubId = updatedHubId ?? string.Empty,
-                                                    });
-
-                                                    movementHubId = updatedHubId;
-                                                    movementParticipant = shiftedParticipant;
-
-                                                    if (currentHubInstance != null && !IsNullOrWhiteSpace(movementParticipant != null ? movementParticipant.CharacterId : null))
-                                                    {
-                                                        CareerSlot shiftedSlot = null;
-                                                        if (_userStore != null && !IsNullOrWhiteSpace(activeIdentityHash))
-                                                        {
-                                                            try
-                                                            {
-                                                                shiftedSlot = _userStore.GetOrCreateCareer(activeIdentityHash, activeCareerIndex, false);
-                                                            }
-                                                            catch
-                                                            {
-                                                                shiftedSlot = null;
-                                                            }
-                                                        }
-
-                                                        var shiftedSnapshot = BuildMappedPlayerCharacterSnapshotForHub(
-                                                            activeIdentityGuid,
-                                                            movedCharacterId,
-                                                            movementParticipant != null ? movementParticipant.CharacterName : activeCharacterName,
-                                                            shiftedSlot);
-                                                        _portedHubInstanceManager.RemoveCharacterFromHub(currentHubInstance, previousCharacterId);
-                                                        if (shiftedSnapshot != null)
-                                                        {
-                                                            currentHubInstance.AddCharacter(shiftedSnapshot);
-                                                        }
-                                                    }
-                                                }
-
                                                 var movementCharacterId = movedCharacterId;
-                                                if (IsNullOrWhiteSpace(movementCharacterId))
+
+                                                lock (_hubPresenceLifecycleLock)
                                                 {
-                                                    if (movementParticipant != null)
+                                                    if (!IsCurrentHubParticipant(peer, movementHubId, movementCharacterId))
                                                     {
-                                                        movementCharacterId = movementParticipant.CharacterId;
+                                                        continue;
                                                     }
-                                                }
 
-                                                if (currentHubInstance == null && !IsNullOrWhiteSpace(movementHubId) && _portedHubInstanceManager != null)
-                                                {
-                                                    currentHubInstance = _portedHubInstanceManager.RequestHubInstanceByHubId(movementHubId);
-                                                }
+                                                    _hubPresenceRegistry.UpdatePosition(peer, movedX, movedY);
+                                                    if ((currentHubInstance == null
+                                                            || !string.Equals(currentHubInstance.HubId, movementHubId, StringComparison.Ordinal))
+                                                        && !IsNullOrWhiteSpace(movementHubId) && _portedHubInstanceManager != null)
+                                                    {
+                                                        currentHubInstance = _portedHubInstanceManager.RequestHubInstanceByHubId(movementHubId);
+                                                    }
 
-                                                if (currentHubInstance != null && !IsNullOrWhiteSpace(movementCharacterId))
-                                                {
-                                                    currentHubInstance.QueueMoveRequest(movementCharacterId, new Vector2D(movedX, movedY));
-                                                    currentHubInstanceId = currentHubInstance.HubId;
+                                                    if (currentHubInstance != null && !IsNullOrWhiteSpace(movementCharacterId))
+                                                    {
+                                                        currentHubInstance.QueueMoveRequest(movementCharacterId, new Vector2D(movedX, movedY));
+                                                        currentHubInstanceId = currentHubInstance.HubId;
+                                                    }
                                                 }
 
                                                 var firstMoveReadyActivated = TryActivateHubReadiness(peer, movementHubId, "first-move");
@@ -1626,21 +1568,27 @@ namespace Shadowrun.LocalService.Core.Protocols
                                                     }
                                                 }
 
-                                                var characterIdForPresence = !IsNullOrWhiteSpace(movedCharacterId)
-                                                    ? movedCharacterId
-                                                    : ResolveHubCharacterIdentifier(null, activeIdentityGuid, activeCareerIndex, previousParticipant != null ? previousParticipant.CharacterId : null);
+                                                var characterIdForPresence = commandParticipant.CharacterId;
 
-                                                RegisterOrUpdateHubPresenceWithDuplicateRetire(
-                                                    peer,
-                                                    activeIdentityGuid,
-                                                    activeIdentityHash,
-                                                    activeCareerIndex,
-                                                    characterIdForPresence,
-                                                    activeCharacterName,
-                                                    hubIdForPresence,
-                                                    movedX,
-                                                    movedY,
-                                                    "hub-enter-field-2");
+                                                lock (_hubPresenceLifecycleLock)
+                                                {
+                                                    if (!IsCurrentHubParticipant(peer, commandParticipant.HubId, characterIdForPresence))
+                                                    {
+                                                        continue;
+                                                    }
+
+                                                    RegisterOrUpdateHubPresenceWithDuplicateRetire(
+                                                        peer,
+                                                        activeIdentityGuid,
+                                                        activeIdentityHash,
+                                                        activeCareerIndex,
+                                                        characterIdForPresence,
+                                                        activeCharacterName,
+                                                        hubIdForPresence,
+                                                        movedX,
+                                                        movedY,
+                                                        "hub-enter-field-2");
+                                                }
 
                                                 if (!IsNullOrWhiteSpace(hubIdForPresence))
                                                 {
@@ -1703,14 +1651,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 else if (shared.Value.FieldId == 3)
                                 {
                                     cancelHubReadyFallback("hub-leave-field-3");
-                                    HubPresenceRegistry.Participant leavingParticipant;
-                                    _hubPresenceRegistry.TryGetParticipantForPeer(peer, out leavingParticipant);
-                                    if (currentHubInstance != null && leavingParticipant != null && !IsNullOrWhiteSpace(leavingParticipant.CharacterId))
-                                    {
-                                        _portedHubInstanceManager.RemoveCharacterFromHub(currentHubInstance, leavingParticipant.CharacterId);
-                                        currentHubInstance = null;
-                                    }
                                     RemoveHubPresenceWithBroadcast(peer);
+                                    currentHubInstance = null;
                                 }
                             }
 
@@ -2189,11 +2131,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 }
                             }
 
-                            // Character changes can arrive via the MetaGameplay entity even if the decoded
-                            // ApMsgId/EntityId/FieldId don't match our current expectations.
-                            // If we have a decoded JSON payload and it looks like a CharacterChangeCollection,
-                            // apply it unconditionally.
-                            if (_userStore != null && payloadStrings.Count > 0 && PayloadContains(payloadStrings, "CharacterChangeCollection"))
+                            // Field 6 already identifies the DTO; its JSON need not contain a type hint.
+                            if (_userStore != null && payloadStrings.Count > 0
+                                && (isMetaGameplayChangeCharacter || PayloadContains(payloadStrings, "CharacterChangeCollection")))
                             {
                                 var rawMessage = payloadStrings[0];
                                 var slotIndex = activeCareerIndex;
@@ -2280,18 +2220,31 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             var refreshedCharacterIdentifier = !IsNullOrWhiteSpace(slot.CharacterIdentifier)
                                                 ? slot.CharacterIdentifier
                                                 : (activeIdentityGuid.ToString() + ":" + slotIndex.ToString(CultureInfo.InvariantCulture));
-                                            RetireDuplicateHubSessionForCharacter(peer, refreshedCharacterIdentifier, "character-change-hub-refresh-pre-transition");
-
                                             string refreshedHubId;
-                                            cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
-                                                slot,
-                                                activeIdentityGuid,
-                                                slotIndex,
-                                                false,
-                                                currentHubInstance,
-                                                out refreshedHubId,
-                                                out currentHubInstance);
-                                            currentHubInstanceId = refreshedHubId;
+                                            lock (_hubPresenceLifecycleLock)
+                                            {
+                                                NetworkStream currentStream;
+                                                if (!TryGetHubPeerStream(peer, out currentStream) || !object.ReferenceEquals(currentStream, stream))
+                                                {
+                                                    continue;
+                                                }
+
+                                                cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
+                                                    slot,
+                                                    activeIdentityGuid,
+                                                    slotIndex,
+                                                    false,
+                                                    currentHubInstance,
+                                                    out refreshedHubId,
+                                                    out currentHubInstance);
+                                                currentHubInstanceId = refreshedHubId;
+                                            }
+
+                                            if (changed)
+                                            {
+                                                BroadcastHubPlayerSnapshot(peer, BuildMappedPlayerCharacterSnapshotForHub(
+                                                    activeIdentityGuid, refreshedCharacterIdentifier, slot.CharacterName, slot));
+                                            }
 
                                             var msgNoBase = direct.Value.MsgNo + 2;
                                             var summaryJson = BuildCareerSummaryJsonForIdentity(activeIdentityHash);
@@ -2441,35 +2394,42 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         ? routedSlot.CharacterName
                                         : activeCharacterName;
 
-                                    RetireDuplicateHubSessionForCharacter(peer, routedCharacterIdentifier, "request-story-hub-for-pre-transition");
-
-                                    var transition = TryExecutePortedHubTransition(
-                                        routedHubId,
-                                        activeIdentityGuid,
-                                        routedCharacterIdentifier,
-                                        routedCharacterName,
-                                        routedSlot,
-                                        currentHubInstance);
-                                    if (transition != null && transition.TargetHubInstance != null)
+                                    PortedHubTransitionResult transition;
+                                    lock (_hubPresenceLifecycleLock)
                                     {
-                                        currentHubInstance = transition.TargetHubInstance;
-                                        routedHubId = currentHubInstance.HubId;
+                                        NetworkStream currentStream;
+                                        if (!TryGetHubPeerStream(peer, out currentStream) || !object.ReferenceEquals(currentStream, stream))
+                                        {
+                                            continue;
+                                        }
+
+                                        transition = TryExecutePortedHubTransition(
+                                            routedHubId,
+                                            activeIdentityGuid,
+                                            routedCharacterIdentifier,
+                                            routedCharacterName,
+                                            routedSlot,
+                                            currentHubInstance);
+                                        if (transition != null && transition.TargetHubInstance != null)
+                                        {
+                                            currentHubInstance = transition.TargetHubInstance;
+                                            routedHubId = currentHubInstance.HubId;
+                                        }
+
+                                        var routedX = previousParticipant != null ? previousParticipant.X : 0f;
+                                        var routedY = previousParticipant != null ? previousParticipant.Y : 0f;
+                                        RegisterOrUpdateHubPresenceWithDuplicateRetire(
+                                            peer,
+                                            activeIdentityGuid,
+                                            activeIdentityHash,
+                                            activeCareerIndex,
+                                            routedCharacterIdentifier,
+                                            routedCharacterName,
+                                            routedHubId,
+                                            routedX,
+                                            routedY,
+                                            "request-story-hub-for");
                                     }
-
-                                    var routedX = previousParticipant != null ? previousParticipant.X : 0f;
-                                    var routedY = previousParticipant != null ? previousParticipant.Y : 0f;
-
-                                    RegisterOrUpdateHubPresenceWithDuplicateRetire(
-                                        peer,
-                                        activeIdentityGuid,
-                                        activeIdentityHash,
-                                        activeCareerIndex,
-                                        routedCharacterIdentifier,
-                                        routedCharacterName,
-                                        routedHubId,
-                                        routedX,
-                                        routedY,
-                                        "request-story-hub-for");
 
                                     HubPresenceRegistry.Participant currentParticipant;
                                     _hubPresenceRegistry.TryGetParticipantForPeer(peer, out currentParticipant);
@@ -2556,8 +2516,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                                 {
                                     if (!ShouldSuppressDuplicateHubPush(peer, false, cachedHubStatePayload))
                                     {
-                                        var hubStateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 37, cachedHubStatePayload), requestMsgNoBase + 1);
-                                        SendRawFrame(stream, peer, PrefixLength(hubStateCore), "sent MetaGameplayCommunicationObject SendHubCommunicationObjectToClient in response to RequestStoryHubFor");
+                                        SendHubStateToPeer(stream, peer, currentHubInstanceId, requestMsgNoBase + 1,
+                                            "sent MetaGameplayCommunicationObject SendHubCommunicationObjectToClient in response to RequestStoryHubFor");
                                     }
                                 }
                                 catch
@@ -2729,37 +2689,44 @@ namespace Shadowrun.LocalService.Core.Protocols
                                             }
                                         }
 
-                                        RetireDuplicateHubSessionForCharacter(peer, currentCharacterIdentifier, "request-current-storyline-hub-pre-transition");
-
-                                        var transition = TryExecutePortedHubTransition(
-                                            effectiveHubId,
-                                            activeIdentityGuid,
-                                            currentCharacterIdentifier,
-                                            currentCharacterName,
-                                            currentSlot,
-                                            currentHubInstance);
-                                        if (transition != null && transition.TargetHubInstance != null)
+                                        PortedHubTransitionResult transition;
+                                        lock (_hubPresenceLifecycleLock)
                                         {
-                                            currentHubInstance = transition.TargetHubInstance;
-                                            effectiveHubId = currentHubInstance.HubId;
+                                            NetworkStream currentStream;
+                                            if (!TryGetHubPeerStream(peer, out currentStream) || !object.ReferenceEquals(currentStream, stream))
+                                            {
+                                                continue;
+                                            }
+
+                                            transition = TryExecutePortedHubTransition(
+                                                effectiveHubId,
+                                                activeIdentityGuid,
+                                                currentCharacterIdentifier,
+                                                currentCharacterName,
+                                                currentSlot,
+                                                currentHubInstance);
+                                            if (transition != null && transition.TargetHubInstance != null)
+                                            {
+                                                currentHubInstance = transition.TargetHubInstance;
+                                                effectiveHubId = currentHubInstance.HubId;
+                                            }
+
+                                            currentHubInstanceId = effectiveHubId;
+
+                                            var currentX = previousParticipant != null ? previousParticipant.X : 0f;
+                                            var currentY = previousParticipant != null ? previousParticipant.Y : 0f;
+                                            RegisterOrUpdateHubPresenceWithDuplicateRetire(
+                                                peer,
+                                                activeIdentityGuid,
+                                                activeIdentityHash,
+                                                activeCareerIndex,
+                                                currentCharacterIdentifier,
+                                                currentCharacterName,
+                                                effectiveHubId,
+                                                currentX,
+                                                currentY,
+                                                "request-current-storyline-hub");
                                         }
-
-                                        currentHubInstanceId = effectiveHubId;
-
-                                        var currentX = previousParticipant != null ? previousParticipant.X : 0f;
-                                        var currentY = previousParticipant != null ? previousParticipant.Y : 0f;
-
-                                        RegisterOrUpdateHubPresenceWithDuplicateRetire(
-                                            peer,
-                                            activeIdentityGuid,
-                                            activeIdentityHash,
-                                            activeCareerIndex,
-                                            currentCharacterIdentifier,
-                                            currentCharacterName,
-                                            effectiveHubId,
-                                            currentX,
-                                            currentY,
-                                            "request-current-storyline-hub");
 
                                         HubPresenceRegistry.Participant currentParticipant;
                                         _hubPresenceRegistry.TryGetParticipantForPeer(peer, out currentParticipant);
@@ -2842,8 +2809,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                     if (!ShouldSuppressDuplicateHubPush(peer, false, cachedHubStatePayload))
                                     {
-                                        var hubStateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 37, cachedHubStatePayload), requestMsgNoBase + 1);
-                                        SendRawFrame(stream, peer, PrefixLength(hubStateCore), "sent MetaGameplayCommunicationObject SendHubCommunicationObjectToClient in response to RequestCurrentStorylineHubMessage");
+                                        SendHubStateToPeer(stream, peer, currentHubInstanceId, requestMsgNoBase + 1,
+                                            "sent MetaGameplayCommunicationObject SendHubCommunicationObjectToClient in response to RequestCurrentStorylineHubMessage");
                                     }
 
                                     if (cachedCreationInfoPayload != null)
@@ -2855,133 +2822,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         }
                                     }
 
-                                }
-
-                                // Character creation / customization sends a CharacterChangeCollection that includes
-                                // NameChange: { OldName: "NewRunner", NewName: "ShadowZero" }.
-                                // Persist that NewName to the active career slot so it survives restarts.
-                                if (_userStore != null
-                                    && rawMessage != null
-                                    && (isMetaGameplayChangeCharacter || rawMessage.IndexOf("CharacterChangeCollection", StringComparison.Ordinal) >= 0))
-                                {
-                                    var hasAnyRelevantChange = rawMessage.IndexOf("\"NewName\"", StringComparison.Ordinal) >= 0
-                                        || rawMessage.IndexOf("SkinTextureIndexChange", StringComparison.Ordinal) >= 0
-                                        || rawMessage.IndexOf("BackgroundStoryChange", StringComparison.Ordinal) >= 0
-                                        || rawMessage.IndexOf("BodyChange", StringComparison.Ordinal) >= 0;
-
-                                    if (hasAnyRelevantChange)
-                                    {
-                                        var slotIndex = activeCareerIndex;
-                                        if (slotIndex < 0)
-                                        {
-                                            slotIndex = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetLastCareerIndex(activeIdentityHash) : 0;
-                                        }
-
-                                        var slot = !IsNullOrWhiteSpace(activeIdentityHash) ? _userStore.GetOrCreateCareer(activeIdentityHash, slotIndex, false) : null;
-                                        if (slot != null)
-                                        {
-                                            var changed = false;
-
-                                            var newName = ExtractJsonStringValue(rawMessage, "NewName");
-                                            if (!IsNullOrWhiteSpace(newName) && !string.Equals(slot.CharacterName, newName, StringComparison.Ordinal))
-                                            {
-                                                slot.CharacterName = newName;
-                                                changed = true;
-                                            }
-
-                                            if (!slot.IsOccupied)
-                                            {
-                                                slot.IsOccupied = true;
-                                                changed = true;
-                                            }
-
-                                            // Apply appearance changes if present.
-                                            if (rawMessage.IndexOf("SkinTextureIndexChange", StringComparison.Ordinal) >= 0)
-                                            {
-                                                int skin;
-                                                if (TryParseInt32(ExtractJsonStringValue(rawMessage, "NewIndex"), out skin))
-                                                {
-                                                    if (slot.SkinTextureIndex != skin)
-                                                    {
-                                                        slot.SkinTextureIndex = skin;
-                                                        changed = true;
-                                                    }
-                                                }
-                                            }
-                                            if (rawMessage.IndexOf("BackgroundStoryChange", StringComparison.Ordinal) >= 0)
-                                            {
-                                                ulong story;
-                                                if (TryParseUInt64(ExtractJsonStringValue(rawMessage, "NewStory"), out story))
-                                                {
-                                                    if (slot.BackgroundStory != story)
-                                                    {
-                                                        slot.BackgroundStory = story;
-                                                        changed = true;
-                                                    }
-                                                }
-                                            }
-                                            if (rawMessage.IndexOf("BodyChange", StringComparison.Ordinal) >= 0)
-                                            {
-                                                ulong meta;
-                                                ulong gender;
-                                                if (TryParseUInt64(ExtractJsonStringValue(rawMessage, "NewMetatype"), out meta)
-                                                    && TryParseUInt64(ExtractJsonStringValue(rawMessage, "NewGender"), out gender))
-                                                {
-                                                    ulong bodytype;
-                                                    if (TryResolveBodytypeId(meta, gender, out bodytype) && bodytype != 0UL)
-                                                    {
-                                                        if (slot.Bodytype != bodytype)
-                                                        {
-                                                            slot.Bodytype = bodytype;
-                                                            changed = true;
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            if (changed)
-                                            {
-                                                // After a successful creation/edit flow, treat it as committed.
-                                                if (slot.PendingPersistenceCreation)
-                                                {
-                                                    slot.PendingPersistenceCreation = false;
-                                                }
-                                                if (!IsNullOrWhiteSpace(activeIdentityHash))
-                                                {
-                                                    _userStore.UpsertCareer(activeIdentityHash, slot);
-                                                }
-
-                                                if (!IsNullOrWhiteSpace(slot.CharacterName))
-                                                {
-                                                    activeCharacterName = slot.CharacterName;
-                                                }
-
-                                                var committedCharacterIdentifier = !IsNullOrWhiteSpace(slot.CharacterIdentifier)
-                                                    ? slot.CharacterIdentifier
-                                                    : (activeIdentityGuid.ToString() + ":" + activeCareerIndex.ToString(CultureInfo.InvariantCulture));
-                                                RetireDuplicateHubSessionForCharacter(peer, committedCharacterIdentifier, "character-commit-hub-refresh-pre-transition");
-
-                                                // Refresh cached hub payload (used later when client requests hub state).
-                                                string refreshedHubId;
-                                                cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
-                                                    slot,
-                                                    activeIdentityGuid,
-                                                    slotIndex,
-                                                    false,
-                                                    currentHubInstance,
-                                                    out refreshedHubId,
-                                                    out currentHubInstance);
-                                                currentHubInstanceId = refreshedHubId;
-
-                                                // Nudge client UI lists.
-                                                var msgNoBase = direct.Value.MsgNo + 2;
-                                                var summaryJson = BuildCareerSummaryJsonForIdentity(activeIdentityHash);
-                                                var updatePayload = BuildUtf16StringPayload(summaryJson);
-                                                var updateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 2, 16, updatePayload), msgNoBase);
-                                                SendRawFrame(stream, peer, PrefixLength(updateCore), "sent AccountCommunicationObject UpdateCareerSummaries after CharacterChangeCollection");
-                                            }
-                                        }
-                                    }
                                 }
 
                                 // Client-to-server request to update story progression.
@@ -3192,19 +3032,14 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                         cancelHubReadyFallback("connection-teardown");
                         cancelPostCreateWatchdog("connection-teardown");
-                        HubPresenceRegistry.Participant teardownParticipant;
-                        _hubPresenceRegistry.TryGetParticipantForPeer(peer, out teardownParticipant);
-                        if (currentHubInstance != null && teardownParticipant != null && !IsNullOrWhiteSpace(teardownParticipant.CharacterId))
-                        {
-                            _portedHubInstanceManager.RemoveCharacterFromHub(currentHubInstance, teardownParticipant.CharacterId);
-                            currentHubInstance = null;
-                        }
-                        RemoveHubPresenceWithBroadcast(peer);
-                        UnregisterHubPeerStream(peer, stream);
                     }
                 }
                 finally
                 {
+                    connectionClosed.Set();
+                    RemoveHubPresenceWithBroadcast(peer);
+                    if (hubPeerStream != null) UnregisterHubPeerStream(peer, hubPeerStream);
+
                     if (_accountConnectionTerminator != null)
                     {
                         _accountConnectionTerminator.Unregister("aplay", connectionHash);
@@ -3331,7 +3166,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
-        private void SendRawFrame(NetworkStream stream, string peer, byte[] decoded, string note)
+        private bool SendRawFrame(NetworkStream stream, string peer, byte[] decoded, string note)
         {
             var frameBytes = Encoding.ASCII.GetBytes(Convert.ToBase64String(decoded) + "\0");
             try
@@ -3351,7 +3186,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     note = note,
                     reason = "stream-disposed",
                 });
-                return;
+                return false;
             }
             catch (IOException ioex)
             {
@@ -3372,7 +3207,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                     message = ioex.Message,
                     socketErrorCode = socketErrorCode,
                 });
-                return;
+                stream.Close();
+                return false;
             }
             catch (SocketException sex)
             {
@@ -3386,7 +3222,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                     message = sex.Message,
                     socketErrorCode = sex.SocketErrorCode.ToString(),
                 });
-                return;
+                stream.Close();
+                return false;
             }
 
             var payload = new
@@ -3409,6 +3246,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             {
                 _logger.Log(payload);
             }
+            return true;
         }
 
     }

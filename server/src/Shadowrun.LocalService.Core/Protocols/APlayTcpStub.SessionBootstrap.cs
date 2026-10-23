@@ -373,28 +373,35 @@ namespace Shadowrun.LocalService.Core.Protocols
                 ? slot.CharacterIdentifier
                 : (identityGuid.ToString() + ":" + careerIndex.ToString());
 
-            RetireDuplicateHubSessionForCharacter(peer, characterIdentifier, "career-enter-bootstrap-pre-transition");
+            lock (_hubPresenceLifecycleLock)
+            {
+                NetworkStream currentStream;
+                if (!TryGetHubPeerStream(peer, out currentStream) || !object.ReferenceEquals(currentStream, stream))
+                {
+                    return true;
+                }
 
-            cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
-                slot,
-                identityGuid,
-                careerIndex,
-                false,
-                currentHubInstance,
-                out currentHubInstanceId,
-                out currentHubInstance);
+                cachedHubStatePayload = BuildPortedHubStatePayloadForSlot(
+                    slot,
+                    identityGuid,
+                    careerIndex,
+                    false,
+                    currentHubInstance,
+                    out currentHubInstanceId,
+                    out currentHubInstance);
 
-            RegisterOrUpdateHubPresenceWithDuplicateRetire(
-                peer,
-                activeIdentityGuid,
-                activeIdentityHash,
-                activeCareerIndex,
-                characterIdentifier,
-                activeCharacterName,
-                currentHubInstanceId,
-                0f,
-                0f,
-                "career-enter-bootstrap");
+                RegisterOrUpdateHubPresenceWithDuplicateRetire(
+                    peer,
+                    activeIdentityGuid,
+                    activeIdentityHash,
+                    activeCareerIndex,
+                    characterIdentifier,
+                    activeCharacterName,
+                    currentHubInstanceId,
+                    0f,
+                    0f,
+                    "career-enter-bootstrap");
+            }
 
             var creationInfoJson = "{\"PendingPersistenceCreation\":" + (pendingCreation ? "true" : "false") + ",\"DataVersionChanged\":false}";
             var creationInfoPayload = BuildUtf16StringPayload(creationInfoJson);

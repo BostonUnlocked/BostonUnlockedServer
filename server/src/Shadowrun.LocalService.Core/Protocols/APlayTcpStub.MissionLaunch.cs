@@ -63,8 +63,12 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             if (cachedHubStatePayload != null && cachedCreationInfoPayload != null)
             {
-                var hubStateCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 37, cachedHubStatePayload), requestMsgNoBase + 1);
-                SendRawFrame(stream, peer, PrefixLength(hubStateCore), "sent MetaGameplayCommunicationObject SendHubCommunicationObjectToClient (mission already completed)");
+                HubPresenceRegistry.Participant participant;
+                if (_hubPresenceRegistry.TryGetParticipantForPeer(peer, out participant))
+                {
+                    SendHubStateToPeer(stream, peer, participant.HubId, requestMsgNoBase + 1,
+                        "sent MetaGameplayCommunicationObject SendHubCommunicationObjectToClient (mission already completed)");
+                }
 
                 var creationInfoCore = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 38, cachedCreationInfoPayload), requestMsgNoBase + 2);
                 SendRawFrame(stream, peer, PrefixLength(creationInfoCore), "sent MetaGameplayCommunicationObject CreationInfoChanged (mission already completed)");

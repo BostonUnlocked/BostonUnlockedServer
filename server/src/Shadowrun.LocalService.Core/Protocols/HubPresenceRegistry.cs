@@ -23,7 +23,7 @@ namespace Shadowrun.LocalService.Core.Protocols
         private readonly Dictionary<Guid, HashSet<string>> _peersByAccount = new Dictionary<Guid, HashSet<string>>();
         private readonly Dictionary<string, string> _peerByCharacterId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        public void RegisterOrUpdate(
+        public Participant[] RegisterOrUpdate(
             string peer,
             Guid accountId,
             string identityHash,
@@ -36,11 +36,37 @@ namespace Shadowrun.LocalService.Core.Protocols
         {
             if (IsNullOrWhiteSpace(peer))
             {
-                return;
+                return new Participant[0];
             }
 
             lock (_lock)
             {
+                var displaced = new List<Participant>();
+                if (!IsNullOrWhiteSpace(characterId))
+                {
+                    var duplicatePeers = new List<string>();
+                    foreach (var pair in _byPeer)
+                    {
+                        if (pair.Value != null
+                            && !string.Equals(pair.Key, peer, StringComparison.OrdinalIgnoreCase)
+                            && string.Equals(pair.Value.CharacterId, characterId, StringComparison.OrdinalIgnoreCase))
+                        {
+                            duplicatePeers.Add(pair.Key);
+                            displaced.Add(CloneParticipant(pair.Value));
+                        }
+                    }
+
+                    for (var i = 0; i < duplicatePeers.Count; i++)
+                    {
+                        Participant duplicate;
+                        if (_byPeer.TryGetValue(duplicatePeers[i], out duplicate) && duplicate != null)
+                        {
+                            RemoveFromIndexes_NoLock(duplicate);
+                            _byPeer.Remove(duplicatePeers[i]);
+                        }
+                    }
+                }
+
                 Participant p;
                 if (!_byPeer.TryGetValue(peer, out p) || p == null)
                 {
@@ -61,6 +87,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 p.Y = y;
 
                 AddToIndexes_NoLock(p);
+                return displaced.ToArray();
             }
         }
 
