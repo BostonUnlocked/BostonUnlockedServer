@@ -17,6 +17,10 @@ namespace Shadowrun.LocalService.Core.Protocols
 {
     public sealed partial class APlayTcpStub
     {
+        private readonly object _hubPresenceLifecycleLock = new object();
+        private readonly object _hubLastDeliveredHubLock = new object();
+        private readonly Dictionary<string, string> _hubLastDeliveredHubByPeer = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
         private HubPlayerCharacter BuildHubPlayerCharacterFromParticipant(HubPresenceRegistry.Participant participant)
         {
             if (participant == null || IsNullOrWhiteSpace(participant.CharacterId))
@@ -88,38 +92,6 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             return _hubPresenceRegistry.TryGetParticipantForPeer(peer, out participant) && participant != null;
-        }
-
-        private bool RetireDuplicateHubSessionForCharacter(string replacementPeer, string characterId, string reason)
-        {
-            if (IsNullOrWhiteSpace(characterId))
-            {
-                return false;
-            }
-
-            string existingPeer;
-            if (!_hubPresenceRegistry.TryGetPeerForCharacter(characterId, out existingPeer)
-                || IsNullOrWhiteSpace(existingPeer)
-                || string.Equals(existingPeer, replacementPeer, StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            var total = Interlocked.Increment(ref _hubDuplicateSessionRetiredTotal);
-            _logger.Log(new
-            {
-                ts = RequestLogger.UtcNowIso(),
-                type = "hub-duplicate-session-retired",
-                reason = reason ?? string.Empty,
-                characterId = characterId,
-                replacementPeer = replacementPeer ?? string.Empty,
-                retiredPeer = existingPeer,
-                total = total,
-            });
-
-            RemoveHubPresenceWithBroadcast(existingPeer, null, reason ?? string.Empty);
-            UnregisterHubPeerStream(existingPeer, null);
-            return true;
         }
 
         private bool TryResolveHubIdForCharacter(string characterId, out string hubId)
@@ -248,18 +220,63 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
+            NetworkStream registeredStream;
             lock (_hubPeerStreamsLock)
             {
-                NetworkStream existing;
-                if (_hubPeerStreams.TryGetValue(peer, out existing) && (stream == null || object.ReferenceEquals(existing, stream)))
+                _hubPeerStreams.TryGetValue(peer, out registeredStream);
+            }
+
+            if (registeredStream == null)
+            {
+                if (stream == null)
                 {
-                    _hubPeerStreams.Remove(peer);
+                    ClearHubAnnouncementsForPeer(peer);
                 }
+                return;
+            }
+
+            lock (registeredStream)
+            {
+                var removed = false;
+                lock (_hubPeerStreamsLock)
+                {
+                    NetworkStream current;
+                    if (_hubPeerStreams.TryGetValue(peer, out current)
+                        && object.ReferenceEquals(current, registeredStream)
+                        && (stream == null || object.ReferenceEquals(current, stream)))
+                    {
+                        _hubPeerStreams.Remove(peer);
+                        removed = true;
+                    }
+                }
+
+                if (!removed)
+                {
+                    return;
+                }
+
+                ClearHubAnnouncementsForPeer_NoStreamLock(peer);
             }
 
             ConnectedPeerRegistry.MarkDisconnected(peer);
+            if (stream == null)
+            {
+                registeredStream.Close();
+            }
+        }
 
-            ClearHubAnnouncementsForPeer(peer);
+        private bool TryGetHubPeerStream(string peer, out NetworkStream stream)
+        {
+            stream = null;
+            if (IsNullOrWhiteSpace(peer))
+            {
+                return false;
+            }
+
+            lock (_hubPeerStreamsLock)
+            {
+                return _hubPeerStreams.TryGetValue(peer, out stream) && stream != null;
+            }
         }
 
         private static string BuildHubAnnouncementToken(string hubId, string characterId)
@@ -325,7 +342,32 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
         }
 
-        private void SendHubStateAddToTarget(string hubId, HubPresenceRegistry.Participant participant, HubPeerTarget target, string mode, string source)
+        private bool IsCurrentHubParticipant(string peer, string hubId, string characterId)
+        {
+            HubPresenceRegistry.Participant current;
+            return _hubPresenceRegistry.TryGetParticipantForPeer(peer, out current)
+                && string.Equals(current.HubId, hubId, StringComparison.Ordinal)
+                && string.Equals(current.CharacterId, characterId, StringComparison.Ordinal);
+        }
+
+        private bool IsCurrentHubRecipient(string peer, string hubId)
+        {
+            HubPresenceRegistry.Participant current;
+            if (!_hubPresenceRegistry.TryGetParticipantForPeer(peer, out current)
+                || !string.Equals(current.HubId, hubId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            lock (_hubLastDeliveredHubLock)
+            {
+                string deliveredHubId;
+                return _hubLastDeliveredHubByPeer.TryGetValue(peer, out deliveredHubId)
+                    && string.Equals(deliveredHubId, hubId, StringComparison.Ordinal);
+            }
+        }
+
+        private bool SendHubStateAddToTarget(string hubId, HubPresenceRegistry.Participant participant, HubPeerTarget target, string mode, string source)
         {
             if (IsNullOrWhiteSpace(hubId)
                 || participant == null
@@ -334,13 +376,20 @@ namespace Shadowrun.LocalService.Core.Protocols
                 || IsNullOrWhiteSpace(target.Peer)
                 || IsNullOrWhiteSpace(participant.CharacterId))
             {
-                return;
+                return false;
+            }
+
+            if (!IsCurrentHubRecipient(target.Peer, hubId)
+                || (!IsNullOrWhiteSpace(participant.Peer)
+                    && !IsCurrentHubParticipant(participant.Peer, hubId, participant.CharacterId)))
+            {
+                return false;
             }
 
             var hubPlayerCharacter = BuildHubPlayerCharacterFromParticipant(participant);
             if (hubPlayerCharacter == null)
             {
-                return;
+                return false;
             }
 
             var update = HubStateUpdate.CreateForCharacterAddtion(hubPlayerCharacter, hubId);
@@ -358,7 +407,10 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             var msgNo = ReserveMetaGameplayMsgNos(1);
             var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, HubEntityId, 7, data), msgNo);
-            SendRawFrame(target.Stream, target.Peer, PrefixLength(core), "sent HubCommunicationObject HubStateChanged add (" + (mode ?? string.Empty) + ")");
+            if (!SendRawFrame(target.Stream, target.Peer, PrefixLength(core), "sent HubCommunicationObject HubStateChanged add (" + (mode ?? string.Empty) + ")"))
+            {
+                return false;
+            }
 
             _logger.Log(new
             {
@@ -372,6 +424,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 sentCount = 1,
                 targetPeers = new[] { target.Peer },
             });
+            return true;
         }
 
         private bool EnsureHubCharacterAnnouncedForTarget(string hubId, HubPresenceRegistry.Participant participant, HubPeerTarget target, string source)
@@ -385,18 +438,26 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return false;
             }
 
-            if (IsHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId))
+            if (target.Stream == null)
             {
+                return false;
+            }
+
+            lock (target.Stream)
+            {
+                if (IsHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId))
+                {
+                    return true;
+                }
+
+                if (!SendHubStateAddToTarget(hubId, participant, target, "ensure-announced", source ?? string.Empty))
+                {
+                    return false;
+                }
+
+                TryMarkHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId);
                 return true;
             }
-
-            if (!TryMarkHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId))
-            {
-                return IsHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId);
-            }
-
-            SendHubStateAddToTarget(hubId, participant, target, "ensure-announced", source ?? string.Empty);
-            return true;
         }
 
         private void ClearHubAnnouncementsForPeer(string peer)
@@ -406,6 +467,21 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
+            NetworkStream stream;
+            if (TryGetHubPeerStream(peer, out stream))
+            {
+                lock (stream)
+                {
+                    ClearHubAnnouncementsForPeer_NoStreamLock(peer);
+                }
+                return;
+            }
+
+            ClearHubAnnouncementsForPeer_NoStreamLock(peer);
+        }
+
+        private void ClearHubAnnouncementsForPeer_NoStreamLock(string peer)
+        {
             lock (_hubAnnouncedByPeerLock)
             {
                 _hubAnnouncedByPeer.Remove(peer);
@@ -416,6 +492,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                 _hubReadyByPeer.Remove(peer);
             }
 
+            lock (_hubLastDeliveredHubLock)
+            {
+                _hubLastDeliveredHubByPeer.Remove(peer);
+            }
         }
 
         private void ClearHubAnnouncementsForPeerHub(string peer, string hubId)
@@ -425,6 +505,21 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
+            NetworkStream stream;
+            if (TryGetHubPeerStream(peer, out stream))
+            {
+                lock (stream)
+                {
+                    ClearHubAnnouncementsForPeerHub_NoStreamLock(peer, hubId);
+                }
+                return;
+            }
+
+            ClearHubAnnouncementsForPeerHub_NoStreamLock(peer, hubId);
+        }
+
+        private void ClearHubAnnouncementsForPeerHub_NoStreamLock(string peer, string hubId)
+        {
             lock (_hubAnnouncedByPeerLock)
             {
                 HashSet<string> announced;
@@ -462,13 +557,51 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             var token = BuildHubAnnouncementToken(hubId, characterId);
+            List<KeyValuePair<string, NetworkStream>> streams;
+            lock (_hubPeerStreamsLock)
+            {
+                streams = _hubPeerStreams
+                    .Where(pair => pair.Value != null)
+                    .ToList();
+            }
+
+            var streamedPeers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < streams.Count; i++)
+            {
+                var pair = streams[i];
+                streamedPeers.Add(pair.Key);
+                lock (pair.Value)
+                {
+                    lock (_hubAnnouncedByPeerLock)
+                    {
+                        HashSet<string> announced;
+                        if (_hubAnnouncedByPeer.TryGetValue(pair.Key, out announced) && announced != null)
+                        {
+                            announced.Remove(token);
+                            if (announced.Count == 0)
+                            {
+                                _hubAnnouncedByPeer.Remove(pair.Key);
+                            }
+                        }
+                    }
+                }
+            }
+
             lock (_hubAnnouncedByPeerLock)
             {
-                foreach (var pair in _hubAnnouncedByPeer)
+                var peersWithoutStreams = _hubAnnouncedByPeer.Keys
+                    .Where(peer => !streamedPeers.Contains(peer))
+                    .ToList();
+                for (var i = 0; i < peersWithoutStreams.Count; i++)
                 {
-                    if (pair.Value != null)
+                    HashSet<string> announced;
+                    if (_hubAnnouncedByPeer.TryGetValue(peersWithoutStreams[i], out announced) && announced != null)
                     {
-                        pair.Value.Remove(token);
+                        announced.Remove(token);
+                        if (announced.Count == 0)
+                        {
+                            _hubAnnouncedByPeer.Remove(peersWithoutStreams[i]);
+                        }
                     }
                 }
             }
@@ -534,6 +667,131 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
 
                 return readyHubs.Contains(hubId);
+            }
+        }
+
+        private static string BuildEmptyHubState(string hubId, PortedHubInstance hubInstance)
+        {
+            if (hubInstance != null)
+            {
+                return hubInstance.EmptySerializedHubState();
+            }
+
+            return HubSerializer.SerializeHubState(new HubState
+            {
+                HubId = hubId ?? string.Empty,
+                Name = GetHubNameFromHubInstanceId(hubId),
+                PlayerCharacters = new Dictionary<string, HubPlayerCharacter>(),
+            });
+        }
+
+        private void ClearHubRecipientLifecycle_NoStreamLock(string peer)
+        {
+            lock (_hubAnnouncedByPeerLock)
+            {
+                _hubAnnouncedByPeer.Remove(peer);
+            }
+
+            lock (_hubReadyByPeerLock)
+            {
+                _hubReadyByPeer.Remove(peer);
+            }
+        }
+
+        private bool SendHubStateToPeer(NetworkStream stream, string peer, string hubId, ulong msgNo, string note)
+        {
+            if (stream == null || IsNullOrWhiteSpace(peer) || IsNullOrWhiteSpace(hubId))
+            {
+                return false;
+            }
+
+            var hubInstance = _portedHubInstanceManager != null
+                ? _portedHubInstanceManager.RequestHubInstanceByHubId(hubId)
+                : null;
+            var payload = BuildMetaHubPushPayload(HubEntityId, BuildEmptyHubState(hubId, hubInstance));
+            var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, 3, 37, payload), msgNo);
+
+            lock (stream)
+            {
+                string lastDeliveredHubId;
+                bool sameHub;
+                lock (_hubLastDeliveredHubLock)
+                {
+                    sameHub = _hubLastDeliveredHubByPeer.TryGetValue(peer, out lastDeliveredHubId)
+                        && string.Equals(lastDeliveredHubId, hubId, StringComparison.OrdinalIgnoreCase);
+                }
+
+                if (!SendRawFrame(stream, peer, PrefixLength(core), note ?? "sent empty hub-state handoff"))
+                {
+                    return false;
+                }
+
+                if (!sameHub)
+                {
+                    ClearHubRecipientLifecycle_NoStreamLock(peer);
+                    lock (_hubLastDeliveredHubLock)
+                    {
+                        _hubLastDeliveredHubByPeer[peer] = hubId;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private void BroadcastHubPlayerSnapshot(string sourcePeer, IPlayerCharacterSnapshot snapshot)
+        {
+            if (snapshot == null || IsNullOrWhiteSpace(snapshot.CharacterIdentifier))
+            {
+                return;
+            }
+
+            string hubId;
+            lock (_hubPresenceLifecycleLock)
+            {
+                HubPresenceRegistry.Participant participant;
+                if (!_hubPresenceRegistry.TryGetParticipantForPeer(sourcePeer, out participant)
+                    || participant == null
+                    || !string.Equals(participant.CharacterId, snapshot.CharacterIdentifier, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                hubId = ResolveParticipantHubId(participant, null);
+                if (IsNullOrWhiteSpace(hubId))
+                {
+                    return;
+                }
+
+                if (_portedHubInstanceManager != null)
+                {
+                    _portedHubInstanceManager.UpdatePlayerCharacterSnapshot(snapshot);
+                }
+            }
+
+            var payload = BuildUtf16StringPayload(PCSSerializer.SerializePlayerCharacterSnapshot(snapshot));
+            var targets = GetHubBroadcastTargets(hubId, sourcePeer);
+            for (var i = 0; i < targets.Count; i++)
+            {
+                var target = targets[i];
+                if (target == null || target.Stream == null || IsNullOrWhiteSpace(target.Peer))
+                {
+                    continue;
+                }
+
+                lock (target.Stream)
+                {
+                    if (!IsCurrentHubRecipient(target.Peer, hubId)
+                        || !IsCurrentHubParticipant(sourcePeer, hubId, snapshot.CharacterIdentifier)
+                        || !IsHubCharacterAnnounced(target.Peer, hubId, snapshot.CharacterIdentifier))
+                    {
+                        continue;
+                    }
+
+                    var msgNo = ReserveMetaGameplayMsgNos(1);
+                    var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, HubEntityId, 8, payload), msgNo);
+                    SendRawFrame(target.Stream, target.Peer, PrefixLength(core), "sent HubCommunicationObject PlayerSnapshotChanged");
+                }
             }
         }
 
@@ -738,71 +996,69 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
-            var updates = new List<byte[]>();
-            var sentPlayerIds = new List<ulong>();
             var candidateCount = 0;
             var sentCharacterIds = new List<string>();
-            foreach (var kvp in portedHubInstance.HubState.PlayerCharacters)
+            var sentPlayerIds = new List<ulong>();
+            var sent = 0;
+            lock (targetStream)
             {
-                var characterId = kvp.Key;
-                var hubPlayerCharacter = kvp.Value;
-                if (IsNullOrWhiteSpace(characterId)
-                    || hubPlayerCharacter == null
-                    || (targetParticipant != null && string.Equals(targetParticipant.CharacterId, characterId, StringComparison.OrdinalIgnoreCase)))
+                if (!IsCurrentHubRecipient(targetPeer, hubId))
                 {
-                    continue;
+                    return;
                 }
 
-                candidateCount++;
-
-                if (IsHubCharacterAnnounced(targetPeer, hubId, characterId))
+                foreach (var kvp in portedHubInstance.HubState.PlayerCharacters)
                 {
-                    continue;
+                    var characterId = kvp.Key;
+                    var hubPlayerCharacter = kvp.Value;
+                    if (IsNullOrWhiteSpace(characterId)
+                        || hubPlayerCharacter == null
+                        || (targetParticipant != null && string.Equals(targetParticipant.CharacterId, characterId, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        continue;
+                    }
+
+                    candidateCount++;
+
+                    if (IsHubCharacterAnnounced(targetPeer, hubId, characterId))
+                    {
+                        continue;
+                    }
+
+                    var update = HubStateUpdate.CreateForCharacterAddtion(hubPlayerCharacter, hubId);
+                    var payload = BuildUtf16StringPayload(HubSerializer.SerializeHubStateUpdate(update));
+                    var msgNo = ReserveMetaGameplayMsgNos(1);
+                    var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, HubEntityId, 7, payload), msgNo);
+                    if (!SendRawFrame(targetStream, targetPeer, PrefixLength(core), "sent HubCommunicationObject HubStateChanged add (roster replay)"))
+                    {
+                        continue;
+                    }
+
+                    TryMarkHubCharacterAnnounced(targetPeer, hubId, characterId);
+                    sent++;
+                    sentCharacterIds.Add(characterId);
+                    sentPlayerIds.Add(hubPlayerCharacter.Snapshot != null ? hubPlayerCharacter.Snapshot.PlayerId : 0UL);
+
+                    HubPresenceRegistry.Participant participant;
+                    if (!TryGetHubParticipantByCharacterId(characterId, out participant) || participant == null)
+                    {
+                        participant = CreateSyntheticParticipant(hubId, characterId, hubPlayerCharacter);
+                    }
+
+                    LogHubAddPayloadSummary(
+                        "roster-replay",
+                        hubId,
+                        targetPeer,
+                        participant,
+                        hubPlayerCharacter,
+                        payload,
+                        source);
                 }
-
-                if (!TryMarkHubCharacterAnnounced(targetPeer, hubId, characterId))
-                {
-                    continue;
-                }
-
-                var update = HubStateUpdate.CreateForCharacterAddtion(hubPlayerCharacter, hubId);
-                var payload = BuildUtf16StringPayload(HubSerializer.SerializeHubStateUpdate(update));
-                updates.Add(payload);
-                sentCharacterIds.Add(characterId);
-                sentPlayerIds.Add(hubPlayerCharacter.Snapshot != null ? hubPlayerCharacter.Snapshot.PlayerId : 0UL);
-
-                HubPresenceRegistry.Participant participant;
-                if (!TryGetHubParticipantByCharacterId(characterId, out participant) || participant == null)
-                {
-                    participant = CreateSyntheticParticipant(hubId, characterId, hubPlayerCharacter);
-                }
-
-                LogHubAddPayloadSummary(
-                    "roster-replay",
-                    hubId,
-                    targetPeer,
-                    participant,
-                    hubPlayerCharacter,
-                    payload,
-                    source);
             }
 
-            if (updates.Count == 0)
+            if (sent == 0)
             {
                 return;
-            }
-
-            var firstMsgNo = ReserveMetaGameplayMsgNos(updates.Count);
-            for (var i = 0; i < updates.Count; i++)
-            {
-                try
-                {
-                    var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, HubEntityId, 7, updates[i]), firstMsgNo + (ulong)i);
-                    SendRawFrame(targetStream, targetPeer, PrefixLength(core), "sent HubCommunicationObject HubStateChanged add (roster replay)");
-                }
-                catch
-                {
-                }
             }
 
             _logger.Log(new
@@ -812,7 +1068,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 targetPeer = targetPeer,
                 hubId = hubId,
                 candidates = candidateCount,
-                sent = updates.Count,
+                sent = sent,
                 sentCharacterIds = sentCharacterIds,
                 sentPlayerIds = sentPlayerIds,
                 source = source ?? string.Empty,
@@ -827,7 +1083,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 targetPeer = targetPeer,
                 hubId = hubId,
                 source = source ?? string.Empty,
-                sentCount = updates.Count,
+                sentCount = sent,
                 sentCharacterIds = sentCharacterIds,
                 authoritative = true,
             });
@@ -899,52 +1155,65 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
+            var data = BuildHubMovementPayload(hubId, characterId, x, y);
+            if (data == null)
+            {
+                return;
+            }
+
             HubPresenceRegistry.Participant senderParticipant;
             var canEnsureAnnouncement = _hubPresenceRegistry.TryGetParticipantForPeer(senderPeer, out senderParticipant)
                 && senderParticipant != null
                 && !IsNullOrWhiteSpace(senderParticipant.CharacterId)
                 && string.Equals(senderParticipant.CharacterId, characterId, StringComparison.OrdinalIgnoreCase);
 
-            var filteredTargets = new List<HubPeerTarget>(targets.Count);
             var ensuredTargets = new List<string>();
             var blockedTargets = new List<string>();
+            var sentTargets = new List<string>();
             for (var i = 0; i < targets.Count; i++)
             {
                 var target = targets[i];
-                if (target == null || IsNullOrWhiteSpace(target.Peer))
+                if (target == null || target.Stream == null || IsNullOrWhiteSpace(target.Peer))
                 {
                     continue;
                 }
 
-                if (IsHubCharacterAnnounced(target.Peer, hubId, characterId))
+                lock (target.Stream)
                 {
-                    filteredTargets.Add(target);
-                }
-                else if (canEnsureAnnouncement
-                    && IsHubPeerReady(target.Peer, hubId)
-                    && EnsureHubCharacterAnnouncedForTarget(hubId, senderParticipant, target, "move-send"))
-                {
-                    filteredTargets.Add(target);
-                    ensuredTargets.Add(target.Peer);
-                }
-                else
-                {
-                    blockedTargets.Add(target.Peer);
+                    if (!IsCurrentHubRecipient(target.Peer, hubId)
+                        || !IsCurrentHubParticipant(senderPeer, hubId, characterId))
+                    {
+                        continue;
+                    }
+
+                    var announced = IsHubCharacterAnnounced(target.Peer, hubId, characterId);
+                    if (!announced
+                        && canEnsureAnnouncement
+                        && IsHubPeerReady(target.Peer, hubId)
+                        && EnsureHubCharacterAnnouncedForTarget(hubId, senderParticipant, target, "move-send"))
+                    {
+                        announced = true;
+                        ensuredTargets.Add(target.Peer);
+                    }
+
+                    if (!announced)
+                    {
+                        blockedTargets.Add(target.Peer);
+                        continue;
+                    }
+
+                    var msgNo = ReserveMetaGameplayMsgNos(1);
+                    var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, HubEntityId, 4, data), msgNo);
+                    if (SendRawFrame(target.Stream, target.Peer, PrefixLength(core), "sent HubCommunicationObject ExecuteMoveToPosition (broadcast)"))
+                    {
+                        sentTargets.Add(target.Peer);
+                    }
                 }
             }
 
-            if (filteredTargets.Count == 0)
+            if (sentTargets.Count == 0)
             {
                 return;
-            }
-
-            var targetPeers = new List<string>(filteredTargets.Count);
-            for (var i = 0; i < filteredTargets.Count; i++)
-            {
-                if (filteredTargets[i] != null && !IsNullOrWhiteSpace(filteredTargets[i].Peer))
-                {
-                    targetPeers.Add(filteredTargets[i].Peer);
-                }
             }
 
             _logger.Log(new
@@ -956,7 +1225,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 characterId = characterId,
                 x = x,
                 y = y,
-                targets = targetPeers,
+                targets = sentTargets,
             });
 
             _logger.Log(new
@@ -967,23 +1236,20 @@ namespace Shadowrun.LocalService.Core.Protocols
                 senderPeer = senderPeer ?? string.Empty,
                 characterId = characterId,
                 totalTargets = targets.Count,
-                eligibleTargets = filteredTargets.Count,
+                eligibleTargets = sentTargets.Count,
                 ensuredTargets = ensuredTargets,
                 blockedTargets = blockedTargets,
             });
-
-            var data = BuildHubMovementPayload(hubId, characterId, x, y);
-            if (data == null)
-            {
-                return;
-            }
-
-            BroadcastHubFieldEvent(filteredTargets, 4, data, "sent HubCommunicationObject ExecuteMoveToPosition (broadcast)");
         }
 
         private void BroadcastHubStateAddToReadyPeers(string hubId, string senderPeer, HubPresenceRegistry.Participant participant, string source)
         {
             if (IsNullOrWhiteSpace(hubId) || participant == null)
+            {
+                return;
+            }
+
+            if (IsNullOrWhiteSpace(participant.CharacterId))
             {
                 return;
             }
@@ -994,37 +1260,38 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
-            var update = HubStateUpdate.CreateForCharacterAddtion(hubPlayerCharacter, hubId);
-            var serializedUpdate = HubSerializer.SerializeHubStateUpdate(update);
-            var data = BuildUtf16StringPayload(serializedUpdate);
-
             var targets = GetHubBroadcastTargets(hubId, senderPeer);
             if (targets.Count == 0)
             {
                 return;
             }
 
-            var filteredTargets = new List<HubPeerTarget>(targets.Count);
+            var sentTargets = new List<string>();
             for (var i = 0; i < targets.Count; i++)
             {
                 var target = targets[i];
-                if (target == null || IsNullOrWhiteSpace(target.Peer))
+                if (target == null || target.Stream == null || IsNullOrWhiteSpace(target.Peer))
                 {
                     continue;
                 }
 
-                if (!IsHubPeerReady(target.Peer, hubId))
+                lock (target.Stream)
                 {
-                    continue;
-                }
+                    if (!IsHubPeerReady(target.Peer, hubId)
+                        || IsHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId))
+                    {
+                        continue;
+                    }
 
-                if (TryMarkHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId))
-                {
-                    filteredTargets.Add(target);
+                    if (SendHubStateAddToTarget(hubId, participant, target, "broadcast", source ?? string.Empty))
+                    {
+                        TryMarkHubCharacterAnnounced(target.Peer, hubId, participant.CharacterId);
+                        sentTargets.Add(target.Peer);
+                    }
                 }
             }
 
-            if (filteredTargets.Count == 0)
+            if (sentTargets.Count == 0)
             {
                 _logger.Log(new
                 {
@@ -1033,7 +1300,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     hubId = hubId,
                     senderPeer = senderPeer ?? string.Empty,
                     characterId = participant.CharacterId,
-                    playerId = (hubPlayerCharacter.Snapshot != null ? hubPlayerCharacter.Snapshot.PlayerId : 0UL),
+                    playerId = hubPlayerCharacter.Snapshot != null ? hubPlayerCharacter.Snapshot.PlayerId : 0UL,
                     targets = targets.Count,
                     sentTargets = 0,
                 });
@@ -1047,10 +1314,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                 hubId = hubId,
                 senderPeer = senderPeer ?? string.Empty,
                 characterId = participant.CharacterId,
-                playerId = (hubPlayerCharacter.Snapshot != null ? hubPlayerCharacter.Snapshot.PlayerId : 0UL),
+                playerId = hubPlayerCharacter.Snapshot != null ? hubPlayerCharacter.Snapshot.PlayerId : 0UL,
                 targets = targets.Count,
-                sentTargets = filteredTargets.Count,
-                targetPeers = filteredTargets.Select(t => t != null ? t.Peer : string.Empty).ToList(),
+                sentTargets = sentTargets.Count,
+                targetPeers = sentTargets,
             });
 
             _logger.Log(new
@@ -1062,29 +1329,9 @@ namespace Shadowrun.LocalService.Core.Protocols
                 hubId = hubId,
                 senderPeer = senderPeer ?? string.Empty,
                 characterId = participant.CharacterId,
-                sentCount = filteredTargets.Count,
-                targetPeers = filteredTargets.Select(t => t != null ? t.Peer : string.Empty).ToList(),
+                sentCount = sentTargets.Count,
+                targetPeers = sentTargets,
             });
-
-            for (var i = 0; i < filteredTargets.Count; i++)
-            {
-                var target = filteredTargets[i];
-                if (target == null || IsNullOrWhiteSpace(target.Peer))
-                {
-                    continue;
-                }
-
-                LogHubAddPayloadSummary(
-                    "broadcast",
-                    hubId,
-                    target.Peer,
-                    participant,
-                    hubPlayerCharacter,
-                    data,
-                    source ?? string.Empty);
-            }
-
-            BroadcastHubFieldEvent(filteredTargets, 7, data, "sent HubCommunicationObject HubStateChanged add (broadcast)");
         }
 
         private void BroadcastHubStateRemove(string hubId, string senderPeer, string removedCharacterId)
@@ -1094,16 +1341,43 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
-            ClearHubAnnouncementForAllPeers(hubId, removedCharacterId);
-
             var update = HubStateUpdate.CreateForRemoveCharacter(removedCharacterId, hubId);
             var serializedUpdate = HubSerializer.SerializeHubStateUpdate(update);
             var data = BuildUtf16StringPayload(serializedUpdate);
 
             var targets = GetHubBroadcastTargets(hubId, senderPeer);
-            if (targets.Count == 0)
+            var sentTargets = new List<string>();
+            for (var i = 0; i < targets.Count; i++)
             {
-                return;
+                var target = targets[i];
+                if (target == null || target.Stream == null || IsNullOrWhiteSpace(target.Peer))
+                {
+                    continue;
+                }
+
+                lock (target.Stream)
+                {
+                    if (!IsCurrentHubRecipient(target.Peer, hubId)
+                        || !IsHubCharacterAnnounced(target.Peer, hubId, removedCharacterId))
+                    {
+                        continue;
+                    }
+
+                    HubPresenceRegistry.Participant current;
+                    if (TryGetHubParticipantByCharacterId(removedCharacterId, out current)
+                        && string.Equals(current.HubId, hubId, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    var msgNo = ReserveMetaGameplayMsgNos(1);
+                    var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, HubEntityId, 7, data), msgNo);
+                    if (SendRawFrame(target.Stream, target.Peer, PrefixLength(core), "sent HubCommunicationObject HubStateChanged remove (broadcast)"))
+                    {
+                        ClearHubAnnouncementForPeerCharacter_NoStreamLock(target.Peer, hubId, removedCharacterId);
+                        sentTargets.Add(target.Peer);
+                    }
+                }
             }
 
             _logger.Log(new
@@ -1113,36 +1387,24 @@ namespace Shadowrun.LocalService.Core.Protocols
                 hubId = hubId,
                 senderPeer = senderPeer ?? string.Empty,
                 removedCharacterId = removedCharacterId,
-                sentCount = targets.Count,
-                targetPeers = targets.Select(t => t != null ? t.Peer : string.Empty).ToList(),
+                sentCount = sentTargets.Count,
+                targetPeers = sentTargets,
             });
-
-            BroadcastHubFieldEvent(targets, 7, data, "sent HubCommunicationObject HubStateChanged remove (broadcast)");
         }
 
-        private void BroadcastHubFieldEvent(IList<HubPeerTarget> targets, ushort fieldId, byte[] data, string note)
+        private void ClearHubAnnouncementForPeerCharacter_NoStreamLock(string peer, string hubId, string characterId)
         {
-            if (targets == null || targets.Count == 0 || data == null)
+            var token = BuildHubAnnouncementToken(hubId, characterId);
+            lock (_hubAnnouncedByPeerLock)
             {
-                return;
-            }
-
-            var firstMsgNo = ReserveMetaGameplayMsgNos(targets.Count);
-            for (var i = 0; i < targets.Count; i++)
-            {
-                var target = targets[i];
-                if (target == null || target.Stream == null)
+                HashSet<string> announced;
+                if (_hubAnnouncedByPeer.TryGetValue(peer, out announced) && announced != null)
                 {
-                    continue;
-                }
-
-                try
-                {
-                    var core = BuildCoreDirectSystem(1, BuildApSharedFieldEvent(5, HubEntityId, fieldId, data), firstMsgNo + (ulong)i);
-                    SendRawFrame(target.Stream, target.Peer, PrefixLength(core), note);
-                }
-                catch
-                {
+                    announced.Remove(token);
+                    if (announced.Count == 0)
+                    {
+                        _hubAnnouncedByPeer.Remove(peer);
+                    }
                 }
             }
         }
@@ -1189,17 +1451,33 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
-            HubPresenceRegistry.Participant existing;
-            var hasExisting = _hubPresenceRegistry.TryGetParticipantForPeer(peer, out existing) && existing != null;
+            HubPresenceRegistry.Participant existing = null;
+            var hasExisting = false;
             HubStateUpdate leaveUpdate = null;
             string removedHubId = null;
-            if (hasExisting)
+            lock (_hubPresenceLifecycleLock)
             {
-                leaveUpdate = RemoveParticipantFromAuthoritativeHub(existing, fallbackHubInstance, out removedHubId);
+                hasExisting = _hubPresenceRegistry.TryGetParticipantForPeer(peer, out existing) && existing != null;
+                if (hasExisting)
+                {
+                    string currentOwnerPeer;
+                    if (!IsNullOrWhiteSpace(existing.CharacterId)
+                        && _hubPresenceRegistry.TryGetPeerForCharacter(existing.CharacterId, out currentOwnerPeer)
+                        && !string.Equals(currentOwnerPeer, peer, StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasExisting = false;
+                        _hubPresenceRegistry.RemovePeer(peer);
+                    }
+                    else
+                    {
+                        leaveUpdate = RemoveParticipantFromAuthoritativeHub(existing, fallbackHubInstance, out removedHubId);
+                        _hubPresenceRegistry.RemovePeer(peer);
+
+                    }
+                }
             }
 
             ClearHubAnnouncementsForPeer(peer);
-
             if (leaveUpdate != null && !IsNullOrWhiteSpace(leaveUpdate.RemovedCharacter))
             {
                 BroadcastHubStateRemove(leaveUpdate.InstanceId, peer, leaveUpdate.RemovedCharacter);
@@ -1222,8 +1500,6 @@ namespace Shadowrun.LocalService.Core.Protocols
                     hadAuthoritativeLeaveUpdate = leaveUpdate != null,
                 });
             }
-
-            _hubPresenceRegistry.RemovePeer(peer);
         }
 
         private void RemoveHubPresenceWithBroadcast(string peer)
@@ -1243,80 +1519,48 @@ namespace Shadowrun.LocalService.Core.Protocols
             float y,
             string reason)
         {
-            if (!IsNullOrWhiteSpace(characterId))
+            HubPresenceRegistry.Participant[] displaced;
+            lock (_hubPresenceLifecycleLock)
             {
-                RetireDuplicateHubSessionForCharacter(peer, characterId, reason ?? string.Empty);
+                displaced = _hubPresenceRegistry.RegisterOrUpdate(
+                    peer,
+                    accountId,
+                    identityHash,
+                    careerIndex,
+                    characterId,
+                    characterName,
+                    hubId,
+                    x,
+                    y);
             }
 
-            _hubPresenceRegistry.RegisterOrUpdate(
-                peer,
-                accountId,
-                identityHash,
-                careerIndex,
-                characterId,
-                characterName,
-                hubId,
-                x,
-                y);
-        }
-
-        private bool IsHubMoveOwnershipValid(
-            string peer,
-            Guid activeIdentityGuid,
-            string movedCharacterId,
-            HubPresenceRegistry.Participant movementParticipant)
-        {
-            if (IsNullOrWhiteSpace(movedCharacterId))
+            if (displaced == null)
             {
-                return true;
+                return;
             }
 
-            if (activeIdentityGuid == Guid.Empty)
+            for (var i = 0; i < displaced.Length; i++)
             {
+                var previous = displaced[i];
+                if (previous == null || IsNullOrWhiteSpace(previous.Peer))
+                {
+                    continue;
+                }
+
+                var total = Interlocked.Increment(ref _hubDuplicateSessionRetiredTotal);
                 _logger.Log(new
                 {
                     ts = RequestLogger.UtcNowIso(),
-                    type = "hub-move-rejected-owner-mismatch",
-                    reason = "unauthenticated-identity",
-                    peer = peer ?? string.Empty,
-                    characterId = movedCharacterId,
+                    type = "hub-duplicate-session-retired",
+                    reason = reason ?? string.Empty,
+                    characterId = characterId ?? string.Empty,
+                    replacementPeer = peer ?? string.Empty,
+                    retiredPeer = previous.Peer,
+                    total = total,
                 });
-                return false;
-            }
 
-            var ownerAccountId = TryParseAccountIdFromCharacterIdentifier(movedCharacterId);
-            if (ownerAccountId == Guid.Empty || ownerAccountId != activeIdentityGuid)
-            {
-                _logger.Log(new
-                {
-                    ts = RequestLogger.UtcNowIso(),
-                    type = "hub-move-rejected-owner-mismatch",
-                    reason = ownerAccountId == Guid.Empty ? "invalid-character-id" : "account-mismatch",
-                    peer = peer ?? string.Empty,
-                    characterId = movedCharacterId,
-                    activeIdentityGuid = activeIdentityGuid.ToString(),
-                    parsedOwnerAccountId = ownerAccountId != Guid.Empty ? ownerAccountId.ToString() : string.Empty,
-                });
-                return false;
+                UnregisterHubPeerStream(previous.Peer, null);
             }
-
-            if (movementParticipant != null
-                && !IsNullOrWhiteSpace(movementParticipant.CharacterId)
-                && !string.Equals(movementParticipant.CharacterId, movedCharacterId, StringComparison.OrdinalIgnoreCase))
-            {
-                _logger.Log(new
-                {
-                    ts = RequestLogger.UtcNowIso(),
-                    type = "hub-move-rejected-owner-mismatch",
-                    reason = "registered-character-mismatch",
-                    peer = peer ?? string.Empty,
-                    characterId = movedCharacterId,
-                    registeredCharacterId = movementParticipant.CharacterId,
-                });
-                return false;
-            }
-
-            return true;
         }
 
         private sealed class HubPeerTarget
