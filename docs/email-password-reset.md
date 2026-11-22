@@ -58,7 +58,7 @@ You can configure email password reset via a JSON file in your server `DataDir` 
   "resendApiKey": "re_your_api_key_here",
   "fromAddress": "BostonUnlocked <noreply@mail.yourdomain.com>",
   "subject": "BostonUnlocked Password Reset Code",
-  "resetCodeTtlMinutes": 30,
+  "resetCodeTtlMinutes": 15,
   "maxVerifyAttempts": 5,
   "emailCooldownSeconds": 120,
   "maxRequestsPerEmailPerHour": 5,
@@ -76,7 +76,7 @@ You can configure email password reset via a JSON file in your server `DataDir` 
 | `SRO_EMAIL_FROM` | Yes | *(none)* | Verified sender address, e.g. `BostonUnlocked <noreply@mail.yourdomain.com>` |
 | `SRO_EMAIL_PROVIDER` | No | `resend` | Email provider identifier |
 | `SRO_EMAIL_RESET_SUBJECT` | No | `BostonUnlocked Password Reset Code` | Email subject line |
-| `SRO_PASSWORD_RESET_CODE_TTL_MINUTES` | No | `30` | Minutes before a reset code expires (1–1440) |
+| `SRO_PASSWORD_RESET_CODE_TTL_MINUTES` | No | `15` | Minutes before a reset code expires (1–1440) |
 | `SRO_PASSWORD_RESET_MAX_ATTEMPTS` | No | `5` | Max wrong guesses before the code is invalidated (1–20) |
 | `SRO_PASSWORD_RESET_COOLDOWN_SECONDS` | No | `120` | Minimum seconds between reset requests for the same email |
 | `SRO_PASSWORD_RESET_MAX_PER_EMAIL_HOUR` | No | `5` | Max reset emails per account per rolling hour |

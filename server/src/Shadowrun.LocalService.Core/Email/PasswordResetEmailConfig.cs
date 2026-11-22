@@ -9,7 +9,7 @@ namespace Shadowrun.LocalService.Core.Email
     public sealed class PasswordResetEmailConfig
     {
         public const string DefaultProvider = "resend";
-        public const int DefaultResetCodeTtlMinutes = 30;
+        public const int DefaultResetCodeTtlMinutes = 15;
         public const int DefaultMaxVerifyAttempts = 5;
         public const int DefaultEmailCooldownSeconds = 120;
         public const int DefaultMaxRequestsPerEmailPerHour = 5;

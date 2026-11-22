@@ -433,6 +433,8 @@ namespace Shadowrun.LocalService.Core.Persistence
                     return false;
                 }
 
+                PruneExpiredJsonPasswordResetCodesLocked(DateTime.UtcNow);
+
                 _jsonPasswordResetCodes[normalizedEmail] = new JsonPasswordResetCodeRecord
                 {
                     IdentityHash = identity,
@@ -464,6 +466,8 @@ namespace Shadowrun.LocalService.Core.Persistence
 
             lock (_syncRoot)
             {
+                PruneExpiredJsonPasswordResetCodesLocked(DateTime.UtcNow);
+
                 JsonPasswordResetCodeRecord record;
                 if (_jsonPasswordResetCodes.TryGetValue(normalizedEmail, out record)
                     && record != null
@@ -513,6 +517,9 @@ namespace Shadowrun.LocalService.Core.Persistence
             var effectiveMaxAttempts = maxFailedAttempts > 0 ? maxFailedAttempts : 5;
             lock (_syncRoot)
             {
+                var nowUtc = DateTime.UtcNow;
+                PruneExpiredJsonPasswordResetCodesLocked(nowUtc);
+
                 JsonPasswordResetCodeRecord record;
                 if (!_jsonPasswordResetCodes.TryGetValue(normalizedEmail, out record)
                     || record == null
@@ -523,7 +530,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                 }
 
                 identityHash = record.IdentityHash;
-                if (record.ExpiresUtc <= DateTime.UtcNow || record.FailedAttempts >= effectiveMaxAttempts)
+                if (record.ExpiresUtc <= nowUtc || record.FailedAttempts >= effectiveMaxAttempts)
                 {
                     _jsonPasswordResetCodes.Remove(normalizedEmail);
                     message = "InvalidResetCode";
@@ -566,6 +573,35 @@ namespace Shadowrun.LocalService.Core.Persistence
                 _jsonPasswordResetCodes.Remove(normalizedEmail);
                 message = "OK";
                 return true;
+            }
+        }
+
+        private void PruneExpiredJsonPasswordResetCodesLocked(DateTime nowUtc)
+        {
+            if (_jsonPasswordResetCodes.Count == 0)
+            {
+                return;
+            }
+
+            List<string> expiredKeys = null;
+            foreach (var entry in _jsonPasswordResetCodes)
+            {
+                if (entry.Value == null || entry.Value.ExpiresUtc <= nowUtc)
+                {
+                    if (expiredKeys == null)
+                    {
+                        expiredKeys = new List<string>();
+                    }
+                    expiredKeys.Add(entry.Key);
+                }
+            }
+
+            if (expiredKeys != null)
+            {
+                for (var i = 0; i < expiredKeys.Count; i++)
+                {
+                    _jsonPasswordResetCodes.Remove(expiredKeys[i]);
+                }
             }
         }
 

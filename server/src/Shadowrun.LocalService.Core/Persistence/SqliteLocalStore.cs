@@ -361,13 +361,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                     var nowIso = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                     var expiresIso = expiresUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
 
-                    // Clean up expired rows opportunistically.
-                    using (var prune = CreateCommand(connection, transaction,
-                        "DELETE FROM password_reset_codes WHERE expires_utc <= @nowUtc;"))
-                    {
-                        AddParameter(prune, "@nowUtc", nowIso);
-                        prune.ExecuteNonQuery();
-                    }
+                    PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
 
                     using (var upsert = CreateCommand(connection, transaction,
                         "INSERT OR REPLACE INTO password_reset_codes " +
@@ -418,12 +412,22 @@ namespace Shadowrun.LocalService.Core.Persistence
             try
             {
                 using (var connection = OpenConnection())
-                using (var cmd = CreateCommand(connection, null,
-                    "DELETE FROM password_reset_codes WHERE email = @email AND code_hash = @codeHash;"))
+                using (var transaction = connection.BeginTransaction())
                 {
-                    AddParameter(cmd, "@email", normalizedEmail);
-                    AddParameter(cmd, "@codeHash", codeHash.Trim());
-                    return cmd.ExecuteNonQuery() > 0;
+                    var nowIso = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                    PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
+
+                    var deleted = 0;
+                    using (var cmd = CreateCommand(connection, transaction,
+                        "DELETE FROM password_reset_codes WHERE email = @email AND code_hash = @codeHash;"))
+                    {
+                        AddParameter(cmd, "@email", normalizedEmail);
+                        AddParameter(cmd, "@codeHash", codeHash.Trim());
+                        deleted = cmd.ExecuteNonQuery();
+                    }
+
+                    transaction.Commit();
+                    return deleted > 0;
                 }
             }
             catch
@@ -501,8 +505,12 @@ namespace Shadowrun.LocalService.Core.Persistence
                         }
                     }
 
+                    var nowUtc = DateTime.UtcNow;
+                    var nowIso = nowUtc.ToString("O", CultureInfo.InvariantCulture);
+
                     if (!found || !IsGuidish(storedIdentity) || !IsNullOrWhiteSpace(usedIso))
                     {
+                        PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
                         message = "InvalidResetCode";
                         transaction.Commit();
                         LogOperation("account-password-reset-change", sw, new { changed = false, reason = "missing-or-used" });
@@ -514,7 +522,7 @@ namespace Shadowrun.LocalService.Core.Persistence
 
                     DateTime expiresUtc;
                     if (!DateTime.TryParse(expiresIso, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out expiresUtc)
-                        || expiresUtc.ToUniversalTime() <= DateTime.UtcNow)
+                        || expiresUtc.ToUniversalTime() <= nowUtc)
                     {
                         using (var del = CreateCommand(connection, transaction,
                             "DELETE FROM password_reset_codes WHERE email = @email;"))
@@ -523,6 +531,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                             del.ExecuteNonQuery();
                         }
 
+                        PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
                         message = "InvalidResetCode";
                         transaction.Commit();
                         LogOperation("account-password-reset-change", sw, new { changed = false, accountId = normalizedIdentity, reason = "expired" });
@@ -538,6 +547,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                             del.ExecuteNonQuery();
                         }
 
+                        PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
                         message = "InvalidResetCode";
                         transaction.Commit();
                         LogOperation("account-password-reset-change", sw, new { changed = false, accountId = normalizedIdentity, reason = "max-attempts" });
@@ -567,6 +577,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                             }
                         }
 
+                        PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
                         message = "InvalidResetCode";
                         transaction.Commit();
                         LogOperation("account-password-reset-change", sw, new { changed = false, accountId = normalizedIdentity, reason = "code-mismatch", attempts = nextAttempts });
@@ -576,6 +587,7 @@ namespace Shadowrun.LocalService.Core.Persistence
                     var account = LoadAccountByIdentity(connection, normalizedIdentity);
                     if (account == null)
                     {
+                        PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
                         message = "AccountNotFound";
                         transaction.Commit();
                         LogOperation("account-password-reset-change", sw, new { changed = false, accountId = normalizedIdentity, reason = "account-missing" });
@@ -595,15 +607,15 @@ namespace Shadowrun.LocalService.Core.Persistence
 
                     UpsertAccount(connection, transaction, account, normalizedIdentity, true);
 
-                    var usedNowIso = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                     using (var markUsed = CreateCommand(connection, transaction,
                         "UPDATE password_reset_codes SET used_utc = @usedUtc WHERE email = @email;"))
                     {
-                        AddParameter(markUsed, "@usedUtc", usedNowIso);
+                        AddParameter(markUsed, "@usedUtc", nowIso);
                         AddParameter(markUsed, "@email", normalizedEmail);
                         markUsed.ExecuteNonQuery();
                     }
 
+                    PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
                     transaction.Commit();
                     message = "OK";
                     LogOperation("account-password-reset-change", sw, new { changed = true, accountId = normalizedIdentity });
@@ -615,6 +627,16 @@ namespace Shadowrun.LocalService.Core.Persistence
                 message = "ChangePasswordFailed";
                 LogFailure("account-password-reset-change-failed", sw, ex, new { email = normalizedEmail });
                 return false;
+            }
+        }
+
+        private void PruneExpiredPasswordResetCodes(SqliteConnection connection, SqliteTransaction transaction, string nowIso)
+        {
+            using (var prune = CreateCommand(connection, transaction,
+                "DELETE FROM password_reset_codes WHERE expires_utc <= @nowUtc;"))
+            {
+                AddParameter(prune, "@nowUtc", nowIso);
+                prune.ExecuteNonQuery();
             }
         }
 
