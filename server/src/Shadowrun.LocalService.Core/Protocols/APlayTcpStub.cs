@@ -2410,6 +2410,18 @@ namespace Shadowrun.LocalService.Core.Protocols
                                     {
                                         routedHubSource = "host-character";
                                     }
+                                    else
+                                    {
+                                        var fallbackHostAccountId = requestedHostAccountId != Guid.Empty
+                                            ? requestedHostAccountId
+                                            : TryParseAccountIdFromCharacterIdentifier(requestedHostCharacterId);
+                                        if (fallbackHostAccountId != Guid.Empty
+                                            && fallbackHostAccountId != activeIdentityGuid
+                                            && TryResolveStoryHubIdForAccount(fallbackHostAccountId, requestedHostCharacterId, out routedHubId))
+                                        {
+                                            routedHubSource = "host-storyhub";
+                                        }
+                                    }
                                 }
 
                                 if (requestedHostAccountId != Guid.Empty && requestedHostAccountId != activeIdentityGuid)
@@ -2705,8 +2717,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                                         if (PartyHubFollowRegistry.TryGetHostForMember(activeIdentityGuid, out followHostAccountId)
                                             && followHostAccountId != Guid.Empty
                                             && followHostAccountId != activeIdentityGuid
-                                            && TryResolveHubIdForAccount(followHostAccountId, out followHostHubId)
-                                            && !IsNullOrWhiteSpace(followHostHubId))
+                                            && ((TryResolveHubIdForAccount(followHostAccountId, out followHostHubId)
+                                                    && !IsNullOrWhiteSpace(followHostHubId))
+                                                || (TryResolveStoryHubIdForAccount(followHostAccountId, null, out followHostHubId)
+                                                    && !IsNullOrWhiteSpace(followHostHubId))))
                                         {
                                             hasFollowHost = true;
                                             effectiveHubId = followHostHubId;

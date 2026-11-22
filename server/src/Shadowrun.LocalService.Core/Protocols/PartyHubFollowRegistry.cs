@@ -5,8 +5,75 @@ namespace Shadowrun.LocalService.Core.Protocols
 {
     internal static class PartyHubFollowRegistry
     {
+        private sealed class PendingHostVictoryEntry
+        {
+            public readonly string MissionMapName;
+            public readonly DateTime RecordedUtc;
+
+            public PendingHostVictoryEntry(string missionMapName, DateTime recordedUtc)
+            {
+                MissionMapName = missionMapName;
+                RecordedUtc = recordedUtc;
+            }
+        }
+
+        private static readonly TimeSpan PendingHostVictoryTtl = TimeSpan.FromMinutes(5);
         private static readonly object LockObj = new object();
         private static readonly Dictionary<Guid, Guid> HostByMember = new Dictionary<Guid, Guid>();
+        private static readonly Dictionary<Guid, PendingHostVictoryEntry> PendingVictoryByHost = new Dictionary<Guid, PendingHostVictoryEntry>();
+
+        public static void SetPendingHostVictoryMission(Guid hostAccountId, string missionMapName)
+        {
+            if (hostAccountId == Guid.Empty || string.IsNullOrEmpty(missionMapName))
+            {
+                return;
+            }
+
+            lock (LockObj)
+            {
+                PendingVictoryByHost[hostAccountId] = new PendingHostVictoryEntry(missionMapName, DateTime.UtcNow);
+            }
+        }
+
+        public static bool TryGetPendingHostVictoryMission(Guid hostAccountId, out string missionMapName)
+        {
+            missionMapName = null;
+            if (hostAccountId == Guid.Empty)
+            {
+                return false;
+            }
+
+            lock (LockObj)
+            {
+                PendingHostVictoryEntry entry;
+                if (!PendingVictoryByHost.TryGetValue(hostAccountId, out entry) || entry == null)
+                {
+                    return false;
+                }
+
+                if (DateTime.UtcNow - entry.RecordedUtc > PendingHostVictoryTtl || string.IsNullOrEmpty(entry.MissionMapName))
+                {
+                    PendingVictoryByHost.Remove(hostAccountId);
+                    return false;
+                }
+
+                missionMapName = entry.MissionMapName;
+                return true;
+            }
+        }
+
+        public static void ClearPendingHostVictoryMission(Guid hostAccountId)
+        {
+            if (hostAccountId == Guid.Empty)
+            {
+                return;
+            }
+
+            lock (LockObj)
+            {
+                PendingVictoryByHost.Remove(hostAccountId);
+            }
+        }
 
         public static void SetHostForMember(Guid memberAccountId, Guid hostAccountId)
         {

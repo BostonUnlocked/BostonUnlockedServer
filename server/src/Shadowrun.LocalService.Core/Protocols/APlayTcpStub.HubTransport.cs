@@ -157,6 +157,83 @@ namespace Shadowrun.LocalService.Core.Protocols
             return TryResolveHubIdForCharacter(characterId, out hubId);
         }
 
+        private bool TryResolveStoryHubIdForAccount(Guid accountId, string characterId, out string hubId)
+        {
+            hubId = null;
+            if (accountId == Guid.Empty || _userStore == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                var identityHash = accountId.ToString();
+                int careerIndex;
+                if (!TryParseCareerIndexFromCharacterIdentifier(characterId, out careerIndex))
+                {
+                    careerIndex = _userStore.GetLastCareerIndex(identityHash);
+                    if (careerIndex < 0)
+                    {
+                        careerIndex = 0;
+                    }
+                }
+
+                var slot = _userStore.GetOrCreateCareer(identityHash, careerIndex, false);
+                if (slot == null)
+                {
+                    return false;
+                }
+
+                string pendingVictoryMission;
+                PartyHubFollowRegistry.TryGetPendingHostVictoryMission(accountId, out pendingVictoryMission);
+
+                var resolvedHubId = _storyProgressionService != null
+                    ? _storyProgressionService.GetCurrentStoryHubId(accountId, slot, "Main Campaign", pendingVictoryMission)
+                    : null;
+                if (IsNullOrWhiteSpace(resolvedHubId) && !IsNullOrWhiteSpace(slot.HubId))
+                {
+                    resolvedHubId = slot.HubId;
+                }
+
+                if (IsNullOrWhiteSpace(resolvedHubId))
+                {
+                    return false;
+                }
+
+                hubId = resolvedHubId;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryParseCareerIndexFromCharacterIdentifier(string characterIdentifier, out int careerIndex)
+        {
+            careerIndex = -1;
+            if (IsNullOrWhiteSpace(characterIdentifier))
+            {
+                return false;
+            }
+
+            var sep = characterIdentifier.LastIndexOf(':');
+            if (sep < 0 || sep + 1 >= characterIdentifier.Length)
+            {
+                return false;
+            }
+
+            var suffix = characterIdentifier.Substring(sep + 1).Trim();
+            int parsed;
+            if (!int.TryParse(suffix, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed) || parsed < 0)
+            {
+                return false;
+            }
+
+            careerIndex = parsed;
+            return true;
+        }
+
         private string ResolveParticipantHubId(HubPresenceRegistry.Participant participant, string fallbackHubId)
         {
             if (participant != null && !IsNullOrWhiteSpace(participant.HubId))
