@@ -9,6 +9,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Globalization;
+using Shadowrun.LocalService.Core.Email;
 using Shadowrun.LocalService.Core.Persistence;
 using Shadowrun.LocalService.Core.Protocols;
 
@@ -26,6 +27,7 @@ namespace Shadowrun.LocalService.Core.Http
         private readonly IPlayerInfoRepository _playerInfoRepository;
         private readonly LocalUserStore _userStore;
         private readonly HubPresenceRegistry _hubPresenceRegistry;
+        private readonly PasswordResetService _passwordResetService;
         private readonly object _statusPageCacheLock = new object();
         private readonly object _missionNameCacheLock = new object();
         private string _cachedStatusPageHtml;
@@ -63,12 +65,28 @@ namespace Shadowrun.LocalService.Core.Http
             ISessionIdentityMap sessionIdentityMap,
             IPlayerInfoRepository playerInfoRepository,
             HubPresenceRegistry hubPresenceRegistry)
+            : this(options, logger, userStore, sessionIdentityMap, playerInfoRepository, hubPresenceRegistry, null)
+        {
+        }
+
+        public HttpStubServer(
+            LocalServiceOptions options,
+            RequestLogger logger,
+            LocalUserStore userStore,
+            ISessionIdentityMap sessionIdentityMap,
+            IPlayerInfoRepository playerInfoRepository,
+            HubPresenceRegistry hubPresenceRegistry,
+            IPasswordResetEmailSender passwordResetEmailSender)
         {
             _options = options;
             _logger = logger;
             _userStore = userStore ?? new LocalUserStore(options, logger);
             _sessionIdentityMap = sessionIdentityMap ?? new InMemorySessionIdentityMap();
             _hubPresenceRegistry = hubPresenceRegistry;
+
+            var emailConfig = PasswordResetEmailConfig.Load(_options, _logger);
+            var emailSender = passwordResetEmailSender ?? new ResendPasswordResetEmailSender(emailConfig, _logger);
+            _passwordResetService = new PasswordResetService(emailConfig, emailSender, _userStore, _sessionIdentityMap, _logger);
 
             // PlayerInfo is useful to persist (character blob, display name, etc.).
             // If a LocalUserStore is present, default to its repository unless overridden.
@@ -186,7 +204,7 @@ namespace Shadowrun.LocalService.Core.Http
                                 body = BuildSafeRequestBodyForLog(request.Path, request.BodyBytes),
                             });
 
-                            var response = RouteRequest(request);
+                            var response = RouteRequest(request, endpoint);
                             var suppressBody = string.Equals(request.Method, "HEAD", StringComparison.OrdinalIgnoreCase);
                             WriteResponse(stream, response, suppressBody);
                         }
@@ -349,7 +367,7 @@ namespace Shadowrun.LocalService.Core.Http
             return Convert.ToString(list[0], CultureInfo.InvariantCulture);
         }
 
-        private HttpResponse RouteRequest(HttpRequest request)
+        private HttpResponse RouteRequest(HttpRequest request, string remoteEndpoint)
         {
             var path = request.Path ?? "/";
 
@@ -359,7 +377,7 @@ namespace Shadowrun.LocalService.Core.Http
                 return staticResponse;
             }
 
-            var accountResponse = TryServeAccount(path, request.BodyBytes ?? new byte[0]);
+            var accountResponse = TryServeAccount(path, request.BodyBytes ?? new byte[0], remoteEndpoint);
             if (accountResponse != null)
             {
                 return accountResponse;
@@ -535,6 +553,11 @@ namespace Shadowrun.LocalService.Core.Http
                 if (parsed.Contains("Password"))
                 {
                     parsed["Password"] = "***";
+                }
+
+                if (parsed.Contains("ResetCode"))
+                {
+                    parsed["ResetCode"] = "***";
                 }
 
                 return Json.Serialize(parsed);

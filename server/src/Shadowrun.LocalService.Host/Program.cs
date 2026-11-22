@@ -400,6 +400,7 @@ namespace Shadowrun.LocalService.Host
 					Console.WriteLine("[localservice-cs] log retention: {0} day(s)", _options.StructuredLogRetentionDays);
 				}
 				Console.WriteLine("[localservice-cs] chat admin config: {0}", _options.ChatAdminConfigPath);
+				Console.WriteLine("[localservice-cs] email config: {0}", _options.EmailConfigPath);
 				Console.WriteLine("[localservice-cs] mission seed mode: {0}", _options.UseFixedMissionSeeds ? "fixed" : "random");
 			}
 
