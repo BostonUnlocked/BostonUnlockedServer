@@ -125,6 +125,49 @@ namespace Shadowrun.LocalService.Core.Persistence
             return _accountStore.TryAuthenticateCliffhangerCredentials(email, password, out identityHash, out isVerified, out message);
         }
 
+        public bool TryCreatePasswordResetCode(
+            string email,
+            string codeHash,
+            DateTime expiresUtc,
+            string requestIp,
+            out string identityHash,
+            out string displayName,
+            out string message)
+        {
+            if (_accountStore == null)
+            {
+                identityHash = null;
+                displayName = null;
+                message = "AccountStoreUnavailable";
+                return false;
+            }
+
+            return _accountStore.TryCreatePasswordResetCode(email, codeHash, expiresUtc, requestIp, out identityHash, out displayName, out message);
+        }
+
+        public bool TryInvalidatePasswordResetCode(string email, string codeHash)
+        {
+            return _accountStore != null && _accountStore.TryInvalidatePasswordResetCode(email, codeHash);
+        }
+
+        public bool TryChangePasswordWithResetCode(
+            string email,
+            string codeHash,
+            string newPassword,
+            int maxFailedAttempts,
+            out string identityHash,
+            out string message)
+        {
+            if (_accountStore == null)
+            {
+                identityHash = null;
+                message = "AccountStoreUnavailable";
+                return false;
+            }
+
+            return _accountStore.TryChangePasswordWithResetCode(email, codeHash, newPassword, maxFailedAttempts, out identityHash, out message);
+        }
+
         public bool TryGetAccountAuthenticationStats(out int totalAccounts, out int steamAccounts, out int nonSteamAccounts)
         {
             totalAccounts = 0;

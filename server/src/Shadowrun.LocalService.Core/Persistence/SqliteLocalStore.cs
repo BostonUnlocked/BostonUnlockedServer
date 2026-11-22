@@ -299,6 +299,362 @@ namespace Shadowrun.LocalService.Core.Persistence
             }
         }
 
+        public bool TryCreatePasswordResetCode(
+            string email,
+            string codeHash,
+            DateTime expiresUtc,
+            string requestIp,
+            out string identityHash,
+            out string displayName,
+            out string message)
+        {
+            identityHash = null;
+            displayName = null;
+            message = null;
+
+            if (!IsEnabled)
+            {
+                message = "AccountStoreUnavailable";
+                return false;
+            }
+
+            var normalizedEmail = NormalizeCredentialEmail(email);
+            if (IsNullOrWhiteSpace(normalizedEmail))
+            {
+                message = "InvalidEmail";
+                return false;
+            }
+
+            if (IsNullOrWhiteSpace(codeHash))
+            {
+                message = "InvalidResetCode";
+                return false;
+            }
+
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                using (var connection = OpenConnection())
+                using (var transaction = connection.BeginTransaction())
+                {
+                    var mapped = ExecuteScalarString(connection, transaction,
+                        "SELECT identity_hash FROM credential_identities WHERE email = @email;",
+                        "@email", normalizedEmail);
+                    if (!IsGuidish(mapped))
+                    {
+                        message = "AccountNotFound";
+                        transaction.Commit();
+                        LogOperation("account-password-reset-create", sw, new { created = false, reason = message });
+                        return false;
+                    }
+
+                    var normalizedIdentity = NormalizeGuidish(mapped);
+                    var account = LoadAccountByIdentity(connection, normalizedIdentity);
+                    if (account == null)
+                    {
+                        message = "AccountNotFound";
+                        transaction.Commit();
+                        LogOperation("account-password-reset-create", sw, new { created = false, reason = message });
+                        return false;
+                    }
+
+                    var nowIso = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                    var expiresIso = expiresUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
+
+                    PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
+
+                    using (var upsert = CreateCommand(connection, transaction,
+                        "INSERT OR REPLACE INTO password_reset_codes " +
+                        "(email, identity_hash, code_hash, created_utc, expires_utc, used_utc, failed_attempts, request_ip) " +
+                        "VALUES (@email, @identityHash, @codeHash, @createdUtc, @expiresUtc, NULL, 0, @requestIp);"))
+                    {
+                        AddParameter(upsert, "@email", normalizedEmail);
+                        AddParameter(upsert, "@identityHash", normalizedIdentity);
+                        AddParameter(upsert, "@codeHash", codeHash.Trim());
+                        AddParameter(upsert, "@createdUtc", nowIso);
+                        AddParameter(upsert, "@expiresUtc", expiresIso);
+                        AddParameter(upsert, "@requestIp", IsNullOrWhiteSpace(requestIp) ? (object)DBNull.Value : requestIp.Trim());
+                        upsert.ExecuteNonQuery();
+                    }
+
+                    transaction.Commit();
+
+                    identityHash = normalizedIdentity;
+                    displayName = GetString(account, "DisplayName");
+                    message = "OK";
+                    LogOperation("account-password-reset-create", sw, new { created = true, accountId = normalizedIdentity });
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                message = "PasswordResetFailed";
+                identityHash = null;
+                displayName = null;
+                LogFailure("account-password-reset-create-failed", sw, ex, new { email = normalizedEmail });
+                return false;
+            }
+        }
+
+        public bool TryInvalidatePasswordResetCode(string email, string codeHash)
+        {
+            if (!IsEnabled)
+            {
+                return false;
+            }
+
+            var normalizedEmail = NormalizeCredentialEmail(email);
+            if (IsNullOrWhiteSpace(normalizedEmail) || IsNullOrWhiteSpace(codeHash))
+            {
+                return false;
+            }
+
+            try
+            {
+                using (var connection = OpenConnection())
+                using (var transaction = connection.BeginTransaction())
+                {
+                    var nowIso = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                    PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
+
+                    var deleted = 0;
+                    using (var cmd = CreateCommand(connection, transaction,
+                        "DELETE FROM password_reset_codes WHERE email = @email AND code_hash = @codeHash;"))
+                    {
+                        AddParameter(cmd, "@email", normalizedEmail);
+                        AddParameter(cmd, "@codeHash", codeHash.Trim());
+                        deleted = cmd.ExecuteNonQuery();
+                    }
+
+                    transaction.Commit();
+                    return deleted > 0;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public bool TryChangePasswordWithResetCode(
+            string email,
+            string codeHash,
+            string newPassword,
+            int maxFailedAttempts,
+            out string identityHash,
+            out string message)
+        {
+            identityHash = null;
+            message = null;
+
+            if (!IsEnabled)
+            {
+                message = "AccountStoreUnavailable";
+                return false;
+            }
+
+            var normalizedEmail = NormalizeCredentialEmail(email);
+            if (IsNullOrWhiteSpace(normalizedEmail))
+            {
+                message = "InvalidEmail";
+                return false;
+            }
+
+            if (IsNullOrWhiteSpace(newPassword))
+            {
+                message = "InvalidPassword";
+                return false;
+            }
+
+            if (IsNullOrWhiteSpace(codeHash))
+            {
+                message = "InvalidResetCode";
+                return false;
+            }
+
+            var effectiveMaxAttempts = maxFailedAttempts > 0 ? maxFailedAttempts : 5;
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                using (var connection = OpenConnection())
+                using (var transaction = connection.BeginTransaction())
+                {
+                    string storedIdentity = null;
+                    string storedCodeHash = null;
+                    string expiresIso = null;
+                    string usedIso = null;
+                    var failedAttempts = 0;
+                    var found = false;
+
+                    using (var select = CreateCommand(connection, transaction,
+                        "SELECT identity_hash, code_hash, expires_utc, used_utc, failed_attempts " +
+                        "FROM password_reset_codes WHERE email = @email;"))
+                    {
+                        AddParameter(select, "@email", normalizedEmail);
+                        using (var reader = select.ExecuteReader())
+                        {
+                            if (reader.Read())
+                            {
+                                found = true;
+                                storedIdentity = reader.IsDBNull(0) ? null : reader.GetString(0);
+                                storedCodeHash = reader.IsDBNull(1) ? null : reader.GetString(1);
+                                expiresIso = reader.IsDBNull(2) ? null : reader.GetString(2);
+                                usedIso = reader.IsDBNull(3) ? null : reader.GetString(3);
+                                failedAttempts = reader.IsDBNull(4) ? 0 : reader.GetInt32(4);
+                            }
+                        }
+                    }
+
+                    var nowUtc = DateTime.UtcNow;
+                    var nowIso = nowUtc.ToString("O", CultureInfo.InvariantCulture);
+
+                    if (!found || !IsGuidish(storedIdentity) || !IsNullOrWhiteSpace(usedIso))
+                    {
+                        PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
+                        message = "InvalidResetCode";
+                        transaction.Commit();
+                        LogOperation("account-password-reset-change", sw, new { changed = false, reason = "missing-or-used" });
+                        return false;
+                    }
+
+                    var normalizedIdentity = NormalizeGuidish(storedIdentity);
+                    identityHash = normalizedIdentity;
+
+                    DateTime expiresUtc;
+                    if (!DateTime.TryParse(expiresIso, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out expiresUtc)
+                        || expiresUtc.ToUniversalTime() <= nowUtc)
+                    {
+                        using (var del = CreateCommand(connection, transaction,
+                            "DELETE FROM password_reset_codes WHERE email = @email;"))
+                        {
+                            AddParameter(del, "@email", normalizedEmail);
+                            del.ExecuteNonQuery();
+                        }
+
+                        PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
+                        message = "InvalidResetCode";
+                        transaction.Commit();
+                        LogOperation("account-password-reset-change", sw, new { changed = false, accountId = normalizedIdentity, reason = "expired" });
+                        return false;
+                    }
+
+                    if (failedAttempts >= effectiveMaxAttempts)
+                    {
+                        using (var del = CreateCommand(connection, transaction,
+                            "DELETE FROM password_reset_codes WHERE email = @email;"))
+                        {
+                            AddParameter(del, "@email", normalizedEmail);
+                            del.ExecuteNonQuery();
+                        }
+
+                        PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
+                        message = "InvalidResetCode";
+                        transaction.Commit();
+                        LogOperation("account-password-reset-change", sw, new { changed = false, accountId = normalizedIdentity, reason = "max-attempts" });
+                        return false;
+                    }
+
+                    if (!FixedTimeEquals(storedCodeHash, codeHash.Trim()))
+                    {
+                        var nextAttempts = failedAttempts + 1;
+                        if (nextAttempts >= effectiveMaxAttempts)
+                        {
+                            using (var del = CreateCommand(connection, transaction,
+                                "DELETE FROM password_reset_codes WHERE email = @email;"))
+                            {
+                                AddParameter(del, "@email", normalizedEmail);
+                                del.ExecuteNonQuery();
+                            }
+                        }
+                        else
+                        {
+                            using (var upd = CreateCommand(connection, transaction,
+                                "UPDATE password_reset_codes SET failed_attempts = @attempts WHERE email = @email;"))
+                            {
+                                AddParameter(upd, "@attempts", nextAttempts);
+                                AddParameter(upd, "@email", normalizedEmail);
+                                upd.ExecuteNonQuery();
+                            }
+                        }
+
+                        PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
+                        message = "InvalidResetCode";
+                        transaction.Commit();
+                        LogOperation("account-password-reset-change", sw, new { changed = false, accountId = normalizedIdentity, reason = "code-mismatch", attempts = nextAttempts });
+                        return false;
+                    }
+
+                    var account = LoadAccountByIdentity(connection, normalizedIdentity);
+                    if (account == null)
+                    {
+                        PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
+                        message = "AccountNotFound";
+                        transaction.Commit();
+                        LogOperation("account-password-reset-change", sw, new { changed = false, accountId = normalizedIdentity, reason = "account-missing" });
+                        return false;
+                    }
+
+                    string newHash;
+                    string newSalt;
+                    var iterations = 100000;
+                    CreatePasswordDigest(newPassword, iterations, out newHash, out newSalt);
+
+                    account["CredentialEmail"] = normalizedEmail;
+                    account["CredentialPasswordHash"] = newHash;
+                    account["CredentialPasswordSalt"] = newSalt;
+                    account["CredentialPasswordIterations"] = iterations;
+                    account["CredentialHashAlgorithm"] = "PBKDF2-SHA1";
+
+                    UpsertAccount(connection, transaction, account, normalizedIdentity, true);
+
+                    using (var markUsed = CreateCommand(connection, transaction,
+                        "UPDATE password_reset_codes SET used_utc = @usedUtc WHERE email = @email;"))
+                    {
+                        AddParameter(markUsed, "@usedUtc", nowIso);
+                        AddParameter(markUsed, "@email", normalizedEmail);
+                        markUsed.ExecuteNonQuery();
+                    }
+
+                    PruneExpiredPasswordResetCodes(connection, transaction, nowIso);
+                    transaction.Commit();
+                    message = "OK";
+                    LogOperation("account-password-reset-change", sw, new { changed = true, accountId = normalizedIdentity });
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                message = "ChangePasswordFailed";
+                LogFailure("account-password-reset-change-failed", sw, ex, new { email = normalizedEmail });
+                return false;
+            }
+        }
+
+        private void PruneExpiredPasswordResetCodes(SqliteConnection connection, SqliteTransaction transaction, string nowIso)
+        {
+            using (var prune = CreateCommand(connection, transaction,
+                "DELETE FROM password_reset_codes WHERE expires_utc <= @nowUtc;"))
+            {
+                AddParameter(prune, "@nowUtc", nowIso);
+                prune.ExecuteNonQuery();
+            }
+        }
+
+        private static bool FixedTimeEquals(string a, string b)
+        {
+            if (a == null || b == null || a.Length != b.Length)
+            {
+                return false;
+            }
+
+            var diff = 0;
+            for (var i = 0; i < a.Length; i++)
+            {
+                diff |= a[i] ^ b[i];
+            }
+            return diff == 0;
+        }
+
         public string GetDisplayName(string identityHash)
         {
             if (!IsEnabled)
@@ -1360,12 +1716,22 @@ namespace Shadowrun.LocalService.Core.Persistence
                 "friend_account_id TEXT NOT NULL, " +
                 "updated_utc TEXT NOT NULL, " +
                 "PRIMARY KEY(account_id, friend_account_id));" +
+                "CREATE TABLE IF NOT EXISTS password_reset_codes (" +
+                "email TEXT NOT NULL PRIMARY KEY, " +
+                "identity_hash TEXT NOT NULL, " +
+                "code_hash TEXT NOT NULL, " +
+                "created_utc TEXT NOT NULL, " +
+                "expires_utc TEXT NOT NULL, " +
+                "used_utc TEXT NULL, " +
+                "failed_attempts INTEGER NOT NULL DEFAULT 0, " +
+                "request_ip TEXT NULL);" +
                 "CREATE INDEX IF NOT EXISTS idx_accounts_display_name ON accounts(display_name);" +
                 "CREATE INDEX IF NOT EXISTS idx_player_info_game_name_key_value ON player_info(game_name, info_key, info_value);" +
                 "CREATE INDEX IF NOT EXISTS idx_player_info_identity_game ON player_info(identity_hash, game_name);" +
                 "CREATE INDEX IF NOT EXISTS idx_friends_account_id ON friends(account_id);" +
                 "CREATE INDEX IF NOT EXISTS idx_credential_identities_identity_hash ON credential_identities(identity_hash);" +
-                "CREATE INDEX IF NOT EXISTS idx_steam_identities_identity_hash ON steam_identities(identity_hash);");
+                "CREATE INDEX IF NOT EXISTS idx_steam_identities_identity_hash ON steam_identities(identity_hash);" +
+                "CREATE INDEX IF NOT EXISTS idx_password_reset_codes_expires ON password_reset_codes(expires_utc);");
         }
 
         private bool IsDatabaseEmpty(SqliteConnection connection)

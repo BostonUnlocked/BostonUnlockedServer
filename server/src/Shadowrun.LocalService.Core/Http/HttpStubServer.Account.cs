@@ -11,7 +11,7 @@ namespace Shadowrun.LocalService.Core.Http
 {
     public sealed partial class HttpStubServer
     {
-        private HttpResponse TryServeAccount(string path, byte[] bodyBytes)
+        private HttpResponse TryServeAccount(string path, byte[] bodyBytes, string remoteEndpoint)
         {
             if (!StartsWith(path, "/AccountSystem/"))
             {
@@ -184,11 +184,73 @@ namespace Shadowrun.LocalService.Core.Http
 
             if (EndsWith(path, "/Accounts/Cliffhanger/RequestPasswordReset"))
             {
-                return JsonResponse(501, new Dictionary<string, object>
+                string email = null;
+                try
                 {
-                    { "Code", 1 },
-                    { "Message", "NotSupported" },
-                    { "Success", false },
+                    var dict = TryParseJsonDictionary(bodyBytes);
+                    email = GetString(dict, "Email");
+                }
+                catch
+                {
+                }
+
+                int resetStatusCode;
+                string resetMessage;
+                bool resetSuccess;
+                if (_passwordResetService != null)
+                {
+                    _passwordResetService.RequestPasswordReset(email, remoteEndpoint, out resetStatusCode, out resetMessage, out resetSuccess);
+                }
+                else
+                {
+                    resetStatusCode = 501;
+                    resetMessage = "NotSupported";
+                    resetSuccess = false;
+                }
+
+                return JsonResponse(resetStatusCode, new Dictionary<string, object>
+                {
+                    { "Code", resetSuccess ? 0 : 1 },
+                    { "Message", IsNullOrWhiteSpace(resetMessage) ? (resetSuccess ? "OK" : "PasswordResetFailed") : resetMessage },
+                    { "Success", resetSuccess },
+                });
+            }
+
+            if (EndsWith(path, "/Accounts/Cliffhanger/ChangePassword"))
+            {
+                string email = null;
+                string resetCode = null;
+                string password = null;
+                try
+                {
+                    var dict = TryParseJsonDictionary(bodyBytes);
+                    email = GetString(dict, "Email");
+                    resetCode = GetString(dict, "ResetCode");
+                    password = GetString(dict, "Password");
+                }
+                catch
+                {
+                }
+
+                int changeStatusCode;
+                string changeMessage;
+                bool changeSuccess;
+                if (_passwordResetService != null)
+                {
+                    _passwordResetService.ChangePassword(email, resetCode, password, remoteEndpoint, out changeStatusCode, out changeMessage, out changeSuccess);
+                }
+                else
+                {
+                    changeStatusCode = 501;
+                    changeMessage = "NotSupported";
+                    changeSuccess = false;
+                }
+
+                return JsonResponse(changeStatusCode, new Dictionary<string, object>
+                {
+                    { "Code", changeSuccess ? 0 : 1 },
+                    { "Message", IsNullOrWhiteSpace(changeMessage) ? (changeSuccess ? "OK" : "ChangePasswordFailed") : changeMessage },
+                    { "Success", changeSuccess },
                 });
             }
 
@@ -588,6 +650,16 @@ namespace Shadowrun.LocalService.Core.Http
             if (string.Equals(message, "NotSupported", StringComparison.OrdinalIgnoreCase))
             {
                 return 501;
+            }
+
+            if (string.Equals(message, "TooManyRequests", StringComparison.OrdinalIgnoreCase))
+            {
+                return 429;
+            }
+
+            if (string.Equals(message, "EmailDeliveryFailed", StringComparison.OrdinalIgnoreCase))
+            {
+                return 503;
             }
 
             return fallback;

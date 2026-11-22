@@ -32,10 +32,20 @@ namespace Shadowrun.LocalService.Core.Persistence
         private const string AccountCredentialPasswordIterationsKey = "CredentialPasswordIterations";
         private const string AccountCredentialHashAlgorithmKey = "CredentialHashAlgorithm";
 
+        private sealed class JsonPasswordResetCodeRecord
+        {
+            public string IdentityHash;
+            public string CodeHash;
+            public DateTime ExpiresUtc;
+            public bool Used;
+            public int FailedAttempts;
+        }
+
         private readonly RequestLogger _logger;
         private readonly object _syncRoot;
         private readonly string _accountPath;
         private readonly SqliteLocalStore _sqliteStore;
+        private readonly Dictionary<string, JsonPasswordResetCodeRecord> _jsonPasswordResetCodes = new Dictionary<string, JsonPasswordResetCodeRecord>(StringComparer.OrdinalIgnoreCase);
 
         public LocalAccountStore(LocalServiceOptions options, RequestLogger logger, object syncRoot, SqliteLocalStore sqliteStore)
         {
@@ -370,6 +380,244 @@ namespace Shadowrun.LocalService.Core.Persistence
                 SaveAccountStoreNoThrow(store);
                 return true;
             }
+        }
+
+        public bool TryCreatePasswordResetCode(
+            string email,
+            string codeHash,
+            DateTime expiresUtc,
+            string requestIp,
+            out string identityHash,
+            out string displayName,
+            out string message)
+        {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.TryCreatePasswordResetCode(email, codeHash, expiresUtc, requestIp, out identityHash, out displayName, out message);
+            }
+
+            identityHash = null;
+            displayName = null;
+            message = null;
+
+            var normalizedEmail = NormalizeCredentialEmail(email);
+            if (IsNullOrWhiteSpace(normalizedEmail))
+            {
+                message = "InvalidEmail";
+                return false;
+            }
+
+            if (IsNullOrWhiteSpace(codeHash))
+            {
+                message = "InvalidResetCode";
+                return false;
+            }
+
+            lock (_syncRoot)
+            {
+                var store = LoadAccountStoreNoThrow(true);
+                var accounts = GetOrCreateDict(store, AccountStoreAccountsKey);
+                var credentialIdentities = GetOrCreateDict(store, AccountStoreCredentialIdentitiesKey);
+
+                string identity = null;
+                var mapped = GetString(credentialIdentities, normalizedEmail);
+                if (IsGuidish(mapped))
+                {
+                    identity = NormalizeGuidish(mapped);
+                }
+
+                IDictionary account = IsGuidish(identity) ? GetDict(accounts, identity) : null;
+                if (account == null)
+                {
+                    message = "AccountNotFound";
+                    return false;
+                }
+
+                PruneExpiredJsonPasswordResetCodesLocked(DateTime.UtcNow);
+
+                _jsonPasswordResetCodes[normalizedEmail] = new JsonPasswordResetCodeRecord
+                {
+                    IdentityHash = identity,
+                    CodeHash = codeHash.Trim(),
+                    ExpiresUtc = expiresUtc.ToUniversalTime(),
+                    Used = false,
+                    FailedAttempts = 0,
+                };
+
+                identityHash = identity;
+                displayName = GetString(account, "DisplayName");
+                message = "OK";
+                return true;
+            }
+        }
+
+        public bool TryInvalidatePasswordResetCode(string email, string codeHash)
+        {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.TryInvalidatePasswordResetCode(email, codeHash);
+            }
+
+            var normalizedEmail = NormalizeCredentialEmail(email);
+            if (IsNullOrWhiteSpace(normalizedEmail) || IsNullOrWhiteSpace(codeHash))
+            {
+                return false;
+            }
+
+            lock (_syncRoot)
+            {
+                PruneExpiredJsonPasswordResetCodesLocked(DateTime.UtcNow);
+
+                JsonPasswordResetCodeRecord record;
+                if (_jsonPasswordResetCodes.TryGetValue(normalizedEmail, out record)
+                    && record != null
+                    && FixedTimeEquals(record.CodeHash, codeHash.Trim()))
+                {
+                    return _jsonPasswordResetCodes.Remove(normalizedEmail);
+                }
+                return false;
+            }
+        }
+
+        public bool TryChangePasswordWithResetCode(
+            string email,
+            string codeHash,
+            string newPassword,
+            int maxFailedAttempts,
+            out string identityHash,
+            out string message)
+        {
+            if (_sqliteStore != null && _sqliteStore.IsEnabled)
+            {
+                return _sqliteStore.TryChangePasswordWithResetCode(email, codeHash, newPassword, maxFailedAttempts, out identityHash, out message);
+            }
+
+            identityHash = null;
+            message = null;
+
+            var normalizedEmail = NormalizeCredentialEmail(email);
+            if (IsNullOrWhiteSpace(normalizedEmail))
+            {
+                message = "InvalidEmail";
+                return false;
+            }
+
+            if (IsNullOrWhiteSpace(newPassword))
+            {
+                message = "InvalidPassword";
+                return false;
+            }
+
+            if (IsNullOrWhiteSpace(codeHash))
+            {
+                message = "InvalidResetCode";
+                return false;
+            }
+
+            var effectiveMaxAttempts = maxFailedAttempts > 0 ? maxFailedAttempts : 5;
+            lock (_syncRoot)
+            {
+                var nowUtc = DateTime.UtcNow;
+                PruneExpiredJsonPasswordResetCodesLocked(nowUtc);
+
+                JsonPasswordResetCodeRecord record;
+                if (!_jsonPasswordResetCodes.TryGetValue(normalizedEmail, out record)
+                    || record == null
+                    || record.Used)
+                {
+                    message = "InvalidResetCode";
+                    return false;
+                }
+
+                identityHash = record.IdentityHash;
+                if (record.ExpiresUtc <= nowUtc || record.FailedAttempts >= effectiveMaxAttempts)
+                {
+                    _jsonPasswordResetCodes.Remove(normalizedEmail);
+                    message = "InvalidResetCode";
+                    return false;
+                }
+
+                if (!FixedTimeEquals(record.CodeHash, codeHash.Trim()))
+                {
+                    record.FailedAttempts++;
+                    if (record.FailedAttempts >= effectiveMaxAttempts)
+                    {
+                        _jsonPasswordResetCodes.Remove(normalizedEmail);
+                    }
+                    message = "InvalidResetCode";
+                    return false;
+                }
+
+                var store = LoadAccountStoreNoThrow(true);
+                var accounts = GetOrCreateDict(store, AccountStoreAccountsKey);
+                var account = GetDict(accounts, record.IdentityHash);
+                if (account == null)
+                {
+                    message = "AccountNotFound";
+                    return false;
+                }
+
+                string hash;
+                string salt;
+                var iterations = 100000;
+                CreatePasswordDigest(newPassword, iterations, out hash, out salt);
+
+                account[AccountCredentialEmailKey] = normalizedEmail;
+                account[AccountCredentialPasswordHashKey] = hash;
+                account[AccountCredentialPasswordSaltKey] = salt;
+                account[AccountCredentialPasswordIterationsKey] = iterations;
+                account[AccountCredentialHashAlgorithmKey] = "PBKDF2-SHA1";
+
+                SaveAccountStoreNoThrow(store);
+                record.Used = true;
+                _jsonPasswordResetCodes.Remove(normalizedEmail);
+                message = "OK";
+                return true;
+            }
+        }
+
+        private void PruneExpiredJsonPasswordResetCodesLocked(DateTime nowUtc)
+        {
+            if (_jsonPasswordResetCodes.Count == 0)
+            {
+                return;
+            }
+
+            List<string> expiredKeys = null;
+            foreach (var entry in _jsonPasswordResetCodes)
+            {
+                if (entry.Value == null || entry.Value.ExpiresUtc <= nowUtc)
+                {
+                    if (expiredKeys == null)
+                    {
+                        expiredKeys = new List<string>();
+                    }
+                    expiredKeys.Add(entry.Key);
+                }
+            }
+
+            if (expiredKeys != null)
+            {
+                for (var i = 0; i < expiredKeys.Count; i++)
+                {
+                    _jsonPasswordResetCodes.Remove(expiredKeys[i]);
+                }
+            }
+        }
+
+        private static bool FixedTimeEquals(string a, string b)
+        {
+            if (a == null || b == null || a.Length != b.Length)
+            {
+                return false;
+            }
+
+            var diff = 0;
+            for (var i = 0; i < a.Length; i++)
+            {
+                diff |= a[i] ^ b[i];
+            }
+            return diff == 0;
         }
 
         public bool TryGetAccountAuthenticationStats(out int totalAccounts, out int steamAccounts, out int nonSteamAccounts)

@@ -39,6 +39,7 @@ public sealed class LocalServiceOptions
         // Keep persistence outside build output by default.
         _dataDir = TryGetDefaultPersistentDataDir();
         ChatAdminConfigPath = Path.Combine(_dataDir, "chat-admins.json");
+        EmailConfigPath = Path.Combine(_dataDir, "email-config.json");
         SqliteDatabasePath = Path.Combine(_dataDir, "localservice.sqlite");
     }
 
@@ -51,6 +52,7 @@ public sealed class LocalServiceOptions
     public string GameRootDir { get; set; }
     public string StreamingAssetsDir { get; set; }
     public string ChatAdminConfigPath { get; set; }
+    public string EmailConfigPath { get; set; }
 
     /// <summary>
     /// When true, the server simulation will attempt to run the local AI decision engine
