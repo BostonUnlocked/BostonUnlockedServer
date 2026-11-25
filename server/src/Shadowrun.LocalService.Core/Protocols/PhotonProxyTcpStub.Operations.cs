@@ -725,7 +725,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
 
                 case "DisconnectRequest":
+                {
+                    if (state != null && state.AccountId != Guid.Empty)
+                    {
+                        PartyHubFollowRegistry.ClearForMember(state.AccountId);
+                        PartyHubFollowRegistry.ClearMembersFollowingHost(state.AccountId);
+                    }
                     return new DisconnectResponse();
+                }
 
                 default:
                 {

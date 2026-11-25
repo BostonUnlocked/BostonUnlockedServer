@@ -244,6 +244,7 @@ internal static class SocialPresenceRegression
                     Assert(left.Participant == bobId && left.ChangeType == 0, "Final disconnect removes the account from the info-channel roster.");
                     roster = (GetChannelParticipantsResponse)alice.Request(new GetChannelParticipantsRequest { ChannelName = "Global" });
                     Assert(roster.Participants.Count == 1, "Closing a socket removes its channel membership.");
+                    ValidatePartyHubFollowCleanup(port, sessions, connectedAccounts);
                 }
             }
             finally
@@ -265,6 +266,154 @@ internal static class SocialPresenceRegression
     {
         var type = typeof(PhotonProxyTcpStub).Assembly.GetType("Shadowrun.LocalService.Core.Protocols.AccountTransportLivenessRegistry", true);
         return (bool)type.GetMethod("IsOnline").Invoke(null, new object[] { accountId });
+    }
+
+    private static bool TryGetPartyFollowHost(Guid memberAccountId, out Guid hostAccountId)
+    {
+        var type = typeof(PhotonProxyTcpStub).Assembly.GetType("Shadowrun.LocalService.Core.Protocols.PartyHubFollowRegistry", true);
+        var args = new object[] { memberAccountId, Guid.Empty };
+        var ok = (bool)type.GetMethod("TryGetHostForMember").Invoke(null, args);
+        hostAccountId = (Guid)args[1];
+        return ok;
+    }
+
+    private static void SetPartyFollowHost(Guid memberAccountId, Guid hostAccountId)
+    {
+        var type = typeof(PhotonProxyTcpStub).Assembly.GetType("Shadowrun.LocalService.Core.Protocols.PartyHubFollowRegistry", true);
+        type.GetMethod("SetHostForMember").Invoke(null, new object[] { memberAccountId, hostAccountId });
+    }
+
+    private static int ExtractInvitationId(MessageEventParameters inviteEvent)
+    {
+        var serializer = new JavaScriptSerializer();
+        var root = serializer.DeserializeObject(inviteEvent.Payload) as IDictionary;
+        Assert(root != null && root.Contains("Invitations"), "Invitation event includes Invitations array.");
+        var invitations = root["Invitations"] as IEnumerable;
+        Assert(invitations != null, "Invitations list is enumerable.");
+        foreach (var entry in invitations)
+        {
+            var dict = entry as IDictionary;
+            if (dict == null) continue;
+            if (dict.Contains("Id")) return Convert.ToInt32(dict["Id"]);
+            if (dict.Contains("InvitationId")) return Convert.ToInt32(dict["InvitationId"]);
+        }
+        throw new InvalidOperationException("Invitation event did not contain an invitation id: " + inviteEvent.Payload);
+    }
+
+    private static void WaitUntilOffline(Guid accountId, string context)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(4);
+        while (IsOnline(accountId) && DateTime.UtcNow < deadline) Thread.Sleep(10);
+        Assert(!IsOnline(accountId), context);
+    }
+
+    private static void ValidatePartyHubFollowCleanup(int port, ExpiringSessionIdentityMap sessions, List<Guid> connectedAccounts)
+    {
+        Console.WriteLine("Checking PartyHubFollowRegistry cleanup on disconnect, host disband, and stale validation...");
+        Guid resolvedHost;
+
+        // 1. Member disconnects abruptly (without RemoveGroupMemberRequest) -> follow entry must clear.
+        using (var host = new SocialClient(port, sessions))
+        {
+            connectedAccounts.Add(host.AccountId);
+            Guid memberId;
+            using (var member = new SocialClient(port, sessions))
+            {
+                memberId = member.AccountId;
+                connectedAccounts.Add(memberId);
+                var created = (CreateGroupResponse)host.Request(new CreateGroupRequest
+                {
+                    GroupName = "CoopGroup" + Guid.NewGuid().ToString("N"),
+                    Capacity = 4,
+                    IsPersistent = false,
+                });
+                Assert(created != null && created.GroupData != null && created.GroupData.Id > 0, "Host creates coop group.");
+                var inviteRes = (InviteToGroupResponse)host.Request(new InviteToGroupRequest
+                {
+                    GroupId = created.GroupData.Id,
+                    InviteeId = memberId,
+                });
+                Assert(inviteRes != null && inviteRes.ResultCode == "Success", "Host invites member.");
+                var inviteEvt = member.Event<MessageEventParameters>(delegate(MessageEventParameters e)
+                {
+                    return string.Equals(e.Type, "GroupInvitationReceivedMessage", StringComparison.Ordinal);
+                });
+                var invId = ExtractInvitationId(inviteEvt);
+                var acceptRes = (AcceptInvitationResponse)member.Request(new AcceptInvitationRequest { InvitationId = invId });
+                Assert(acceptRes != null && acceptRes.ResultCode == "Success", "Member accepts invitation.");
+                Assert(TryGetPartyFollowHost(memberId, out resolvedHost) && resolvedHost == host.AccountId,
+                    "Active party member follows host.");
+            }
+            WaitUntilOffline(memberId, "Abruptly disconnected party member transitions offline.");
+            Assert(!TryGetPartyFollowHost(memberId, out resolvedHost),
+                "Member disconnect without RemoveGroupMemberRequest clears PartyHubFollowRegistry.");
+        }
+
+        // 2. Host disconnects abruptly -> disbanded group clears follower's entry; stale manual entry is also pruned.
+        using (var member = new SocialClient(port, sessions))
+        {
+            connectedAccounts.Add(member.AccountId);
+            Guid hostId;
+            using (var host = new SocialClient(port, sessions))
+            {
+                hostId = host.AccountId;
+                connectedAccounts.Add(hostId);
+                var created = (CreateGroupResponse)host.Request(new CreateGroupRequest
+                {
+                    GroupName = "CoopGroup" + Guid.NewGuid().ToString("N"),
+                    Capacity = 4,
+                    IsPersistent = false,
+                });
+                var inviteRes = (InviteToGroupResponse)host.Request(new InviteToGroupRequest
+                {
+                    GroupId = created.GroupData.Id,
+                    InviteeId = member.AccountId,
+                });
+                Assert(inviteRes != null && inviteRes.ResultCode == "Success", "Host invites member (host-disconnect case).");
+                var inviteEvt = member.Event<MessageEventParameters>(delegate(MessageEventParameters e)
+                {
+                    return string.Equals(e.Type, "GroupInvitationReceivedMessage", StringComparison.Ordinal);
+                });
+                var invId = ExtractInvitationId(inviteEvt);
+                var acceptRes = (AcceptInvitationResponse)member.Request(new AcceptInvitationRequest { InvitationId = invId });
+                Assert(acceptRes != null && acceptRes.ResultCode == "Success", "Member accepts invitation (host-disconnect case).");
+                Assert(TryGetPartyFollowHost(member.AccountId, out resolvedHost) && resolvedHost == hostId,
+                    "Active member follows host before host disconnect.");
+            }
+            WaitUntilOffline(hostId, "Abruptly disconnected host transitions offline.");
+            Assert(!TryGetPartyFollowHost(member.AccountId, out resolvedHost),
+                "Host disconnect disbands group and clears PartyHubFollowRegistry for followers.");
+
+            // 3. Defense-in-depth: an orphaned follow entry with no active shared group is rejected and pruned.
+            SetPartyFollowHost(member.AccountId, hostId);
+            Assert(!TryGetPartyFollowHost(member.AccountId, out resolvedHost),
+                "Live group-membership validator rejects and prunes orphaned PartyHubFollowRegistry entries.");
+        }
+
+        // 4. Explicit DisconnectRequest clears PartyHubFollowRegistry immediately.
+        using (var host = new SocialClient(port, sessions))
+        using (var member = new SocialClient(port, sessions))
+        {
+            connectedAccounts.Add(host.AccountId);
+            connectedAccounts.Add(member.AccountId);
+            var created = (CreateGroupResponse)host.Request(new CreateGroupRequest
+            {
+                GroupName = "CoopGroup" + Guid.NewGuid().ToString("N"),
+                Capacity = 4,
+                IsPersistent = false,
+            });
+            host.Request(new InviteToGroupRequest { GroupId = created.GroupData.Id, InviteeId = member.AccountId });
+            var inviteEvt = member.Event<MessageEventParameters>(delegate(MessageEventParameters e)
+            {
+                return string.Equals(e.Type, "GroupInvitationReceivedMessage", StringComparison.Ordinal);
+            });
+            member.Request(new AcceptInvitationRequest { InvitationId = ExtractInvitationId(inviteEvt) });
+            Assert(TryGetPartyFollowHost(member.AccountId, out resolvedHost) && resolvedHost == host.AccountId,
+                "Member follows host before DisconnectRequest.");
+            member.Request(new DisconnectRequest());
+            Assert(!TryGetPartyFollowHost(member.AccountId, out resolvedHost),
+                "Explicit DisconnectRequest clears PartyHubFollowRegistry.");
+        }
     }
 
     private static void ValidateProfiles(LocalServiceOptions options, LocalUserStore store, ISessionIdentityMap sessions, Guid alice, Guid bob)
@@ -533,7 +682,7 @@ internal static class SocialPresenceRegression
     {
         var json = new JavaScriptSerializer();
         var response = typeof(HttpStubServer).GetMethod("TryServeAccount", BindingFlags.Instance | BindingFlags.NonPublic)
-            .Invoke(http, new object[] { "/AccountSystem/Accounts/PlayerActivity/" + operation, Encoding.UTF8.GetBytes(json.Serialize(request)) });
+            .Invoke(http, new object[] { "/AccountSystem/Accounts/PlayerActivity/" + operation, Encoding.UTF8.GetBytes(json.Serialize(request)), "127.0.0.1" });
         var body = (byte[])response.GetType().GetField("BodyBytes").GetValue(response);
         return (IDictionary)json.DeserializeObject(Encoding.UTF8.GetString(body));
     }

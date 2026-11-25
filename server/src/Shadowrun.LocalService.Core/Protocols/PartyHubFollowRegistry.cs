@@ -5,6 +5,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 {
     internal static class PartyHubFollowRegistry
     {
+        internal delegate bool GroupMembershipValidator(Guid memberAccountId, Guid hostAccountId);
+
         private sealed class PendingHostVictoryEntry
         {
             public readonly string MissionMapName;
@@ -21,6 +23,31 @@ namespace Shadowrun.LocalService.Core.Protocols
         private static readonly object LockObj = new object();
         private static readonly Dictionary<Guid, Guid> HostByMember = new Dictionary<Guid, Guid>();
         private static readonly Dictionary<Guid, PendingHostVictoryEntry> PendingVictoryByHost = new Dictionary<Guid, PendingHostVictoryEntry>();
+        private static GroupMembershipValidator _groupMembershipValidator;
+
+        public static void SetGroupMembershipValidator(GroupMembershipValidator validator)
+        {
+            lock (LockObj)
+            {
+                _groupMembershipValidator = validator;
+            }
+        }
+
+        public static void ClearGroupMembershipValidator(GroupMembershipValidator validator)
+        {
+            if (validator == null)
+            {
+                return;
+            }
+
+            lock (LockObj)
+            {
+                if (object.Equals(_groupMembershipValidator, validator))
+                {
+                    _groupMembershipValidator = null;
+                }
+            }
+        }
 
         public static void SetPendingHostVictoryMission(Guid hostAccountId, string missionMapName)
         {
@@ -102,10 +129,47 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return false;
             }
 
+            Guid candidateHost;
+            GroupMembershipValidator validator;
             lock (LockObj)
             {
-                return HostByMember.TryGetValue(memberAccountId, out hostAccountId) && hostAccountId != Guid.Empty;
+                if (!HostByMember.TryGetValue(memberAccountId, out candidateHost) || candidateHost == Guid.Empty)
+                {
+                    return false;
+                }
+
+                validator = _groupMembershipValidator;
             }
+
+            if (validator != null)
+            {
+                var stillInParty = false;
+                try
+                {
+                    stillInParty = validator(memberAccountId, candidateHost);
+                }
+                catch
+                {
+                    stillInParty = false;
+                }
+
+                if (!stillInParty)
+                {
+                    lock (LockObj)
+                    {
+                        Guid currentHost;
+                        if (HostByMember.TryGetValue(memberAccountId, out currentHost) && currentHost == candidateHost)
+                        {
+                            HostByMember.Remove(memberAccountId);
+                        }
+                    }
+
+                    return false;
+                }
+            }
+
+            hostAccountId = candidateHost;
+            return true;
         }
 
         public static void ClearForMember(Guid memberAccountId)
