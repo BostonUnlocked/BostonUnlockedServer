@@ -268,10 +268,15 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
         public string GetCurrentStoryHubId(CareerSlot slot, string storylineName)
         {
-            return GetCurrentStoryHubId(Guid.Empty, slot, storylineName);
+            return GetCurrentStoryHubId(Guid.Empty, slot, storylineName, null);
         }
 
         public string GetCurrentStoryHubId(Guid identityGuid, CareerSlot slot, string storylineName)
+        {
+            return GetCurrentStoryHubId(identityGuid, slot, storylineName, null);
+        }
+
+        public string GetCurrentStoryHubId(Guid identityGuid, CareerSlot slot, string storylineName, string pendingVictoryMissionMapName)
         {
             MetagameplayStaticDataIndex.StorylineInfo storyline;
             MetagameplayStaticDataIndex.ChapterInfo chapter;
@@ -286,7 +291,7 @@ namespace Shadowrun.LocalService.Core.Metagameplay
                 return slot != null ? slot.HubId : null;
             }
 
-            if (!AreAllRequiredMissionsAtLeast(slot, chapter, StoryMissionstate.ReadyToReceiveRewards))
+            if (!AreAllRequiredMissionsAtLeast(slot, chapter, StoryMissionstate.ReadyToReceiveRewards, pendingVictoryMissionMapName))
             {
                 return !string.IsNullOrEmpty(chapter.Hub) ? chapter.Hub : slot.HubId;
             }
@@ -460,7 +465,12 @@ namespace Shadowrun.LocalService.Core.Metagameplay
             return chapter != null;
         }
 
-        private static bool AreAllRequiredMissionsAtLeast(CareerSlot slot, MetagameplayStaticDataIndex.ChapterInfo chapter, StoryMissionstate minimumState)
+        private bool AreAllRequiredMissionsAtLeast(CareerSlot slot, MetagameplayStaticDataIndex.ChapterInfo chapter, StoryMissionstate minimumState)
+        {
+            return AreAllRequiredMissionsAtLeast(slot, chapter, minimumState, null);
+        }
+
+        private bool AreAllRequiredMissionsAtLeast(CareerSlot slot, MetagameplayStaticDataIndex.ChapterInfo chapter, StoryMissionstate minimumState, string pendingVictoryMissionMapName)
         {
             if (chapter == null)
             {
@@ -481,7 +491,18 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
                 string raw;
                 states.TryGetValue(missionName, out raw);
-                if (ParseStoryMissionStateOrDefault(raw, StoryMissionstate.Available) < minimumState)
+                var currentState = ParseStoryMissionStateOrDefault(raw, StoryMissionstate.Available);
+                if (currentState < minimumState
+                    && !string.IsNullOrEmpty(pendingVictoryMissionMapName)
+                    && string.Equals(missionName, pendingVictoryMissionMapName, StringComparison.OrdinalIgnoreCase)
+                    && !IsRepeatableMission(missionName)
+                    && minimumState <= StoryMissionstate.ReadyToReceiveRewards
+                    && IsNextStateValid(currentState, StoryMissionstate.ReadyToReceiveRewards))
+                {
+                    currentState = StoryMissionstate.ReadyToReceiveRewards;
+                }
+
+                if (currentState < minimumState)
                 {
                     return false;
                 }

@@ -272,6 +272,12 @@ namespace Shadowrun.LocalService.Core.Protocols
                 return;
             }
 
+            Guid coopStartHostAccountId;
+            if (CoopGroupHostRegistry.TryGetLeader(currentCoopGroupName, out coopStartHostAccountId) && coopStartHostAccountId != Guid.Empty)
+            {
+                PartyHubFollowRegistry.ClearPendingHostVictoryMission(coopStartHostAccountId);
+            }
+
             var coopParticipants = GetCoopMissionParticipantsSnapshot(currentCoopGroupName);
             for (var i = 0; i < coopParticipants.Length; i++)
             {
@@ -1005,6 +1011,32 @@ namespace Shadowrun.LocalService.Core.Protocols
                 catch
                 {
                 }
+            }
+
+            if (!IsNullOrWhiteSpace(coopGroupNameForLeave))
+            {
+                Guid coopHostAccountId;
+                if ((!CoopGroupHostRegistry.TryGetLeader(coopGroupNameForLeave, out coopHostAccountId) || coopHostAccountId == Guid.Empty)
+                    && !PartyHubFollowRegistry.TryGetHostForMember(activeIdentityGuid, out coopHostAccountId))
+                {
+                    coopHostAccountId = Guid.Empty;
+                }
+
+                if (coopHostAccountId != Guid.Empty)
+                {
+                    if (coopHostAccountId == activeIdentityGuid)
+                    {
+                        PartyHubFollowRegistry.ClearPendingHostVictoryMission(coopHostAccountId);
+                    }
+                    else if (!leavingMidMission && isVictory && !IsNullOrWhiteSpace(progressionMissionMapName))
+                    {
+                        PartyHubFollowRegistry.SetPendingHostVictoryMission(coopHostAccountId, progressionMissionMapName);
+                    }
+                }
+            }
+            else if (activeIdentityGuid != Guid.Empty)
+            {
+                PartyHubFollowRegistry.ClearPendingHostVictoryMission(activeIdentityGuid);
             }
 
             CareerSlot rewardSlot = null;
