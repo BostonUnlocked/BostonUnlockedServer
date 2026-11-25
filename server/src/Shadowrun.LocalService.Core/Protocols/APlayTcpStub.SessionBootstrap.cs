@@ -428,6 +428,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             string peer,
             CoreDirectSystem direct,
             string activeIdentityHash,
+            Guid activeIdentityGuid,
             Action<string> cancelHubReadyFallback,
             ref string currentHubInstanceId,
             ref bool sentEnterCareerUpdate)
@@ -435,6 +436,11 @@ namespace Shadowrun.LocalService.Core.Protocols
             cancelHubReadyFallback("leave-current-career");
             RemoveHubPresenceWithBroadcast(peer);
             currentHubInstanceId = null;
+
+            if (activeIdentityGuid != Guid.Empty)
+            {
+                PartyHubFollowRegistry.ClearForMember(activeIdentityGuid);
+            }
 
             var msgNoBase = direct.MsgNo + 20;
             var updatePayload = BuildUtf16StringPayload(BuildCareerSummaryJsonForIdentity(activeIdentityHash));

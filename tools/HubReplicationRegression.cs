@@ -214,6 +214,8 @@ internal static class HubReplicationRegression
                     }
                 }
                 Console.WriteLine("PASS: cross-hub duplicate-session retirement removes previous-hub avatar");
+
+                CheckLeaveCurrentCareerClearsPartyFollow(server, sessions, store, second.AccountId);
             }
         }
         finally
@@ -304,6 +306,64 @@ internal static class HubReplicationRegression
             && current.PlayerCharacters[participant.CharacterId].CurrentPosition.Y == position.Y,
             "Roster views and character positions are detached from authoritative mutable state.");
         Console.WriteLine("PASS: detached hub roster views");
+    }
+
+    private static void CheckLeaveCurrentCareerClearsPartyFollow(APlayTcpStub server, ExpiringSessionIdentityMap sessions, LocalUserStore store, Guid act1HostAccountId)
+    {
+        var followRegistryType = typeof(APlayTcpStub).Assembly.GetType("Shadowrun.LocalService.Core.Protocols.PartyHubFollowRegistry", true);
+        var setHostMethod = followRegistryType.GetMethod("SetHostForMember");
+        var tryGetHostMethod = followRegistryType.GetMethod("TryGetHostForMember");
+        var clearMemberMethod = followRegistryType.GetMethod("ClearForMember");
+
+        var memberAccount = Guid.NewGuid();
+        var slot0 = store.GetOrCreateCareer(memberAccount.ToString(), 0, true);
+        slot0.PendingPersistenceCreation = false;
+        slot0.IsOccupied = true;
+        slot0.CharacterName = "Act1Runner";
+        slot0.HubId = "Act01_HUB_02";
+        slot0.MainCampaignCurrentChapter = 0;
+        store.UpsertCareer(memberAccount.ToString(), slot0);
+
+        var slot1 = store.GetOrCreateCareer(memberAccount.ToString(), 1, true);
+        slot1.PendingPersistenceCreation = false;
+        slot1.IsOccupied = true;
+        slot1.CharacterName = "Act2Runner";
+        slot1.HubId = "Act02_HUB_02";
+        slot1.MainCampaignCurrentChapter = 13;
+        store.UpsertCareer(memberAccount.ToString(), slot1);
+
+        try
+        {
+            setHostMethod.Invoke(null, new object[] { memberAccount, act1HostAccountId });
+            using (var peer = new Peer(server, sessions, store, 1006, memberAccount))
+            {
+                var followedHub = peer.RequestHub();
+                Assert(string.Equals(followedHub, "Act01_HUB_02", StringComparison.OrdinalIgnoreCase),
+                    "While actively following an Act 1 host, RequestCurrentStorylineHub routes to the host hub; got=" + followedHub);
+
+                // Leave current career (switch character) without sending Photon RemoveGroupMemberRequest.
+                peer.ClearPending();
+                peer.Call(2, 12, new byte[0]);
+                peer.WaitFor(2, 16);
+
+                var tryArgs = new object[] { memberAccount, Guid.Empty };
+                var stillFollowing = (bool)tryGetHostMethod.Invoke(null, tryArgs);
+                Assert(!stillFollowing, "LeaveCurrentCareer clears PartyHubFollowRegistry for the account.");
+
+                // Enter career slot 1 (Act 2) and request its storyline hub -> must load its own Act 2 hub, not Act 1.
+                peer.Call(2, 11, BitConverter.GetBytes(1));
+                peer.WaitFor(3, 38);
+                var ownHub = peer.RequestHub();
+                Assert(string.Equals(ownHub, "Act02_HUB_02", StringComparison.OrdinalIgnoreCase),
+                    "After LeaveCurrentCareer, switching to an Act 2 career routes to its own hub instead of the former host's Act 1 hub; got=" + ownHub);
+            }
+        }
+        finally
+        {
+            clearMemberMethod.Invoke(null, new object[] { memberAccount });
+        }
+
+        Console.WriteLine("PASS: LeaveCurrentCareer clears PartyHubFollowRegistry so other careers load their own hub");
     }
 
     private static void CheckConcurrentClaims()
@@ -458,7 +518,7 @@ internal static class HubReplicationRegression
             throw new Exception("Timed out waiting for entity " + entity + ", field " + field + ".");
         }
 
-        public void RequestHub(bool storyHubForSelf = false)
+        public string RequestHub(bool storyHubForSelf = false)
         {
             if (storyHubForSelf) Call(3, 2, Strings(CharacterId, AccountId.ToString()));
             else Call(3, 1, Strings("{\"Content\":{\"TypeName\":\"RequestCurrentStorylineHubMessage\"}}"));
@@ -468,12 +528,17 @@ internal static class HubReplicationRegression
             // only a handoff; incremental field-7 events own the entire remote roster.
             var bytes = Convert.FromBase64String(serialized);
             var offset = 0;
+            var hubName = string.Empty;
             for (var i = 0; i < 2; i++)
             {
-                offset += 4 + BitConverter.ToInt32(bytes, offset) * 2;
+                var charLen = BitConverter.ToInt32(bytes, offset);
+                var text = Encoding.Unicode.GetString(bytes, offset + 4, charLen * 2);
+                if (i == 1) hubName = text;
+                offset += 4 + charLen * 2;
             }
             Assert(bytes.Length == offset + 1 && bytes[offset] == 0,
                 "Full hub handoff must not also contain remote avatars replayed incrementally.");
+            return hubName;
         }
 
         public void Barrier()

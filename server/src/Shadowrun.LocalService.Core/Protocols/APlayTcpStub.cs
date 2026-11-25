@@ -1733,7 +1733,7 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                             if (isLeaveCurrentCareer)
                             {
-                                HandleLeaveCurrentCareerRequest(stream, peer, direct.Value, activeIdentityHash, cancelHubReadyFallback, ref currentHubInstanceId, ref sentEnterCareerUpdate);
+                                HandleLeaveCurrentCareerRequest(stream, peer, direct.Value, activeIdentityHash, activeIdentityGuid, cancelHubReadyFallback, ref currentHubInstanceId, ref sentEnterCareerUpdate);
                             }
 
                             if (isDeactivateCareer)

@@ -380,6 +380,51 @@ namespace Shadowrun.LocalService.Core.Protocols
                         }
                     }
                 }
+
+                PartyHubFollowRegistry.ClearForMember(accountId);
+                PartyHubFollowRegistry.ClearMembersFollowingHost(accountId);
+            }
+
+            public bool AreAccountsInSamePartyWithHost(Guid memberAccountId, Guid hostAccountId)
+            {
+                if (memberAccountId == Guid.Empty || hostAccountId == Guid.Empty || memberAccountId == hostAccountId)
+                {
+                    return false;
+                }
+
+                lock (_lock)
+                {
+                    foreach (var kvp in _groupsById)
+                    {
+                        var rec = kvp.Value;
+                        if (rec == null || rec.MemberAccountIds == null)
+                        {
+                            continue;
+                        }
+
+                        if (!rec.MemberAccountIds.Contains(memberAccountId) || !rec.MemberAccountIds.Contains(hostAccountId))
+                        {
+                            continue;
+                        }
+
+                        if (rec.OwnerAccountId == hostAccountId)
+                        {
+                            return true;
+                        }
+
+                        string leaderRaw;
+                        Guid leaderGuid;
+                        if (rec.GroupData != null
+                            && rec.GroupData.TryGetValue("Leader", out leaderRaw)
+                            && TryParseGuid(leaderRaw, out leaderGuid)
+                            && leaderGuid == hostAccountId)
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                return false;
             }
 
             private static Dictionary<string, object> BuildGroupDataObject(Group group)
@@ -1298,14 +1343,24 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                 PushGroupDataChangedMessage(senderAccountId, group, action, key, value, notifyAccounts);
 
-                if (!string.IsNullOrEmpty(group.GroupName) && group.GroupName.StartsWith("CoopGroup", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(key, "Leader", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (string.Equals(key, "Leader", StringComparison.OrdinalIgnoreCase))
+                    Guid leader;
+                    if (TryParseGuid(value, out leader) && leader != Guid.Empty)
                     {
-                        Guid leader;
-                        if (TryParseGuid(value, out leader))
+                        if (!string.IsNullOrEmpty(group.GroupName) && group.GroupName.StartsWith("CoopGroup", StringComparison.OrdinalIgnoreCase))
                         {
                             CoopGroupHostRegistry.SetLeader(group.GroupName, leader);
+                        }
+
+                        PartyHubFollowRegistry.ClearForMember(leader);
+                        for (var i = 0; i < notifyAccounts.Count; i++)
+                        {
+                            var memberId = notifyAccounts[i];
+                            if (memberId != Guid.Empty && memberId != leader)
+                            {
+                                PartyHubFollowRegistry.SetHostForMember(memberId, leader);
+                            }
                         }
                     }
                 }
@@ -2149,11 +2204,24 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                         if (!rec.MemberAccountIds.Contains(rec.OwnerAccountId))
                         {
+                            var previousOwner = rec.OwnerAccountId;
                             var newOwner = rec.MemberAccountIds.FirstOrDefault();
                             if (newOwner != Guid.Empty)
                             {
                                 rec.OwnerAccountId = newOwner;
                                 rec.GroupData["Leader"] = newOwner.ToString();
+                                if (previousOwner != Guid.Empty && previousOwner != newOwner)
+                                {
+                                    PartyHubFollowRegistry.ClearMembersFollowingHost(previousOwner);
+                                }
+                                PartyHubFollowRegistry.ClearForMember(newOwner);
+                                foreach (var remainingMember in rec.MemberAccountIds)
+                                {
+                                    if (remainingMember != Guid.Empty && remainingMember != newOwner)
+                                    {
+                                        PartyHubFollowRegistry.SetHostForMember(remainingMember, newOwner);
+                                    }
+                                }
                                 repairs.Add("repair-owner-leader:" + pair.Key.ToString());
                             }
                         }
@@ -2221,6 +2289,8 @@ namespace Shadowrun.LocalService.Core.Protocols
                         }
                     }
                 }
+
+                PartyHubFollowRegistry.ClearForMember(memberId);
             }
 
             private void DisbandGroup_NoLock(int groupId)
@@ -2233,6 +2303,29 @@ namespace Shadowrun.LocalService.Core.Protocols
                 GroupRecord rec;
                 if (_groupsById.TryGetValue(groupId, out rec) && rec != null)
                 {
+                    if (rec.MemberAccountIds != null && rec.MemberAccountIds.Count > 0)
+                    {
+                        PartyHubFollowRegistry.ClearForGroup(rec.MemberAccountIds);
+                    }
+
+                    if (rec.OwnerAccountId != Guid.Empty)
+                    {
+                        PartyHubFollowRegistry.ClearForMember(rec.OwnerAccountId);
+                        PartyHubFollowRegistry.ClearMembersFollowingHost(rec.OwnerAccountId);
+                    }
+
+                    string leaderRaw;
+                    Guid leaderGuid;
+                    if (rec.GroupData != null
+                        && rec.GroupData.TryGetValue("Leader", out leaderRaw)
+                        && TryParseGuid(leaderRaw, out leaderGuid)
+                        && leaderGuid != Guid.Empty
+                        && leaderGuid != rec.OwnerAccountId)
+                    {
+                        PartyHubFollowRegistry.ClearForMember(leaderGuid);
+                        PartyHubFollowRegistry.ClearMembersFollowingHost(leaderGuid);
+                    }
+
                     _groupsById.Remove(groupId);
                 }
             }

@@ -65,6 +65,7 @@ public sealed partial class PhotonProxyTcpStub
         _friendsStore = new FriendsStore(options, logger);
         _chatAndFriends = new ChatAndFriendsState(this);
         AccountTransportLivenessRegistry.RegisterHardOfflineObserver(HandleAccountHardOffline);
+        PartyHubFollowRegistry.SetGroupMembershipValidator(_chatAndFriends.AreAccountsInSamePartyWithHost);
         _chatAdminAccountIds = CheatAuthorizationPolicy.LoadChatAdminAccountIds(options, LogAdminEvent);
         _chatAdminOpenMode = CheatAuthorizationPolicy.ResolveAdminOpenMode(_chatAdminAccountIds);
         _chatCommands = BuildChatCommandMap();
@@ -139,6 +140,7 @@ public sealed partial class PhotonProxyTcpStub
         finally
         {
             listener.Stop();
+            PartyHubFollowRegistry.ClearGroupMembershipValidator(_chatAndFriends.AreAccountsInSamePartyWithHost);
             if (_userStore != null) _userStore.PlayerInfoChanged -= NotifyPlayerInfoChanged;
         }
     }
