@@ -38,7 +38,7 @@ namespace Shadowrun.LocalService.Core.Protocols
         private readonly Timer _missionCleanupTimer;
         private int _missionCleanupInProgress;
 
-        private void RegisterSoloMissionSession(string peer, string mapName, uint seed0, uint seed1, uint seed2, uint seed3, ServerSimulationSession simulationSession)
+        private void RegisterSoloMissionSession(string peer, string mapName, uint seed0, uint seed1, uint seed2, uint seed3, ServerSimulationSession simulationSession, Guid accountId, int careerIndex, object syncRoot)
         {
             if (IsNullOrWhiteSpace(peer) || simulationSession == null)
             {
@@ -57,6 +57,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                 }
 
                 _soloMissionSessions[peer] = current;
+            }
+
+            if (_debugMissionRegistry != null)
+            {
+                _debugMissionRegistry.RegisterMission(peer, "solo", peer, null, accountId, careerIndex, mapName, seed0, seed1, seed2, seed3, simulationSession, syncRoot);
             }
 
             if (previous != null && previous.Simulation != null)
@@ -115,6 +120,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                 catch
                 {
                 }
+            }
+
+            if (_debugMissionRegistry != null)
+            {
+                _debugMissionRegistry.UnregisterMission(peer);
             }
 
             MissionRuntimeRegistry.MarkSoloMissionEnded(peer);

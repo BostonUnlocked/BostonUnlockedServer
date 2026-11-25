@@ -23,6 +23,9 @@ public sealed class LocalServiceOptions
         StructuredLogRotationIntervalMinutes = 5;
         StructuredLogRetentionDays = 1;
         UseFixedMissionSeeds = false;
+        EnableDebugApi = false;
+        DebugApiPort = 18080;
+        DebugApiToken = null;
         PhotonStrictAuthDisconnectOnBlockedMutation = ReadBoolFromEnvironment("SRO_PHOTON_STRICT_AUTH", false);
 
         EnableAiLogic = DefaultEnableAiLogic;
@@ -67,6 +70,9 @@ public sealed class LocalServiceOptions
     public int StructuredLogRotationIntervalMinutes { get; set; }
     public int StructuredLogRetentionDays { get; set; }
     public bool UseFixedMissionSeeds { get; set; }
+    public bool EnableDebugApi { get; set; }
+    public int DebugApiPort { get; set; }
+    public string DebugApiToken { get; set; }
     public bool PhotonStrictAuthDisconnectOnBlockedMutation { get; set; }
     public bool UseSqlite { get; set; }
     public bool MigrateJsonToSqlite { get; set; }
