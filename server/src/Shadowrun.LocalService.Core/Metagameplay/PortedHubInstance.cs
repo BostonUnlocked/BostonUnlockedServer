@@ -42,7 +42,23 @@ namespace Shadowrun.LocalService.Core.Metagameplay
 
         public HubState HubState
         {
-            get { return _hubStateController.HubState; }
+            get
+            {
+                lock (_sync)
+                {
+                    var snapshot = new HubState { Name = _hubName, HubId = HubId };
+                    foreach (var entry in _hubStateController.HubState.PlayerCharacters)
+                    {
+                        var character = entry.Value;
+                        if (character != null)
+                        {
+                            snapshot.PlayerCharacters.Add(entry.Key,
+                                new HubPlayerCharacter(entry.Key, character.CurrentPosition, character.Snapshot));
+                        }
+                    }
+                    return snapshot;
+                }
+            }
         }
 
         public string SerializedHubState()
