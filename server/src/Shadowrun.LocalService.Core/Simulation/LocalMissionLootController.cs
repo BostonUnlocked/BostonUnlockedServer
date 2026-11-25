@@ -109,6 +109,23 @@ namespace Shadowrun.LocalService.Core.Simulation
             }
         }
 
+        internal string[] SnapshotTriggeredLootTables()
+        {
+            lock (_lock)
+            {
+                if (_events.Count == 0)
+                {
+                    return new string[0];
+                }
+                var tables = new string[_events.Count];
+                for (var i = 0; i < _events.Count; i++)
+                {
+                    tables[i] = _events[i] != null ? (_events[i].LootTable ?? string.Empty) : string.Empty;
+                }
+                return tables;
+            }
+        }
+
         internal LootGrant[] ResolveLootForParticipant(string participantKey, LocalUserStore userStore, Guid identityGuid, CareerSlot slot)
         {
             return ResolveLootForParticipant(participantKey, userStore, identityGuid, slot, false);

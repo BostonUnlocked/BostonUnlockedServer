@@ -30,6 +30,15 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         private MissionSeedSet AllocateMissionSeeds(string mode, string peer, string mapName, string coopGroupName)
         {
+            uint ov0, ov1, ov2, ov3;
+            if (_options != null && _options.EnableDebugApi && _debugMissionRegistry != null
+                && _debugMissionRegistry.TryConsumeNextSeeds(out ov0, out ov1, out ov2, out ov3))
+            {
+                var overrideSeeds = new MissionSeedSet(ov0, ov1, ov2, ov3);
+                LogMissionSeedEvent("allocated-debug-override", mode, peer, mapName, coopGroupName, overrideSeeds);
+                return overrideSeeds;
+            }
+
             var useFixedMissionSeeds = _options != null && _options.UseFixedMissionSeeds;
             var seeds = CreateMissionSeedSet(useFixedMissionSeeds);
             LogMissionSeedEvent("allocated", mode, peer, mapName, coopGroupName, seeds);

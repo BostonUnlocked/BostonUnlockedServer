@@ -269,6 +269,7 @@ namespace Shadowrun.LocalService.Core.Protocols
         private readonly HashSet<Guid> _chatAdminAccountIds;
         private readonly bool _chatAdminOpenMode;
         private readonly AccountConnectionTerminator _accountConnectionTerminator;
+        private readonly ActiveMissionDebugRegistry _debugMissionRegistry;
 
         // APlay DirectSystem messages include an 8-byte message number the client may use for ordering/dedup.
         // For MetaGameplay pushes we must keep these monotonic even if the client repeats a request with a lower MsgNo.
@@ -405,6 +406,11 @@ namespace Shadowrun.LocalService.Core.Protocols
         }
 
         public APlayTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap, CharacterStatePushBroker characterStatePushBroker, HubPresenceRegistry hubPresenceRegistry, AccountConnectionTerminator accountConnectionTerminator)
+            : this(options, logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry, accountConnectionTerminator, null)
+        {
+        }
+
+        public APlayTcpStub(LocalServiceOptions options, RequestLogger logger, LocalUserStore userStore, ISessionIdentityMap sessionIdentityMap, CharacterStatePushBroker characterStatePushBroker, HubPresenceRegistry hubPresenceRegistry, AccountConnectionTerminator accountConnectionTerminator, ActiveMissionDebugRegistry debugMissionRegistry)
         {
             _options = options;
             _logger = logger;
@@ -420,6 +426,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             _portedHubInstanceManager = new PortedHubInstanceManager(new PortedHubRepository(new PortedHubLoader(_options != null ? _options.StreamingAssetsDir : null)), false);
             _hubPresenceRegistry = hubPresenceRegistry ?? new HubPresenceRegistry();
             _accountConnectionTerminator = accountConnectionTerminator;
+            _debugMissionRegistry = debugMissionRegistry;
             _chatAdminAccountIds = CheatAuthorizationPolicy.LoadChatAdminAccountIds(options, null);
             _chatAdminOpenMode = CheatAuthorizationPolicy.ResolveAdminOpenMode(_chatAdminAccountIds);
             _missionCleanupTimer = new Timer(SweepDisconnectedMissionSessions, null, MissionCleanupInterval, MissionCleanupInterval);
@@ -2953,7 +2960,8 @@ namespace Shadowrun.LocalService.Core.Protocols
 
                                         if (simulationSession != null)
                                         {
-                                            RegisterSoloMissionSession(peer, mapName, seed0, seed1, seed2, seed3, simulationSession);
+                                            simulationSessionSync = new object();
+                                            RegisterSoloMissionSession(peer, mapName, seed0, seed1, seed2, seed3, simulationSession, activeIdentityGuid, activeCareerIndex, simulationSessionSync);
                                         }
                                     }
                                     catch (Exception ex)

@@ -169,6 +169,7 @@
     <Compile Include="Http\HttpStubServer.Coupon.cs" />
     <Compile Include="Http\HttpStubServer.Repositories.cs" />
     <Compile Include="Http\HttpStubServer.Transport.cs" />
+    <Compile Include="Http\LocalDebugHttpServer.cs" />
     <Compile Include="Email\IPasswordResetEmailSender.cs" />
     <Compile Include="Email\PasswordResetEmailConfig.cs" />
     <Compile Include="Email\ResendPasswordResetEmailSender.cs" />
@@ -194,6 +195,7 @@
     <Compile Include="Protocols\APlayTcpStub.StoryProgression.cs" />
     <Compile Include="Protocols\AccountConnectionTerminator.cs" />
     <Compile Include="Protocols\AccountTransportLivenessRegistry.cs" />
+    <Compile Include="Protocols\ActiveMissionDebugRegistry.cs" />
     <Compile Include="Protocols\CheatAuthorizationPolicy.cs" />
     <Compile Include="Protocols\ConnectedPeerRegistry.cs" />
     <Compile Include="Protocols\CoopGroupHostRegistry.cs" />
@@ -216,6 +218,7 @@
     <Compile Include="Simulation\PortedAiCommanderRepository.cs" />
     <Compile Include="Simulation\ServerSimulationSession.cs" />
     <Compile Include="Simulation\ServerSimulationSession.AiTurns.cs" />
+    <Compile Include="Simulation\ServerSimulationSession.DebugSnapshot.cs" />
     <Compile Include="Simulation\ServerSimulationSession.Diagnostics.cs" />
     <Compile Include="Simulation\TurnObserver.cs" />
   </ItemGroup>

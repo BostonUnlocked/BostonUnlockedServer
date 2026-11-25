@@ -95,6 +95,29 @@ namespace Shadowrun.LocalService.Core.Persistence
             return _accountStore != null ? _accountStore.GetOrCreateIdentityHash() : null;
         }
 
+        public string[] ListAccountIdentitiesForDebug()
+        {
+            lock (_lock)
+            {
+                var store = LoadAccountStoreNoThrow(false);
+                var accounts = GetDict(store, AccountStoreAccountsKey);
+                var result = new List<string>();
+                if (accounts != null)
+                {
+                    foreach (DictionaryEntry entry in accounts)
+                    {
+                        var id = entry.Key as string;
+                        if (IsGuidish(id))
+                        {
+                            result.Add(NormalizeGuidish(id));
+                        }
+                    }
+                }
+                result.Sort(StringComparer.OrdinalIgnoreCase);
+                return result.ToArray();
+            }
+        }
+
         public string GetOrCreateIdentityHashForSteamId(ulong steamId64)
         {
             return _accountStore != null ? _accountStore.GetOrCreateIdentityHashForSteamId(steamId64) : null;

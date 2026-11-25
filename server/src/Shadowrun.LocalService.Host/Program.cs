@@ -19,6 +19,11 @@ namespace Shadowrun.LocalService.Host
 			var options = ParseArgs(args);
 			if (ShouldRunAsWindowsService(args))
 			{
+				if (options.EnableDebugApi)
+				{
+					Console.Error.WriteLine("[localservice-cs] '--enable-debug-api' is strictly forbidden in Windows Service / production mode.");
+					return 2;
+				}
 				if (Environment.UserInteractive)
 				{
 					Console.Error.WriteLine("[localservice-cs] '{0}' can only be used under Service Control Manager.", ServiceFlag);
@@ -142,6 +147,9 @@ namespace Shadowrun.LocalService.Host
 			var photonPort = 4530;
 			var noFileLogs = false;
 			var useFixedMissionSeeds = false;
+			var enableDebugApi = false;
+			var debugApiPort = 18080;
+			string debugApiToken = null;
 			var useSqlite = true;
 			var migrateJsonToSqlite = false;
 			string sqliteDbPath = null;
@@ -171,6 +179,25 @@ namespace Shadowrun.LocalService.Host
 				if (string.Equals(arg, "--fixed-seed", StringComparison.OrdinalIgnoreCase))
 				{
 					useFixedMissionSeeds = true;
+					continue;
+				}
+				if (string.Equals(arg, "--enable-debug-api", StringComparison.OrdinalIgnoreCase))
+				{
+					enableDebugApi = true;
+					continue;
+				}
+				if (string.Equals(arg, "--debug-api-port", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+				{
+					int parsedDebugPort;
+					if (int.TryParse(args[++i], out parsedDebugPort))
+					{
+						debugApiPort = parsedDebugPort;
+					}
+					continue;
+				}
+				if (string.Equals(arg, "--debug-api-token", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+				{
+					debugApiToken = args[++i];
 					continue;
 				}
 				if (string.Equals(arg, "--migrate-json-to-sqlite", StringComparison.OrdinalIgnoreCase))
@@ -230,6 +257,9 @@ namespace Shadowrun.LocalService.Host
 			options.PhotonPort = photonPort;
 			options.DisableFileLogs = noFileLogs;
 			options.UseFixedMissionSeeds = useFixedMissionSeeds;
+			options.EnableDebugApi = enableDebugApi;
+			options.DebugApiPort = debugApiPort;
+			options.DebugApiToken = debugApiToken;
 			options.UseSqlite = useSqlite;
 			options.MigrateJsonToSqlite = migrateJsonToSqlite;
 			if (!string.IsNullOrEmpty(sqliteDbPath))
@@ -257,6 +287,10 @@ namespace Shadowrun.LocalService.Host
 
 		protected override void OnStart(string[] args)
 		{
+			if (_options != null)
+			{
+				_options.EnableDebugApi = false;
+			}
 			_runtime = new LocalServiceRuntime(_options, false);
 			_runtime.Start();
 
@@ -306,9 +340,11 @@ namespace Shadowrun.LocalService.Host
 		private Thread _httpThread;
 		private Thread _aplayThread;
 		private Thread _photonThread;
+		private Thread _debugHttpThread;
 		private Exception _httpError;
 		private Exception _aplayError;
 		private Exception _photonError;
+		private Exception _debugHttpError;
 		private bool _started;
 
 		public LocalServiceRuntime(LocalServiceOptions options, bool writeConsole)
@@ -412,9 +448,14 @@ namespace Shadowrun.LocalService.Host
 			var characterStatePushBroker = new CharacterStatePushBroker();
 			var hubPresenceRegistry = new HubPresenceRegistry();
 			var accountConnectionTerminator = new AccountConnectionTerminator();
+			var debugApiEnabled = _writeConsole && _options.EnableDebugApi;
+			var activeMissionDebugRegistry = debugApiEnabled ? new ActiveMissionDebugRegistry() : null;
 			var httpServer = new HttpStubServer(_options, _logger, userStore, sessionIdentityMap, null, hubPresenceRegistry);
-			var aplayStub = new APlayTcpStub(_options, _logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry, accountConnectionTerminator);
+			var aplayStub = new APlayTcpStub(_options, _logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry, accountConnectionTerminator, activeMissionDebugRegistry);
 			var photonStub = new PhotonProxyTcpStub(_options, _logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry, accountConnectionTerminator);
+			var debugHttpServer = debugApiEnabled
+				? new LocalDebugHttpServer(_options, _logger, userStore, activeMissionDebugRegistry, characterStatePushBroker)
+				: null;
 
 			_httpThread = new Thread(delegate ()
 			{
@@ -442,6 +483,17 @@ namespace Shadowrun.LocalService.Host
 			_aplayThread.Start();
 			_photonThread.Start();
 
+			if (debugHttpServer != null)
+			{
+				_debugHttpThread = new Thread(delegate ()
+				{
+					try { debugHttpServer.Run(_stopEvent); }
+					catch (Exception ex) { _debugHttpError = ex; _stopEvent.Set(); }
+				});
+				_debugHttpThread.IsBackground = true;
+				_debugHttpThread.Start();
+			}
+
 			_started = true;
 		}
 
@@ -464,8 +516,9 @@ namespace Shadowrun.LocalService.Host
 			JoinIfPresent(_httpThread);
 			JoinIfPresent(_aplayThread);
 			JoinIfPresent(_photonThread);
+			JoinIfPresent(_debugHttpThread);
 
-			var ex0 = _httpError ?? _aplayError ?? _photonError;
+			var ex0 = _httpError ?? _aplayError ?? _photonError ?? _debugHttpError;
 			if (ex0 != null)
 			{
 				if (_logger != null)

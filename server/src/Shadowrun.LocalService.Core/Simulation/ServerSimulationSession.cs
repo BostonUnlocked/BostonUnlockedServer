@@ -858,6 +858,19 @@ namespace Shadowrun.LocalService.Core.Simulation
             }
             catch (Exception ex)
             {
+                RecordDebugCommandTrace(
+                    commandName,
+                    command.AgentId,
+                    weaponIndex,
+                    skillIndex,
+                    skillId,
+                    targetX,
+                    targetY,
+                    false,
+                    ex.Message,
+                    new { teamId = beforeTeamId, teamAi = beforeTeamAi, x = beforePosX, y = beforePosY, stdActions = beforeStd, moveActions = beforeMove },
+                    null);
+
                 _logger.Log(new
                 {
                     ts = RequestLogger.UtcNowIso(),
@@ -944,6 +957,19 @@ namespace Shadowrun.LocalService.Core.Simulation
             {
                 meaningfulProgress = true;
             }
+
+            RecordDebugCommandTrace(
+                commandName,
+                command.AgentId,
+                weaponIndex,
+                skillIndex,
+                skillId,
+                targetX,
+                targetY,
+                meaningfulProgress,
+                null,
+                new { teamId = beforeTeamId, teamAi = beforeTeamAi, activatable = beforeActivatable, x = beforePosX, y = beforePosY, stdActions = beforeStd, moveActions = beforeMove },
+                new { teamId = afterTeamId, teamAi = afterTeamAi, activatable = afterActivatable, x = afterPosX, y = afterPosY, stdActions = afterStd, moveActions = afterMove });
 
             _logger.Log(new
             {
