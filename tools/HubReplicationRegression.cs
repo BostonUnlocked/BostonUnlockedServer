@@ -329,7 +329,7 @@ internal static class HubReplicationRegression
         slot1.IsOccupied = true;
         slot1.CharacterName = "Act2Runner";
         slot1.HubId = "Act02_HUB_02";
-        slot1.MainCampaignCurrentChapter = 14;
+        slot1.MainCampaignCurrentChapter = 13;
         store.UpsertCareer(memberAccount.ToString(), slot1);
 
         try
