@@ -13,6 +13,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             public string Peer;
             public string CoopGroupName;
             public Guid AccountId;
+            public Guid[] ParticipantAccountIds;
             public int CareerIndex;
             public string MapName;
             public uint Seed0;
@@ -66,6 +67,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     Peer = peer ?? string.Empty,
                     CoopGroupName = coopGroupName ?? string.Empty,
                     AccountId = accountId,
+                    ParticipantAccountIds = accountId != Guid.Empty ? new Guid[] { accountId } : new Guid[0],
                     CareerIndex = careerIndex,
                     MapName = mapName ?? string.Empty,
                     Seed0 = seed0,
@@ -77,6 +79,120 @@ namespace Shadowrun.LocalService.Core.Protocols
                     SyncRoot = syncRoot ?? new object(),
                 };
                 _latestSessionId = sessionId;
+            }
+        }
+
+        public void SetParticipantAccounts(string sessionId, IEnumerable<Guid> accountIds)
+        {
+            if (string.IsNullOrEmpty(sessionId))
+            {
+                return;
+            }
+
+            lock (_lock)
+            {
+                ActiveMissionEntry entry;
+                if (!_entries.TryGetValue(sessionId, out entry) || entry == null)
+                {
+                    return;
+                }
+
+                var unique = new List<Guid>();
+                if (accountIds != null)
+                {
+                    foreach (var id in accountIds)
+                    {
+                        if (id != Guid.Empty && !unique.Contains(id))
+                        {
+                            unique.Add(id);
+                        }
+                    }
+                }
+                if (entry.AccountId != Guid.Empty && !unique.Contains(entry.AccountId))
+                {
+                    unique.Add(entry.AccountId);
+                }
+
+                entry.ParticipantAccountIds = unique.ToArray();
+            }
+        }
+
+        public void AddParticipantAccount(string sessionId, Guid accountId)
+        {
+            if (string.IsNullOrEmpty(sessionId) || accountId == Guid.Empty)
+            {
+                return;
+            }
+
+            lock (_lock)
+            {
+                ActiveMissionEntry entry;
+                if (!_entries.TryGetValue(sessionId, out entry) || entry == null)
+                {
+                    return;
+                }
+
+                var existing = entry.ParticipantAccountIds;
+                if (existing != null)
+                {
+                    for (var i = 0; i < existing.Length; i++)
+                    {
+                        if (existing[i] == accountId)
+                        {
+                            return;
+                        }
+                    }
+
+                    var updated = new Guid[existing.Length + 1];
+                    Array.Copy(existing, 0, updated, 0, existing.Length);
+                    updated[existing.Length] = accountId;
+                    entry.ParticipantAccountIds = updated;
+                }
+                else
+                {
+                    entry.ParticipantAccountIds = new Guid[] { accountId };
+                }
+            }
+        }
+
+        public void RemoveParticipantAccount(string sessionId, Guid accountId)
+        {
+            if (string.IsNullOrEmpty(sessionId) || accountId == Guid.Empty)
+            {
+                return;
+            }
+
+            lock (_lock)
+            {
+                ActiveMissionEntry entry;
+                if (!_entries.TryGetValue(sessionId, out entry) || entry == null)
+                {
+                    return;
+                }
+
+                var existing = entry.ParticipantAccountIds;
+                if (existing == null || existing.Length == 0)
+                {
+                    return;
+                }
+
+                var remaining = new List<Guid>(existing.Length);
+                for (var i = 0; i < existing.Length; i++)
+                {
+                    if (existing[i] != accountId)
+                    {
+                        remaining.Add(existing[i]);
+                    }
+                }
+
+                if (remaining.Count != existing.Length)
+                {
+                    entry.ParticipantAccountIds = remaining.ToArray();
+                }
+                if (entry.AccountId == accountId)
+                {
+                    entry.AccountId = remaining.Count > 0 ? remaining[0] : Guid.Empty;
+                }
             }
         }
 
@@ -181,7 +297,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                     DateTime newest = DateTime.MinValue;
                     foreach (var kvp in _entries)
                     {
-                        if (kvp.Value != null && kvp.Value.AccountId == accountGuid && kvp.Value.CreatedUtc >= newest)
+                        if (kvp.Value != null && EntryMatchesAccount(kvp.Value, accountGuid) && kvp.Value.CreatedUtc >= newest)
                         {
                             newest = kvp.Value.CreatedUtc;
                             entry = kvp.Value;
@@ -205,13 +321,40 @@ namespace Shadowrun.LocalService.Core.Protocols
             {
                 foreach (var kvp in _entries)
                 {
-                    if (kvp.Value != null && kvp.Value.AccountId == accountId)
+                    if (kvp.Value != null && EntryMatchesAccount(kvp.Value, accountId))
                     {
                         return true;
                     }
                 }
                 return false;
             }
+        }
+
+        private static bool EntryMatchesAccount(ActiveMissionEntry entry, Guid accountId)
+        {
+            if (entry == null || accountId == Guid.Empty)
+            {
+                return false;
+            }
+
+            if (entry.AccountId == accountId)
+            {
+                return true;
+            }
+
+            var participants = entry.ParticipantAccountIds;
+            if (participants != null)
+            {
+                for (var i = 0; i < participants.Length; i++)
+                {
+                    if (participants[i] == accountId)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         public void SetNextSeedOverride(uint seed0, uint seed1, uint seed2, uint seed3, bool sticky)

@@ -448,11 +448,12 @@ namespace Shadowrun.LocalService.Host
 			var characterStatePushBroker = new CharacterStatePushBroker();
 			var hubPresenceRegistry = new HubPresenceRegistry();
 			var accountConnectionTerminator = new AccountConnectionTerminator();
-			var activeMissionDebugRegistry = new ActiveMissionDebugRegistry();
+			var debugApiEnabled = _writeConsole && _options.EnableDebugApi;
+			var activeMissionDebugRegistry = debugApiEnabled ? new ActiveMissionDebugRegistry() : null;
 			var httpServer = new HttpStubServer(_options, _logger, userStore, sessionIdentityMap, null, hubPresenceRegistry);
 			var aplayStub = new APlayTcpStub(_options, _logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry, accountConnectionTerminator, activeMissionDebugRegistry);
 			var photonStub = new PhotonProxyTcpStub(_options, _logger, userStore, sessionIdentityMap, characterStatePushBroker, hubPresenceRegistry, accountConnectionTerminator);
-			var debugHttpServer = (_writeConsole && _options.EnableDebugApi)
+			var debugHttpServer = debugApiEnabled
 				? new LocalDebugHttpServer(_options, _logger, userStore, activeMissionDebugRegistry, characterStatePushBroker)
 				: null;
 

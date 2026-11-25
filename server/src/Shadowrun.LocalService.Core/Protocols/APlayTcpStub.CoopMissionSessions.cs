@@ -693,6 +693,12 @@ namespace Shadowrun.LocalService.Core.Protocols
             ref string compressedMatchConfiguration)
         {
             ServerSimulationSession simulationSession;
+            ServerSimulationSession createdSimulation = null;
+            uint createdSeed0 = 0u;
+            uint createdSeed1 = 0u;
+            uint createdSeed2 = 0u;
+            uint createdSeed3 = 0u;
+
             lock (coopSession.SyncRoot)
             {
                 if (coopSession.Simulation != null
@@ -797,6 +803,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                         chapterForLoot,
                         _options != null && _options.EnableAiLogic);
                     simulationSession = coopSession.Simulation;
+                    createdSimulation = simulationSession;
+                    createdSeed0 = seed0;
+                    createdSeed1 = seed1;
+                    createdSeed2 = seed2;
+                    createdSeed3 = seed3;
 
                     _logger.Log(new
                     {
@@ -807,12 +818,11 @@ namespace Shadowrun.LocalService.Core.Protocols
                         mapName = mapName,
                         coopGroupName = coopGroupName,
                     });
-
-                    return simulationSession;
                 }
                 catch (Exception ex)
                 {
                     coopSession.Simulation = null;
+                    createdSimulation = null;
                     _logger.Log(new
                     {
                         ts = RequestLogger.UtcNowIso(),
@@ -824,6 +834,49 @@ namespace Shadowrun.LocalService.Core.Protocols
                         message = ex.Message,
                     });
                 }
+            }
+
+            if (createdSimulation != null)
+            {
+                if (_debugMissionRegistry != null && !IsNullOrWhiteSpace(coopGroupName))
+                {
+                    Guid hostOrCreatorGuid = Guid.Empty;
+                    if (!IsNullOrWhiteSpace(activeIdentityHash))
+                    {
+                        Guid.TryParse(activeIdentityHash, out hostOrCreatorGuid);
+                    }
+
+                    _debugMissionRegistry.RegisterMission(
+                        coopGroupName,
+                        "coop",
+                        peer,
+                        coopGroupName,
+                        hostOrCreatorGuid,
+                        activeCareerIndex,
+                        mapName,
+                        createdSeed0,
+                        createdSeed1,
+                        createdSeed2,
+                        createdSeed3,
+                        createdSimulation,
+                        coopSession.SyncRoot);
+
+                    var participants = GetCoopMissionParticipantsSnapshot(coopGroupName);
+                    if (participants != null && participants.Length > 0)
+                    {
+                        var participantGuids = new List<Guid>(participants.Length);
+                        for (var i = 0; i < participants.Length; i++)
+                        {
+                            if (participants[i] != null && participants[i].IdentityGuid != Guid.Empty)
+                            {
+                                participantGuids.Add(participants[i].IdentityGuid);
+                            }
+                        }
+                        _debugMissionRegistry.SetParticipantAccounts(coopGroupName, participantGuids);
+                    }
+                }
+
+                return createdSimulation;
             }
 
             return null;
@@ -876,6 +929,10 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
 
             MissionRuntimeRegistry.MarkCoopMissionParticipantJoined(coopGroupName, peer, identityGuid);
+            if (_debugMissionRegistry != null && identityGuid != Guid.Empty)
+            {
+                _debugMissionRegistry.AddParticipantAccount(coopGroupName, identityGuid);
+            }
         }
 
         private CoopMissionParticipant[] GetCoopMissionParticipantsSnapshot(string coopGroupName)
@@ -912,6 +969,7 @@ namespace Shadowrun.LocalService.Core.Protocols
             MissionRuntimeRegistry.MarkCoopMissionParticipantLeft(coopGroupName, peer);
 
             ulong departingPlayerIdForLeaveNotify = 0UL;
+            List<Guid> departingIdentityGuids = null;
 
             lock (_coopMissionLock)
             {
@@ -935,6 +993,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                     if (list[i] == null || string.Equals(list[i].Peer, peer, StringComparison.OrdinalIgnoreCase))
                     {
                         var departingIdentityGuid = list[i] != null ? list[i].IdentityGuid : Guid.Empty;
+                        if (departingIdentityGuid != Guid.Empty)
+                        {
+                            if (departingIdentityGuids == null)
+                            {
+                                departingIdentityGuids = new List<Guid>();
+                            }
+                            departingIdentityGuids.Add(departingIdentityGuid);
+                        }
 
                         if (session != null && session.Simulation != null && departingIdentityGuid != Guid.Empty)
                         {
@@ -1023,6 +1089,14 @@ namespace Shadowrun.LocalService.Core.Protocols
                 if (session != null)
                 {
                     SignalCoopMissionSelectionUpdate(session);
+                }
+            }
+
+            if (_debugMissionRegistry != null && departingIdentityGuids != null)
+            {
+                for (var i = 0; i < departingIdentityGuids.Count; i++)
+                {
+                    _debugMissionRegistry.RemoveParticipantAccount(coopGroupName, departingIdentityGuids[i]);
                 }
             }
 
@@ -1138,6 +1212,10 @@ namespace Shadowrun.LocalService.Core.Protocols
 
             if (session == null)
             {
+                if (_debugMissionRegistry != null)
+                {
+                    _debugMissionRegistry.UnregisterMission(coopGroupName);
+                }
                 MissionRuntimeRegistry.MarkCoopMissionEnded(coopGroupName);
                 return;
             }
@@ -1166,6 +1244,11 @@ namespace Shadowrun.LocalService.Core.Protocols
             }
             catch
             {
+            }
+
+            if (_debugMissionRegistry != null)
+            {
+                _debugMissionRegistry.UnregisterMission(coopGroupName);
             }
 
             MissionRuntimeRegistry.MarkCoopMissionEnded(coopGroupName);

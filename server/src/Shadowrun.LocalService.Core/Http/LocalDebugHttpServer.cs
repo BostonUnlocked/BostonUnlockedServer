@@ -285,6 +285,15 @@ namespace Shadowrun.LocalService.Core.Http
             {
                 return null;
             }
+            var participantGuids = entry.ParticipantAccountIds;
+            var participantAccountIds = new string[participantGuids != null ? participantGuids.Length : 0];
+            if (participantGuids != null)
+            {
+                for (var i = 0; i < participantGuids.Length; i++)
+                {
+                    participantAccountIds[i] = participantGuids[i].ToString("D");
+                }
+            }
             return new
             {
                 sessionId = entry.SessionId,
@@ -292,6 +301,7 @@ namespace Shadowrun.LocalService.Core.Http
                 peer = entry.Peer,
                 coopGroupName = entry.CoopGroupName,
                 accountId = entry.AccountId != Guid.Empty ? entry.AccountId.ToString("D") : string.Empty,
+                participantAccountIds = participantAccountIds,
                 careerIndex = entry.CareerIndex,
                 mapName = entry.MapName,
                 seeds = new uint[] { entry.Seed0, entry.Seed1, entry.Seed2, entry.Seed3 },
@@ -320,7 +330,13 @@ namespace Shadowrun.LocalService.Core.Http
                 return;
             }
 
-            var sessionKey = Uri.UnescapeDataString(rest.Substring(0, slash));
+            string sessionKey;
+            if (!TryUnescapeDataString(rest.Substring(0, slash), out sessionKey))
+            {
+                statusCode = 400;
+                payload = new { ok = false, error = "bad_request", message = "Malformed percent-encoding in mission session id." };
+                return;
+            }
             var action = rest.Substring(slash + 1).ToLowerInvariant();
 
             ActiveMissionDebugRegistry.ActiveMissionEntry entry;
@@ -500,7 +516,13 @@ namespace Shadowrun.LocalService.Core.Http
                 return;
             }
 
-            var rawAccountId = Uri.UnescapeDataString(parts[0]);
+            string rawAccountId;
+            if (!TryUnescapeDataString(parts[0], out rawAccountId))
+            {
+                statusCode = 400;
+                payload = new { ok = false, error = "bad_request", message = "Malformed percent-encoding in account id." };
+                return;
+            }
             int slotIndex;
             if (!int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out slotIndex) || slotIndex < 0 || slotIndex > 15)
             {
@@ -566,12 +588,8 @@ namespace Shadowrun.LocalService.Core.Http
                 }
 
                 Guid accountGuid;
-                TryParseGuid(identityHash, out accountGuid);
-                var force = GetBool(body, "force", false);
-                if (!force && accountGuid != Guid.Empty && _missionRegistry.IsAccountInMission(accountGuid))
+                if (!CheckAccountNotInMission(identityHash, body, out accountGuid, out statusCode, out payload))
                 {
-                    statusCode = 409;
-                    payload = new { ok = false, error = "account_in_mission", message = "Account is currently in an active mission. Pass 'force': true to mutate anyway." };
                     return;
                 }
 
@@ -635,9 +653,31 @@ namespace Shadowrun.LocalService.Core.Http
             payload = new { ok = true, accountId = identityHash, slotIndex = slotIndex, snapshotName = name.Trim() };
         }
 
+        private bool CheckAccountNotInMission(string identityHash, IDictionary body, out Guid accountGuid, out int statusCode, out object payload)
+        {
+            TryParseGuid(identityHash, out accountGuid);
+            var force = body != null && GetBool(body, "force", false);
+            if (!force && accountGuid != Guid.Empty && _missionRegistry != null && _missionRegistry.IsAccountInMission(accountGuid))
+            {
+                statusCode = 409;
+                payload = new { ok = false, error = "account_in_mission", message = "Account is currently in an active mission. Pass 'force': true to mutate anyway." };
+                return false;
+            }
+
+            statusCode = 200;
+            payload = null;
+            return true;
+        }
+
         private void HandleCareerRestore(string identityHash, int slotIndex, string bodyText, out int statusCode, out object payload)
         {
             var body = ParseJsonDict(bodyText) ?? new Dictionary<string, object>();
+            Guid accountGuid;
+            if (!CheckAccountNotInMission(identityHash, body, out accountGuid, out statusCode, out payload))
+            {
+                return;
+            }
+
             var name = GetString(body, "name");
             if (IsNullOrWhiteSpace(name))
             {
@@ -668,8 +708,7 @@ namespace Shadowrun.LocalService.Core.Http
             restored.CharacterIdentifier = identityHash + ":" + slotIndex.ToString(CultureInfo.InvariantCulture);
             _userStore.UpsertCareer(identityHash, restored);
 
-            Guid accountGuid;
-            if (TryParseGuid(identityHash, out accountGuid) && accountGuid != Guid.Empty && _characterStatePushBroker != null)
+            if (accountGuid != Guid.Empty && _characterStatePushBroker != null)
             {
                 try { _characterStatePushBroker.Enqueue(accountGuid, CharacterStatePushPaths.Wallet | CharacterStatePushPaths.Inventory | CharacterStatePushPaths.MetaSnapshot | CharacterStatePushPaths.CareerSummaries); }
                 catch { }
@@ -686,6 +725,12 @@ namespace Shadowrun.LocalService.Core.Http
             {
                 statusCode = 400;
                 payload = new { ok = false, error = "invalid_json", message = "Expected JSON object body with 'preset'." };
+                return;
+            }
+
+            Guid accountGuid;
+            if (!CheckAccountNotInMission(identityHash, body, out accountGuid, out statusCode, out payload))
+            {
                 return;
             }
 
@@ -707,7 +752,7 @@ namespace Shadowrun.LocalService.Core.Http
                 slot.Nuyen = 0;
                 slot.SkillTreeDefinitions = new Dictionary<string, string[]>(StringComparer.Ordinal);
                 SetEquippedWeapon(slot, true, "Automatics_IngramSmartgun_Tier_00", 0, -1);
-                SetEquippedWeapon(slot, false, "Pistol_StreetlineSpecial_Tier_00", 0, -1);
+                SetEquippedWeapon(slot, false, "Pistol_AresLightfire_Tier_00", 0, -1);
             }
             else if (preset == "max_all_skills")
             {
@@ -759,8 +804,7 @@ namespace Shadowrun.LocalService.Core.Http
             }
 
             _userStore.UpsertCareer(identityHash, slot);
-            Guid accountGuid;
-            if (TryParseGuid(identityHash, out accountGuid) && accountGuid != Guid.Empty && _characterStatePushBroker != null)
+            if (accountGuid != Guid.Empty && _characterStatePushBroker != null)
             {
                 try { _characterStatePushBroker.Enqueue(accountGuid, CharacterStatePushPaths.Wallet | CharacterStatePushPaths.Inventory | CharacterStatePushPaths.MetaSnapshot | CharacterStatePushPaths.CareerSummaries); }
                 catch { }
@@ -1402,6 +1446,9 @@ namespace Shadowrun.LocalService.Core.Http
             public string BodyText = string.Empty;
         }
 
+        private const int MaxHeaderBytes = 1024 * 1024;
+        private const int MaxBodyBytes = 4 * 1024 * 1024;
+
         private static DebugHttpRequest ReadRequest(NetworkStream stream)
         {
             var raw = new MemoryStream();
@@ -1420,7 +1467,7 @@ namespace Shadowrun.LocalService.Core.Http
                 raw.Write(buf, 0, read);
                 var data = raw.ToArray();
                 headerEnd = FindHeaderEnd(data);
-                if (raw.Length > 1024 * 1024)
+                if (raw.Length > MaxHeaderBytes)
                 {
                     throw new InvalidOperationException("Request headers too large.");
                 }
@@ -1468,15 +1515,23 @@ namespace Shadowrun.LocalService.Core.Http
                 req.Headers[hName] = hVal;
                 if (hName == "content-length")
                 {
-                    int.TryParse(hVal, NumberStyles.Integer, CultureInfo.InvariantCulture, out contentLength);
+                    if (!int.TryParse(hVal, NumberStyles.Integer, CultureInfo.InvariantCulture, out contentLength) || contentLength < 0)
+                    {
+                        throw new InvalidOperationException("Invalid Content-Length header.");
+                    }
+                    if (contentLength > MaxBodyBytes)
+                    {
+                        throw new InvalidOperationException("Request body too large.");
+                    }
                 }
             }
 
             var bodyStart = headerEnd + 4;
             var bodyStream = new MemoryStream();
-            if (initialBytes.Length > bodyStart)
+            if (contentLength > 0 && initialBytes.Length > bodyStart)
             {
-                bodyStream.Write(initialBytes, bodyStart, initialBytes.Length - bodyStart);
+                var initialBodyLen = Math.Min(initialBytes.Length - bodyStart, contentLength);
+                bodyStream.Write(initialBytes, bodyStart, initialBodyLen);
             }
 
             while (bodyStream.Length < contentLength)
@@ -1507,6 +1562,26 @@ namespace Shadowrun.LocalService.Core.Http
             return -1;
         }
 
+        private static bool TryUnescapeDataString(string input, out string unescaped)
+        {
+            if (string.IsNullOrEmpty(input))
+            {
+                unescaped = input ?? string.Empty;
+                return true;
+            }
+
+            try
+            {
+                unescaped = Uri.UnescapeDataString(input);
+                return true;
+            }
+            catch (UriFormatException)
+            {
+                unescaped = null;
+                return false;
+            }
+        }
+
         private static void ParseQuery(string qs, Dictionary<string, string> dest)
         {
             if (IsNullOrWhiteSpace(qs)) return;
@@ -1516,11 +1591,23 @@ namespace Shadowrun.LocalService.Core.Http
                 var eq = pairs[i].IndexOf('=');
                 if (eq > 0)
                 {
-                    dest[Uri.UnescapeDataString(pairs[i].Substring(0, eq))] = Uri.UnescapeDataString(pairs[i].Substring(eq + 1));
+                    string key;
+                    string val;
+                    if (!TryUnescapeDataString(pairs[i].Substring(0, eq), out key)
+                        || !TryUnescapeDataString(pairs[i].Substring(eq + 1), out val))
+                    {
+                        throw new InvalidOperationException("Malformed percent-encoding in query string.");
+                    }
+                    dest[key] = val;
                 }
                 else if (pairs[i].Length > 0)
                 {
-                    dest[Uri.UnescapeDataString(pairs[i])] = "true";
+                    string key;
+                    if (!TryUnescapeDataString(pairs[i], out key))
+                    {
+                        throw new InvalidOperationException("Malformed percent-encoding in query string.");
+                    }
+                    dest[key] = "true";
                 }
             }
         }
