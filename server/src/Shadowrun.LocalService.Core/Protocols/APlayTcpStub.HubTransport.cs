@@ -718,7 +718,7 @@ namespace Shadowrun.LocalService.Core.Protocols
                 lock (_hubLastDeliveredHubLock)
                 {
                     sameHub = _hubLastDeliveredHubByPeer.TryGetValue(peer, out lastDeliveredHubId)
-                        && string.Equals(lastDeliveredHubId, hubId, StringComparison.OrdinalIgnoreCase);
+                        && string.Equals(lastDeliveredHubId, hubId, StringComparison.Ordinal);
                 }
 
                 if (!SendRawFrame(stream, peer, PrefixLength(core), note ?? "sent empty hub-state handoff"))
@@ -1560,6 +1560,13 @@ namespace Shadowrun.LocalService.Core.Protocols
                 });
 
                 UnregisterHubPeerStream(previous.Peer, null);
+
+                if (!IsNullOrWhiteSpace(previous.HubId)
+                    && !IsNullOrWhiteSpace(previous.CharacterId)
+                    && !string.Equals(previous.HubId, hubId, StringComparison.Ordinal))
+                {
+                    BroadcastHubStateRemove(previous.HubId, previous.Peer, previous.CharacterId);
+                }
             }
         }
 

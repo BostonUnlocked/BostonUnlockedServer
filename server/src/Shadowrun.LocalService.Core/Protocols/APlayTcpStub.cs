@@ -3168,6 +3168,11 @@ namespace Shadowrun.LocalService.Core.Protocols
 
         private bool SendRawFrame(NetworkStream stream, string peer, byte[] decoded, string note)
         {
+            if (stream == null)
+            {
+                return false;
+            }
+
             var frameBytes = Encoding.ASCII.GetBytes(Convert.ToBase64String(decoded) + "\0");
             try
             {
@@ -3207,7 +3212,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                     message = ioex.Message,
                     socketErrorCode = socketErrorCode,
                 });
-                stream.Close();
+                lock (stream)
+                {
+                    stream.Close();
+                }
                 return false;
             }
             catch (SocketException sex)
@@ -3222,7 +3230,10 @@ namespace Shadowrun.LocalService.Core.Protocols
                     message = sex.Message,
                     socketErrorCode = sex.SocketErrorCode.ToString(),
                 });
-                stream.Close();
+                lock (stream)
+                {
+                    stream.Close();
+                }
                 return false;
             }
 

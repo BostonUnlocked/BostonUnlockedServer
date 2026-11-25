@@ -176,6 +176,44 @@ internal static class HubReplicationRegression
                     HubStateUpdate.CreateForRemoveCharacter(first.CharacterId, secondPresence.HubId)),
                     "Disconnect removes the correct canonical character from the correct hub.");
                 Console.WriteLine("PASS: single canonical disconnect removal");
+
+                var visitorAccount = Guid.NewGuid();
+                var visitorSlot = store.GetOrCreateCareer(visitorAccount.ToString(), 0, true);
+                visitorSlot.PendingPersistenceCreation = false;
+                visitorSlot.IsOccupied = true;
+                visitorSlot.CharacterName = "Visitor";
+                visitorSlot.HubId = "Act02_HUB_02";
+                visitorSlot.MainCampaignCurrentChapter = 6;
+                store.UpsertCareer(visitorAccount.ToString(), visitorSlot);
+
+                using (var visitor = new Peer(server, sessions, store, 1004, visitorAccount))
+                {
+                    visitor.Call(3, 2, Strings(second.CharacterId, second.AccountId.ToString()));
+                    visitor.WaitFor(3, 37);
+                    visitor.Call(4, 2, Position(visitor.CharacterId, 7f, 8f));
+                    visitor.Barrier();
+                    second.Barrier();
+                    Assert(second.CountPending(4, 7) == 1, "Host hub viewer receives add for cross-hub visitor.");
+                    second.ClearPending();
+
+                    using (var visitorReplacement = new Peer(server, sessions, store, 1005, visitorAccount))
+                    {
+                        visitorReplacement.RequestHub();
+                        visitorReplacement.Barrier();
+                        second.Barrier();
+                        Assert(second.CountPending(4, 7) == 1,
+                            "Cross-hub duplicate-session retirement removes the displaced avatar from its previous hub.");
+                        var crossHubRemoval = second.TakePending(4, 7);
+                        Assert(ReadString(crossHubRemoval.Data, 0) == HubSerializer.SerializeHubStateUpdate(
+                            HubStateUpdate.CreateForRemoveCharacter(visitor.CharacterId, secondPresence.HubId)),
+                            "Cross-hub retirement removal targets the previous hub and canonical character.");
+                        visitor.Dispose();
+                        second.Barrier();
+                        Assert(second.CountPending(4, 7) == 0,
+                            "Disposing the already-retired cross-hub socket emits no duplicate removal.");
+                    }
+                }
+                Console.WriteLine("PASS: cross-hub duplicate-session retirement removes previous-hub avatar");
             }
         }
         finally
